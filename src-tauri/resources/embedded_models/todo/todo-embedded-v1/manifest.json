@@ -1,0 +1,16 @@
+{
+  "model_version": "todo-embedded-v1",
+  "runtime_type": "embedded_subprocess",
+  "engine": "smart-todo-embedded-runtime",
+  "description": "随应用分发的 Todo 本地运行时占位模型清单，后续可替换为真实模型权重。",
+  "assets": [
+    {
+      "path": "extractor_rules.txt",
+      "role": "rules"
+    },
+    {
+      "path": "model.stub",
+      "role": "weights_placeholder"
+    }
+  ]
+}

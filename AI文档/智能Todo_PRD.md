@@ -186,6 +186,9 @@
 | ended_at | Datetime | 是 | 会话结束时间 |
 | trigger_reason | Enum | 是 | `idle_timeout` / `manual` / `forced_flush` |
 | transcript_count | Number | 是 | 包含的文本片段数量 |
+| extraction_provider_used | String | 否 | 本次实际使用的 Todo 提取 Provider，如 `embedded_local` / `cloud` / `skipped` |
+| extraction_fallback_used | Boolean | 否 | 是否发生从本地提取回退到云端提取 |
+| extraction_fallback_reason | String | 否 | 发生回退时记录原因；未回退为空字符串 |
 
 #### 8.2.4 设置配置对象
 
@@ -195,13 +198,19 @@
 | language | String | 是 | 当前固定为 `zh-CN` |
 | chunk_seconds | Number | 是 | 音频切片时长，默认 30 秒 |
 | idle_trigger_seconds | Number | 是 | 无有效录音触发 Todo 提取的间歇时间，默认 20 秒 |
-| provider_mode | Enum | 是 | 当前一期固定支持 `cloud`，结构上预留 `local` |
+| provider_mode | Enum | 是 | 全局兼容字段，默认 `cloud`，长期建议由更细粒度 Provider 字段替代 |
+| asr_provider_type | Enum | 是 | 语音转写 Provider 类型，当前一期固定 `cloud` |
+| todo_provider_type | Enum | 是 | Todo 提取 Provider 类型，支持 `cloud` / `embedded_local` |
 | asr_api_key | String | 是 | 语音转写模型调用密钥 |
 | asr_base_url | String | 是 | 语音转写模型调用地址 |
 | asr_model_name | String | 是 | 语音转写模型类型或模型名称 |
 | todo_api_key | String | 是 | Todo 提取模型调用密钥 |
 | todo_base_url | String | 是 | Todo 提取模型调用地址 |
 | todo_model_name | String | 是 | Todo 提取模型类型或模型名称 |
+| local_todo_model_version | String | 否 | 应用内嵌 Todo 模型版本号 |
+| allow_cloud_fallback | Boolean | 否 | 本地提取失败或结果为空时是否允许回退到云端 |
+| local_todo_runtime_status | Enum | 否 | 本地 Todo 模型运行状态，`not_ready` / `starting` / `ready` / `failed` |
+| local_todo_last_health_check_at | Datetime | 否 | 最近一次本地 Todo 模型健康检查时间 |
 
 ### 8.3 数据表设计
 
@@ -225,6 +234,7 @@ conversation_sessions 1 -> N processing_jobs
 4. `todos` 表示最终从会话文稿中提取出来的待办。
 5. `processing_jobs` 用于记录转写、聚合、提取等任务状态，便于排障和重试。
 6. `app_settings` 保存非敏感设置；密钥建议优先存系统 Keychain，仅在表中保存引用标识。
+7. 本地嵌入模型采用“应用内置模型资产 + 首次启动准备本地目录 + 子进程推理”的产品形态，相关版本和运行状态需可追踪。
 
 #### 8.3.2 `app_settings` 设置表
 
@@ -237,13 +247,18 @@ conversation_sessions 1 -> N processing_jobs
 | language | TEXT |  | 当前默认 `zh-CN` |
 | chunk_seconds | INTEGER |  | 切片时长，默认 `30` |
 | idle_trigger_seconds | INTEGER |  | 无有效录音触发时长，默认 `20` |
-| provider_mode | TEXT |  | 当前一期固定 `cloud` |
+| provider_mode | TEXT |  | 全局兼容字段，默认 `cloud` |
+| asr_provider_type | TEXT |  | 转写 Provider 类型，默认 `cloud` |
+| todo_provider_type | TEXT |  | Todo Provider 类型，支持 `cloud` / `embedded_local` |
 | asr_base_url | TEXT |  | 语音转写模型调用地址 |
 | asr_model_name | TEXT |  | 语音转写模型名称 |
 | asr_api_key_ref | TEXT |  | 转写模型密钥在系统安全存储中的引用标识 |
 | todo_base_url | TEXT |  | Todo 提取模型调用地址 |
 | todo_model_name | TEXT |  | Todo 提取模型名称 |
 | todo_api_key_ref | TEXT |  | 提取模型密钥在系统安全存储中的引用标识 |
+| local_todo_model_version | TEXT |  | 当前内嵌 Todo 模型版本 |
+| local_todo_runtime_status | TEXT |  | 本地 Todo 模型运行状态 |
+| local_todo_last_health_check_at | DATETIME |  | 最近一次健康检查时间 |
 | created_at | DATETIME |  | 创建时间 |
 | updated_at | DATETIME |  | 更新时间 |
 
@@ -252,6 +267,15 @@ conversation_sessions 1 -> N processing_jobs
 1. 一期建议只保留一条设置记录。
 2. `api_key` 不建议明文落库，推荐走 Keychain。
 3. 如果前期为了开发提速临时明文入库，必须在开发规范中标记为仅开发态允许，生产态禁用。
+4. 第一阶段仅开放 `todo_provider_type=embedded_local`，本阶段不要求本地 ASR。
+
+#### 8.3.2.1 本地嵌入模型范围
+
+1. 第一阶段只内嵌 Todo 提取模型，不内嵌 ASR。
+2. 本地模型需随应用分发，用户安装后无需额外安装第三方模型服务。
+3. 本地模型推理必须采用子进程运行，避免阻塞桌面主进程。
+4. 本地模型不可用时，系统需给出明确提示，并支持切回云端 Todo 提取。
+5. 首版建议仅支持 Apple Silicon，降低打包、验证与性能不确定性。
 
 #### 8.3.3 `audio_segments` 音频片段表
 

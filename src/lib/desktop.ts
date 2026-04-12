@@ -12,6 +12,8 @@ export interface SettingsPayload {
   chunkSeconds: number;
   idleTriggerSeconds: number;
   providerMode: "cloud" | "local";
+  asrProviderType: "cloud";
+  todoProviderType: "cloud" | "embedded_local";
   asrSubmitUrl: string;
   asrQueryUrl: string;
   asrResourceId: string;
@@ -20,6 +22,10 @@ export interface SettingsPayload {
   todoBaseUrl: string;
   todoModelName: string;
   todoApiKeyMasked: string;
+  localTodoModelVersion: string;
+  allowCloudFallback: boolean;
+  localTodoRuntimeStatus: "not_ready" | "starting" | "ready" | "failed";
+  localTodoLastHealthCheckAt: string;
 }
 
 export interface TodoPayload {
@@ -39,6 +45,9 @@ export interface SessionPayload {
   endedAt: string;
   triggerReason: string;
   extractionStatus: "success" | "failed" | "pending";
+  extractionProviderUsed: string;
+  extractionFallbackUsed: boolean;
+  extractionFallbackReason: string;
   transcriptCount: number;
   relatedTodoIds: string[];
 }
@@ -76,6 +85,15 @@ export interface ModelTestPayload {
   statusCode: number;
   message: string;
   responseExcerpt: string;
+}
+
+export interface LocalRuntimePayload {
+  providerType: "cloud" | "embedded_local";
+  modelVersion: string;
+  runtimeStatus: "not_ready" | "starting" | "ready" | "failed";
+  lastHealthCheckAt: string;
+  fallbackEnabled: boolean;
+  message: string;
 }
 
 export interface BootstrapDataPayload {
@@ -189,4 +207,13 @@ export async function processDesktopPendingJobs(): Promise<ProcessingActionPaylo
 
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<ProcessingActionPayload>("process_pending_jobs");
+}
+
+export async function getLocalTodoRuntimeStatus(): Promise<LocalRuntimePayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<LocalRuntimePayload>("get_local_todo_runtime_status");
 }

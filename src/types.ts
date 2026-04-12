@@ -5,6 +5,8 @@ export type SessionStatus =
   | "ready_for_extraction"
   | "extracted"
   | "failed";
+export type ProviderType = "cloud" | "embedded_local";
+export type LocalRuntimeStatus = "not_ready" | "starting" | "ready" | "failed";
 
 export interface SettingsState {
   recordEnabled: boolean;
@@ -12,6 +14,8 @@ export interface SettingsState {
   chunkSeconds: number;
   idleTriggerSeconds: number;
   providerMode: "cloud" | "local";
+  asrProviderType: "cloud";
+  todoProviderType: ProviderType;
   asrSubmitUrl: string;
   asrQueryUrl: string;
   asrResourceId: string;
@@ -20,6 +24,10 @@ export interface SettingsState {
   todoBaseUrl: string;
   todoModelName: string;
   todoApiKeyMasked: string;
+  localTodoModelVersion: string;
+  allowCloudFallback: boolean;
+  localTodoRuntimeStatus: LocalRuntimeStatus;
+  localTodoLastHealthCheckAt: string;
 }
 
 export interface TodoItem {
@@ -39,6 +47,9 @@ export interface SessionItem {
   endedAt: string;
   triggerReason: string;
   extractionStatus: "success" | "failed" | "pending";
+  extractionProviderUsed: string;
+  extractionFallbackUsed: boolean;
+  extractionFallbackReason: string;
   transcriptCount: number;
   relatedTodoIds: string[];
 }
@@ -49,4 +60,13 @@ export interface RuntimeStatus {
   lastSliceAt: string;
   lastExtractionAt: string;
   lastExtractionSummary: string;
+}
+
+export interface LocalRuntimeState {
+  providerType: ProviderType;
+  modelVersion: string;
+  runtimeStatus: LocalRuntimeStatus;
+  lastHealthCheckAt: string;
+  fallbackEnabled: boolean;
+  message: string;
 }
