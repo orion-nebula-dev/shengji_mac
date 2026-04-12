@@ -39,7 +39,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -293,7 +294,8 @@ button:disabled {
 }
 
 .search-input,
-.field input {
+.field input,
+.field select {
   width: 100%;
   border-radius: 16px;
   border: 1px solid rgba(188, 210, 201, 0.72);
@@ -308,7 +310,8 @@ button:disabled {
 }
 
 .search-input:focus,
-.field input:focus {
+.field input:focus,
+.field select:focus {
   border-color: rgba(102, 194, 165, 0.8);
   box-shadow: 0 0 0 4px rgba(102, 194, 165, 0.12);
 }
@@ -458,6 +461,10 @@ button:disabled {
   font-size: 13px;
 }
 
+.field-wide {
+  grid-column: 1 / -1;
+}
+
 .checkbox-field {
   justify-content: center;
   gap: 14px;
@@ -476,6 +483,19 @@ button:disabled {
   display: grid;
   place-items: center;
   min-height: 220px;
+  color: var(--text-muted);
+}
+
+.runtime-hint {
+  grid-column: 1 / -1;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(188, 210, 201, 0.72);
+  background: rgba(248, 252, 250, 0.92);
+}
+
+.runtime-hint p {
+  margin: 6px 0 0;
   color: var(--text-muted);
 }
 
