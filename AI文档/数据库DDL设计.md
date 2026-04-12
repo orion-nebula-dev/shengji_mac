@@ -10,6 +10,7 @@
 2. 密钥不明文入库，数据库仅保存安全存储引用标识。
 3. 所有核心链路对象均保留时间字段和状态字段。
 4. 通过索引优化 Todo 查询、会话回溯和任务排障。
+5. 本地嵌入模型优先采用“子进程推理 + 主进程编排”的隔离方案。
 
 ## 3. 数据库基础约定
 
@@ -47,12 +48,21 @@ CREATE TABLE IF NOT EXISTS app_settings (
   chunk_seconds INTEGER NOT NULL DEFAULT 30 CHECK (chunk_seconds > 0),
   idle_trigger_seconds INTEGER NOT NULL DEFAULT 20 CHECK (idle_trigger_seconds > 0),
   provider_mode TEXT NOT NULL DEFAULT 'cloud' CHECK (provider_mode IN ('cloud', 'local')),
+  asr_provider_type TEXT NOT NULL DEFAULT 'cloud'
+    CHECK (asr_provider_type IN ('cloud')),
+  todo_provider_type TEXT NOT NULL DEFAULT 'cloud'
+    CHECK (todo_provider_type IN ('cloud', 'embedded_local')),
   asr_base_url TEXT NOT NULL DEFAULT '',
   asr_model_name TEXT NOT NULL DEFAULT '',
   asr_api_key_ref TEXT NOT NULL DEFAULT '',
   todo_base_url TEXT NOT NULL DEFAULT '',
   todo_model_name TEXT NOT NULL DEFAULT '',
   todo_api_key_ref TEXT NOT NULL DEFAULT '',
+  local_todo_model_version TEXT NOT NULL DEFAULT '',
+  allow_cloud_fallback INTEGER NOT NULL DEFAULT 1 CHECK (allow_cloud_fallback IN (0, 1)),
+  local_todo_runtime_status TEXT NOT NULL DEFAULT 'not_ready'
+    CHECK (local_todo_runtime_status IN ('not_ready', 'starting', 'ready', 'failed')),
+  local_todo_last_health_check_at DATETIME,
   created_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL
 );
@@ -68,12 +78,17 @@ INSERT OR IGNORE INTO app_settings (
   chunk_seconds,
   idle_trigger_seconds,
   provider_mode,
+  asr_provider_type,
+  todo_provider_type,
   asr_base_url,
   asr_model_name,
   asr_api_key_ref,
   todo_base_url,
   todo_model_name,
   todo_api_key_ref,
+  local_todo_model_version,
+  local_todo_runtime_status,
+  local_todo_last_health_check_at,
   created_at,
   updated_at
 ) VALUES (
@@ -83,16 +98,27 @@ INSERT OR IGNORE INTO app_settings (
   30,
   20,
   'cloud',
+  'cloud',
+  'cloud',
   '',
   '',
   '',
   '',
   '',
   '',
+  '',
+  'not_ready',
+  NULL,
   CURRENT_TIMESTAMP,
   CURRENT_TIMESTAMP
 );
 ```
+
+设计说明补充：
+
+1. `provider_mode` 作为兼容字段保留，长期建议逐步由 `asr_provider_type`、`todo_provider_type` 取代。
+2. 第一阶段仅允许 `todo_provider_type` 切换到 `embedded_local`。
+3. 本地模型运行状态与健康检查时间需持久化，便于 UI 展示与排障。
 
 ### 4.3 `audio_segments`
 
@@ -128,6 +154,10 @@ CREATE TABLE IF NOT EXISTS conversation_sessions (
   transcript_count INTEGER NOT NULL DEFAULT 0 CHECK (transcript_count >= 0),
   extraction_status TEXT NOT NULL DEFAULT 'pending'
     CHECK (extraction_status IN ('pending', 'success', 'failed')),
+  extraction_provider_used TEXT NOT NULL DEFAULT '',
+  extraction_fallback_used INTEGER NOT NULL DEFAULT 0
+    CHECK (extraction_fallback_used IN (0, 1)),
+  extraction_fallback_reason TEXT NOT NULL DEFAULT '',
   trace_id TEXT,
   created_at DATETIME NOT NULL
 );
@@ -335,6 +365,13 @@ LIMIT 100;
 
 ## 7. 迁移建议
 
+### 7.0 本地嵌入模型迁移建议
+
+1. 为 `app_settings` 增加 `asr_provider_type`、`todo_provider_type` 字段。
+2. 为 `app_settings` 增加本地模型版本、运行状态、健康检查时间字段。
+3. 历史数据默认迁移为 `asr_provider_type='cloud'`、`todo_provider_type='cloud'`。
+4. 首次启用本地模型时，再将 `todo_provider_type` 更新为 `embedded_local`。
+
 ### 7.1 一期版本号建议
 
 建议增加数据库版本管理表：
@@ -363,7 +400,8 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 2. `file_path` 若变更目录策略，需要同步迁移旧数据。
 3. `processing_jobs.target_id` 当前为通用字段，不做外键约束，避免跨对象约束复杂化。
 4. 如果后续增加“手动编辑 Todo 版本记录”，建议新增 `todo_histories` 表，不建议直接复用 `processing_jobs`。
+5. 本地嵌入模型建议由独立运行时托管，不建议将大模型直接加载进桌面主进程。
 
 ## 9. 结论
 
-这套 DDL 已覆盖一期核心链路：设置、切片、转写、会话、Todo、任务处理。按这份文档可以直接进入 migration 编写和数据库初始化开发。
+这套 DDL 已覆盖一期核心链路，并为“内嵌 Todo 本地模型”预留了 Provider 类型、模型版本和运行状态字段。按这份文档可以进入 migration 编写和数据库初始化开发。

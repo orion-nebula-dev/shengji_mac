@@ -49,6 +49,7 @@
 | 4002 | 配置缺失 |
 | 4003 | 资源不存在 |
 | 4004 | 操作过于频繁 |
+| 4005 | 本地模型运行时不可用 |
 | 5001 | 转写任务失败 |
 | 5002 | Todo 提取任务失败 |
 | 5003 | 持久化失败 |
@@ -65,6 +66,8 @@
   "chunk_seconds": 30,
   "idle_trigger_seconds": 20,
   "provider_mode": "cloud",
+  "asr_provider_type": "cloud",
+  "todo_provider_type": "embedded_local",
   "asr_submit_url": "https://api.example.com/asr/submit",
   "asr_query_url": "https://api.example.com/asr/query",
   "asr_resource_id": "volc.seedasr.auc",
@@ -73,6 +76,10 @@
   "todo_base_url": "https://api.example.com/todo",
   "todo_model_name": "todo-model-v1",
   "todo_api_key_masked": "sk-****",
+  "local_todo_model_version": "todo-embedded-v1",
+  "allow_cloud_fallback": true,
+  "local_todo_runtime_status": "ready",
+  "local_todo_last_health_check_at": "2026-04-12T10:00:00+08:00",
   "created_at": "2026-04-12T10:00:00+08:00",
   "updated_at": "2026-04-12T10:00:00+08:00"
 }
@@ -87,6 +94,8 @@
   "idle_trigger_seconds": 20,
   "language": "zh-CN",
   "provider_mode": "cloud",
+  "asr_provider_type": "cloud",
+  "todo_provider_type": "embedded_local",
   "asr_submit_url": "https://api.example.com/asr/submit",
   "asr_query_url": "https://api.example.com/asr/query",
   "asr_resource_id": "volc.seedasr.auc",
@@ -94,7 +103,9 @@
   "asr_api_key": "sk-xxx",
   "todo_base_url": "https://api.example.com/todo",
   "todo_model_name": "todo-model-v1",
-  "todo_api_key": "sk-yyy"
+  "todo_api_key": "sk-yyy",
+  "local_todo_model_version": "todo-embedded-v1",
+  "allow_cloud_fallback": true
 }
 ```
 
@@ -143,6 +154,9 @@
   "trigger_reason": "idle_timeout",
   "transcript_count": 2,
   "extraction_status": "success",
+  "extraction_provider_used": "embedded_local",
+  "extraction_fallback_used": false,
+  "extraction_fallback_reason": "",
   "trace_id": "trace_001",
   "created_at": "2026-04-12T10:20:20+08:00"
 }
@@ -188,6 +202,8 @@
       "chunk_seconds": 30,
       "idle_trigger_seconds": 20,
       "provider_mode": "cloud",
+      "asr_provider_type": "cloud",
+      "todo_provider_type": "embedded_local",
       "asr_submit_url": "https://api.example.com/asr/submit",
       "asr_query_url": "https://api.example.com/asr/query",
       "asr_resource_id": "volc.seedasr.auc",
@@ -195,7 +211,11 @@
       "asr_api_key_masked": "sk-****",
       "todo_base_url": "https://api.example.com/todo",
       "todo_model_name": "todo-model-v1",
-      "todo_api_key_masked": "sk-****"
+      "todo_api_key_masked": "sk-****",
+      "local_todo_model_version": "todo-embedded-v1",
+      "allow_cloud_fallback": true,
+      "local_todo_runtime_status": "ready",
+      "local_todo_last_health_check_at": "2026-04-12T10:00:00+08:00"
     }
   },
   "request_id": "req_001"
@@ -213,7 +233,10 @@
 1. `chunk_seconds` 必须大于 `0`。
 2. `idle_trigger_seconds` 必须大于 `0`。
 3. `asr_submit_url`、`asr_query_url`、`todo_base_url` 必须为合法 URL。
-4. 当 `provider_mode=cloud` 时，双模型配置均必填。
+4. 当 `asr_provider_type=cloud` 时，ASR 云端配置必填。
+5. 当 `todo_provider_type=cloud` 时，Todo 云端配置必填。
+6. 当 `todo_provider_type=embedded_local` 时，必须可查询到本地模型运行状态。
+7. 当 `allow_cloud_fallback=false` 时，本地提取失败或结果为空不得自动回退到云端。
 
 响应：
 
@@ -309,6 +332,46 @@
     "conversation_session_id": "session_002"
   },
   "request_id": "req_005"
+}
+```
+
+#### 5.2.3 获取本地模型运行状态
+
+`GET /api/v1/model-runtime/todo`
+
+响应：
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {
+    "provider_type": "embedded_local",
+    "model_version": "todo-embedded-v1",
+    "runtime_status": "ready",
+    "last_health_check_at": "2026-04-12T10:20:00+08:00",
+    "fallback_enabled": true
+  },
+  "request_id": "req_005a"
+}
+```
+
+#### 5.2.4 测试本地模型运行状态
+
+`POST /api/v1/model-runtime/todo/test`
+
+响应：
+
+```json
+{
+  "code": 0,
+  "message": "local todo runtime is ready",
+  "data": {
+    "valid": true,
+    "runtime_status": "ready",
+    "response_excerpt": ""
+  },
+  "request_id": "req_005b"
 }
 ```
 
@@ -493,4 +556,5 @@
 
 1. 后续若采用 Tauri command 而非本地 HTTP，可保持同样的请求响应结构。
 2. 后续可新增 `/api/v1/audio-segments` 与 `/api/v1/transcript-segments` 调试接口。
-3. 后续支持本地模型后，可在 `provider_mode` 和 provider schema 中扩展 `local` 类型。
+3. 已正式预留 `todo_provider_type=embedded_local`，首阶段用于应用内嵌 Todo 模型。
+4. 本地 ASR 后续若接入，建议新增独立 `asr_provider_type` 语义，而非继续复用全局 `provider_mode`。

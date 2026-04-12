@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   flushDesktopSession,
+  getLocalTodoRuntimeStatus,
   loadBootstrapData,
   loadDesktopContext,
   processDesktopPendingJobs,
@@ -12,7 +13,7 @@ import {
   toggleDesktopTodoStatus,
 } from "./lib/desktop";
 import { getDefaultState, loadState, saveState } from "./lib/storage";
-import type { SessionItem, SettingsState, TodoItem } from "./types";
+import type { LocalRuntimeState, SessionItem, SettingsState, TodoItem } from "./types";
 
 type TabKey = "workspace" | "settings" | "sessions";
 
@@ -36,6 +37,17 @@ function App() {
   const [saveBanner, setSaveBanner] = useState("");
   const [testingProvider, setTestingProvider] = useState<"" | "asr" | "todo">("");
   const [lastManualFlushAt, setLastManualFlushAt] = useState(0);
+  const [localRuntime, setLocalRuntime] = useState<LocalRuntimeState>({
+    providerType: initialState.settings.todoProviderType,
+    modelVersion: initialState.settings.localTodoModelVersion,
+    runtimeStatus: initialState.settings.localTodoRuntimeStatus,
+    lastHealthCheckAt: initialState.settings.localTodoLastHealthCheckAt,
+    fallbackEnabled: initialState.settings.allowCloudFallback,
+    message:
+      initialState.settings.localTodoRuntimeStatus === "ready"
+        ? "本地 Todo 运行时已就绪"
+        : "本地 Todo 运行时未就绪",
+  });
   const [desktopContext, setDesktopContext] = useState<{
     runtime: string;
     platform: string;
@@ -71,6 +83,36 @@ function App() {
   useEffect(() => {
     let cancelled = false;
 
+    getLocalTodoRuntimeStatus()
+      .then((payload) => {
+        if (!cancelled && payload) {
+          setLocalRuntime(payload);
+          setSettings((current) => ({
+            ...current,
+            todoProviderType: payload.providerType === "embedded_local" ? "embedded_local" : current.todoProviderType,
+            localTodoModelVersion: payload.modelVersion,
+            localTodoRuntimeStatus: payload.runtimeStatus,
+            localTodoLastHealthCheckAt: payload.lastHealthCheckAt,
+          }));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setLocalRuntime((current) => ({
+            ...current,
+            message: "当前浏览器原型模式不支持本地运行时状态查询",
+          }));
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
     loadBootstrapData()
       .then((payload) => {
         if (!payload || cancelled) {
@@ -78,6 +120,17 @@ function App() {
         }
 
         setSettings(payload.settings);
+        setLocalRuntime({
+          providerType: payload.settings.todoProviderType,
+          modelVersion: payload.settings.localTodoModelVersion,
+          runtimeStatus: payload.settings.localTodoRuntimeStatus,
+          lastHealthCheckAt: payload.settings.localTodoLastHealthCheckAt,
+          fallbackEnabled: payload.settings.allowCloudFallback,
+          message:
+            payload.settings.localTodoRuntimeStatus === "ready"
+              ? "本地 Todo 运行时已就绪"
+              : "本地 Todo 运行时未就绪",
+        });
         setTodos(payload.todos);
         setSessions(payload.sessions);
         setRuntime(payload.runtime);
@@ -86,6 +139,14 @@ function App() {
       .catch(() => {
         if (!cancelled) {
           setSettings(fallbackState.settings);
+          setLocalRuntime({
+            providerType: fallbackState.settings.todoProviderType,
+            modelVersion: fallbackState.settings.localTodoModelVersion,
+            runtimeStatus: fallbackState.settings.localTodoRuntimeStatus,
+            lastHealthCheckAt: fallbackState.settings.localTodoLastHealthCheckAt,
+            fallbackEnabled: fallbackState.settings.allowCloudFallback,
+            message: "当前为浏览器原型，本地运行时状态使用默认值",
+          });
           setTodos(fallbackState.todos);
           setSessions(fallbackState.sessions);
           setRuntime(fallbackState.runtime);
@@ -110,6 +171,9 @@ function App() {
 
   const selectedTodo =
     todos.find((todo) => todo.id === selectedTodoId) ?? filteredTodos[0] ?? todos[0];
+  const selectedSession = sessions.find(
+    (session) => session.id === selectedTodo?.conversationSessionId,
+  );
 
   function handleSettingsChange<K extends keyof SettingsState>(
     key: K,
@@ -121,12 +185,29 @@ function App() {
     }));
   }
 
+  async function refreshLocalRuntime() {
+    const payload = await getLocalTodoRuntimeStatus().catch(() => null);
+    if (!payload) {
+      return;
+    }
+
+    setLocalRuntime(payload);
+    setSettings((current) => ({
+      ...current,
+      localTodoModelVersion: payload.modelVersion,
+      localTodoRuntimeStatus: payload.runtimeStatus,
+      localTodoLastHealthCheckAt: payload.lastHealthCheckAt,
+    }));
+  }
+
   async function saveSettings() {
     const persisted = await saveDesktopSettings(settings).catch(() => null);
 
     if (persisted) {
       setSettings(persisted);
     }
+
+    await refreshLocalRuntime();
 
     setSaveBanner("设置已保存，下一轮切片与提取将使用新配置。");
     window.setTimeout(() => setSaveBanner(""), 2400);
@@ -145,6 +226,9 @@ function App() {
 
     const label = provider === "asr" ? "ASR" : "Todo";
     const excerpt = result.responseExcerpt ? ` ${result.responseExcerpt}` : "";
+    if (provider === "todo") {
+      await refreshLocalRuntime();
+    }
     setSaveBanner(`${label} 测试结果：${result.message}${excerpt}`);
     window.setTimeout(() => setSaveBanner(""), 6000);
   }
@@ -389,6 +473,10 @@ function App() {
                   <span>数据存储</span>
                   <strong>{desktopContext?.storageStatus ?? "localStorage"}</strong>
                 </li>
+                <li>
+                  <span>本地提取</span>
+                  <strong>{localRuntime.runtimeStatus}</strong>
+                </li>
               </ul>
             </section>
           </aside>
@@ -492,6 +580,22 @@ function App() {
                 <div className="detail-block detail-runtime">
                   <label>桌面实现阶段</label>
                   <p>{desktopContext?.modelsStatus ?? "当前为前端原型阶段"}</p>
+                </div>
+                <div className="detail-block detail-runtime">
+                  <label>本地 Todo 运行时</label>
+                  <p>{localRuntime.message}</p>
+                </div>
+                <div className="detail-block detail-runtime">
+                  <label>提取路径</label>
+                  <p>
+                    {selectedSession?.extractionProviderUsed ?? "未知"}
+                    {" / "}
+                    {selectedSession?.extractionFallbackUsed ? "发生过云端回退" : "未发生云端回退"}
+                  </p>
+                </div>
+                <div className="detail-block detail-runtime">
+                  <label>回退原因</label>
+                  <p>{selectedSession?.extractionFallbackReason || "无"}</p>
                 </div>
               </>
             ) : (
@@ -632,7 +736,9 @@ function App() {
                   <h2>Extraction Provider</h2>
                 </div>
                 <div className="model-actions">
-                  <span className="pill">云端</span>
+                  <span className="pill">
+                    {settings.todoProviderType === "embedded_local" ? "内嵌本地" : "云端"}
+                  </span>
                   <button
                     className="secondary-button"
                     type="button"
@@ -645,6 +751,21 @@ function App() {
               </div>
 
               <div className="settings-grid">
+                <label className="field">
+                  <span>提取模式</span>
+                  <select
+                    value={settings.todoProviderType}
+                    onChange={(event) =>
+                      handleSettingsChange(
+                        "todoProviderType",
+                        event.target.value as SettingsState["todoProviderType"],
+                      )
+                    }
+                  >
+                    <option value="cloud">云端模型</option>
+                    <option value="embedded_local">内嵌本地</option>
+                  </select>
+                </label>
                 <label className="field">
                   <span>调用地址</span>
                   <input
@@ -671,6 +792,39 @@ function App() {
                     }
                   />
                 </label>
+                <label className="field">
+                  <span>内嵌模型版本</span>
+                  <input
+                    type="text"
+                    value={settings.localTodoModelVersion}
+                    onChange={(event) =>
+                      handleSettingsChange("localTodoModelVersion", event.target.value)
+                    }
+                  />
+                </label>
+                <label className="field checkbox-field">
+                  <span>允许失败后回退云端</span>
+                  <input
+                    type="checkbox"
+                    checked={settings.allowCloudFallback}
+                    onChange={(event) =>
+                      handleSettingsChange("allowCloudFallback", event.target.checked)
+                    }
+                  />
+                </label>
+                <label className="field">
+                  <span>运行时状态</span>
+                  <input type="text" value={settings.localTodoRuntimeStatus} readOnly />
+                </label>
+                <label className="field field-wide">
+                  <span>最近健康检查</span>
+                  <input type="text" value={settings.localTodoLastHealthCheckAt || "暂无"} readOnly />
+                </label>
+                <div className="runtime-hint">
+                  <p className="section-kicker">本地运行时</p>
+                  <p>{localRuntime.message}</p>
+                  <p>当前实现先内置本地提取 Provider 骨架，云端配置仍保留为兜底路径。</p>
+                </div>
               </div>
             </section>
           </section>
@@ -717,6 +871,9 @@ function App() {
                       {session.startedAt} - {session.endedAt}
                     </span>
                     <span>{session.triggerReason}</span>
+                    <span>{session.extractionProviderUsed}</span>
+                    <span>{session.extractionFallbackUsed ? "已回退云端" : "未回退"}</span>
+                    <span>{session.extractionFallbackReason || "无回退原因"}</span>
                   </div>
                 </article>
               ))}
