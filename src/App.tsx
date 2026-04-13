@@ -22,6 +22,18 @@ const statusLabelMap = {
   completed: "已完成",
 } as const;
 
+function getFallbackReasonText(session?: SessionItem) {
+  if (!session) {
+    return "无";
+  }
+
+  if (!session.extractionFallbackUsed) {
+    return "不适用";
+  }
+
+  return session.extractionFallbackReason || "未记录回退原因";
+}
+
 function App() {
   const manualFlushCooldownMs = 10_000;
   const initialState = useMemo(() => loadState(), []);
@@ -595,7 +607,7 @@ function App() {
                 </div>
                 <div className="detail-block detail-runtime">
                   <label>回退原因</label>
-                  <p>{selectedSession?.extractionFallbackReason || "无"}</p>
+                  <p>{getFallbackReasonText(selectedSession)}</p>
                 </div>
               </>
             ) : (
@@ -823,7 +835,7 @@ function App() {
                 <div className="runtime-hint">
                   <p className="section-kicker">本地运行时</p>
                   <p>{localRuntime.message}</p>
-                  <p>当前实现先内置本地提取 Provider 骨架，云端配置仍保留为兜底路径。</p>
+                  <p>当前实现使用 Qwen3-4B Q4_K_M 与 llama.cpp 子进程；缺少 llama-cli 或 GGUF 时会显示未就绪。</p>
                 </div>
               </div>
             </section>
@@ -873,7 +885,7 @@ function App() {
                     <span>{session.triggerReason}</span>
                     <span>{session.extractionProviderUsed}</span>
                     <span>{session.extractionFallbackUsed ? "已回退云端" : "未回退"}</span>
-                    <span>{session.extractionFallbackReason || "无回退原因"}</span>
+                    <span>{getFallbackReasonText(session)}</span>
                   </div>
                 </article>
               ))}

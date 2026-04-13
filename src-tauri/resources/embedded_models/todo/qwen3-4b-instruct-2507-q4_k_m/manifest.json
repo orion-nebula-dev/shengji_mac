@@ -1,0 +1,25 @@
+{
+  "model_version": "qwen3-4b-instruct-2507-q4_k_m",
+  "runtime_type": "embedded_subprocess",
+  "engine": "llama.cpp",
+  "description": "随应用分发的 Qwen3-4B-Instruct-2507 Q4_K_M Todo 本地运行时清单。",
+  "executable_rel_path": "bin/llama-cli",
+  "model_rel_path": "weights/qwen3-4b-instruct-2507-q4_k_m.gguf",
+  "prompt_template_rel_path": "prompt_template.txt",
+  "context_length": 4096,
+  "max_output_tokens": 160,
+  "temperature": 0.0,
+  "top_p": 1.0,
+  "repeat_penalty": 1.05,
+  "gpu_layers": 99,
+  "assets": [
+    {
+      "path": "prompt_template.txt",
+      "role": "prompt_template"
+    },
+    {
+      "path": "README.txt",
+      "role": "packaging_instructions"
+    }
+  ]
+}

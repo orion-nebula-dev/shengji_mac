@@ -183,6 +183,7 @@ struct LocalTodoRuntimeStatusDto {
 struct EmbeddedTodoRuntimeRequest {
     action: String,
     model_version: String,
+    runtime_dir: String,
     text: String,
 }
 
@@ -201,6 +202,39 @@ struct EmbeddedTodoRuntimeResponse {
     model_version: String,
     message: String,
     todos: Vec<EmbeddedTodoRuntimeTodo>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct EmbeddedTodoManifestAsset {
+    path: String,
+    role: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct EmbeddedTodoManifest {
+    model_version: String,
+    runtime_type: String,
+    engine: String,
+    description: String,
+    executable_rel_path: String,
+    model_rel_path: String,
+    prompt_template_rel_path: String,
+    context_length: u32,
+    max_output_tokens: u32,
+    temperature: f32,
+    top_p: f32,
+    repeat_penalty: f32,
+    gpu_layers: i32,
+    assets: Vec<EmbeddedTodoManifestAsset>,
+}
+
+#[derive(Debug)]
+struct EmbeddedTodoRuntimeConfig {
+    executable_path: PathBuf,
+    completion_executable_path: PathBuf,
+    model_path: PathBuf,
+    prompt_template_path: PathBuf,
+    manifest: EmbeddedTodoManifest,
 }
 
 struct EmbeddedAsset {
@@ -234,6 +268,15 @@ fn current_timestamp_label() -> String {
     millis.to_string()
 }
 
+fn normalize_local_todo_model_version(version: &str) -> String {
+    let trimmed = version.trim();
+    if trimmed.is_empty() || trimmed == "todo-embedded-v1" {
+        EMBEDDED_TODO_MODEL_VERSION.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 fn embedded_todo_model_dir(models_dir: &PathBuf, version: &str) -> PathBuf {
     models_dir.join("todo").join(version)
 }
@@ -249,12 +292,12 @@ fn embedded_todo_assets() -> [EmbeddedAsset; 3] {
             bytes: EMBEDDED_TODO_MANIFEST_BYTES,
         },
         EmbeddedAsset {
-            relative_path: "extractor_rules.txt",
-            bytes: EMBEDDED_TODO_RULES_BYTES,
+            relative_path: "prompt_template.txt",
+            bytes: EMBEDDED_TODO_PROMPT_TEMPLATE_BYTES,
         },
         EmbeddedAsset {
-            relative_path: "model.stub",
-            bytes: EMBEDDED_TODO_MODEL_STUB_BYTES,
+            relative_path: "README.txt",
+            bytes: EMBEDDED_TODO_README_BYTES,
         },
     ]
 }
@@ -285,6 +328,10 @@ fn ensure_embedded_todo_runtime_files(models_dir: &PathBuf) -> Result<(), String
         };
 
         if should_write {
+            if let Some(parent) = target_path.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|error| format!("创建本地模型子目录失败: {error}"))?;
+            }
             fs::write(&target_path, asset.bytes)
                 .map_err(|error| format!("释放本地模型文件失败: {error}"))?;
         }
@@ -300,7 +347,22 @@ fn ensure_embedded_todo_runtime_files(models_dir: &PathBuf) -> Result<(), String
         embedded_todo_checksums_path(models_dir, EMBEDDED_TODO_MODEL_VERSION),
         checksum_lines.join("\n"),
     )
-    .map_err(|error| format!("写入本地模型校验文件失败: {error}"))
+    .map_err(|error| format!("写入本地模型校验文件失败: {error}"))?;
+
+    let manifest = parse_embedded_todo_manifest_text(
+        std::str::from_utf8(EMBEDDED_TODO_MANIFEST_BYTES)
+            .map_err(|error| format!("解析内嵌模型清单文本失败: {error}"))?,
+    )?;
+    let executable_parent = model_dir.join(&manifest.executable_rel_path);
+    if let Some(parent) = executable_parent.parent() {
+        fs::create_dir_all(parent).map_err(|error| format!("创建 llama.cpp 目录失败: {error}"))?;
+    }
+    let model_parent = model_dir.join(&manifest.model_rel_path);
+    if let Some(parent) = model_parent.parent() {
+        fs::create_dir_all(parent).map_err(|error| format!("创建 GGUF 模型目录失败: {error}"))?;
+    }
+
+    Ok(())
 }
 
 fn verify_embedded_todo_runtime_files(
@@ -329,37 +391,224 @@ fn verify_embedded_todo_runtime_files(
     Ok(())
 }
 
-fn extract_embedded_local_todos(merged_text: &str) -> Vec<(String, String)> {
-    let normalized = merged_text.replace('\n', "。");
-    let action_keywords = [
-        "请", "需要", "记得", "安排", "确认", "发送", "补充", "跟进", "联系", "整理", "提交",
-        "修复", "查看", "处理", "完成", "同步", "推进", "准备", "更新",
-    ];
+fn parse_embedded_todo_manifest_text(input: &str) -> Result<EmbeddedTodoManifest, String> {
+    serde_json::from_str::<EmbeddedTodoManifest>(input)
+        .map_err(|error| format!("解析内嵌模型清单失败: {error}"))
+}
 
-    normalized
-        .split(['。', '！', '？', ';', '；'])
-        .map(str::trim)
-        .filter(|sentence| !sentence.is_empty())
-        .filter(|sentence| action_keywords.iter().any(|keyword| sentence.contains(keyword)))
-        .take(8)
-        .map(|sentence| {
-            let title = clip_text(sentence, 18);
-            (title, sentence.to_string())
+fn read_embedded_todo_manifest(
+    models_dir: &PathBuf,
+    version: &str,
+) -> Result<EmbeddedTodoManifest, String> {
+    let manifest_path = embedded_todo_manifest_path(models_dir, version);
+    let manifest_text = fs::read_to_string(&manifest_path)
+        .map_err(|error| format!("读取模型清单失败: {error}"))?;
+    parse_embedded_todo_manifest_text(&manifest_text)
+}
+
+fn resolve_runtime_override_path(env_name: &str) -> Option<PathBuf> {
+    std::env::var(env_name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+fn load_embedded_todo_runtime_config(
+    models_dir: &PathBuf,
+    version: &str,
+) -> Result<EmbeddedTodoRuntimeConfig, String> {
+    verify_embedded_todo_runtime_files(models_dir, version)?;
+    let runtime_dir = embedded_todo_model_dir(models_dir, version);
+    let manifest = read_embedded_todo_manifest(models_dir, version)?;
+    let executable_path = resolve_runtime_override_path("SMART_TODO_LLAMA_CLI_PATH")
+        .unwrap_or_else(|| runtime_dir.join(&manifest.executable_rel_path));
+    let completion_executable_path = executable_path
+        .parent()
+        .map(|parent| parent.join("llama-completion"))
+        .unwrap_or_else(|| PathBuf::from("llama-completion"));
+    let model_path = resolve_runtime_override_path("SMART_TODO_QWEN_GGUF_PATH")
+        .unwrap_or_else(|| runtime_dir.join(&manifest.model_rel_path));
+    let prompt_template_path = runtime_dir.join(&manifest.prompt_template_rel_path);
+
+    if !prompt_template_path.exists() {
+        return Err(format!(
+            "缺少 Prompt 模板文件: {}",
+            prompt_template_path.display()
+        ));
+    }
+    if !executable_path.exists() {
+        return Err(format!(
+            "未找到 llama.cpp 可执行文件，请放入 {} 或设置 SMART_TODO_LLAMA_CLI_PATH",
+            executable_path.display()
+        ));
+    }
+    if !completion_executable_path.exists() {
+        return Err(format!(
+            "未找到 llama-completion 可执行文件，请放入 {}",
+            completion_executable_path.display()
+        ));
+    }
+    if !model_path.exists() {
+        return Err(format!(
+            "未找到 Qwen GGUF 模型文件，请放入 {} 或设置 SMART_TODO_QWEN_GGUF_PATH",
+            model_path.display()
+        ));
+    }
+
+    Ok(EmbeddedTodoRuntimeConfig {
+        executable_path,
+        completion_executable_path,
+        model_path,
+        prompt_template_path,
+        manifest,
+    })
+}
+
+fn build_embedded_todo_prompt(template: &str, merged_text: &str) -> String {
+    template.replace("{{input_text}}", merged_text.trim())
+}
+
+fn run_command_with_timeout(
+    mut command: Command,
+    timeout_seconds: u64,
+) -> Result<std::process::Output, String> {
+    let child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("启动外部命令失败: {error}"))?;
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let output = child.wait_with_output();
+        let _ = tx.send(output);
+    });
+
+    match rx.recv_timeout(Duration::from_secs(timeout_seconds)) {
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(error)) => Err(format!("等待外部命令失败: {error}")),
+        Err(_) => Err(format!("外部命令执行超时（{} 秒）", timeout_seconds)),
+    }
+}
+
+fn health_check_llama_cli(config: &EmbeddedTodoRuntimeConfig) -> Result<String, String> {
+    let mut command = Command::new(&config.executable_path);
+    command.arg("--version");
+    let output = run_command_with_timeout(command, LLAMA_CLI_HEALTH_CHECK_TIMEOUT_SECONDS)?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!(
+            "llama.cpp 健康检查失败: {}",
+            if stderr.is_empty() {
+                "未知错误".to_string()
+            } else {
+                stderr
+            }
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(if stdout.is_empty() {
+        "llama.cpp 可执行文件已就绪".to_string()
+    } else {
+        clip_text(&stdout, 120)
+    })
+}
+
+fn parse_runtime_todos(output_text: &str) -> Result<Vec<EmbeddedTodoRuntimeTodo>, String> {
+    let items = extract_json_array(output_text)?;
+    let todos = items
+        .into_iter()
+        .filter_map(|item| {
+            let title = item.get("title")?.as_str()?.trim().to_string();
+            let note = item
+                .get("note")
+                .and_then(|entry| entry.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if title.is_empty() {
+                return None;
+            }
+            Some(EmbeddedTodoRuntimeTodo {
+                title: clip_text(&title, 18),
+                note,
+            })
         })
-        .collect()
+        .collect::<Vec<_>>();
+
+    Ok(todos)
+}
+
+fn invoke_llama_cli_todo_extraction(
+    config: &EmbeddedTodoRuntimeConfig,
+    merged_text: &str,
+) -> Result<Vec<EmbeddedTodoRuntimeTodo>, String> {
+    let prompt_template = fs::read_to_string(&config.prompt_template_path)
+        .map_err(|error| format!("读取 Prompt 模板失败: {error}"))?;
+    let prompt = build_embedded_todo_prompt(&prompt_template, merged_text);
+
+    let mut command = Command::new(&config.completion_executable_path);
+    command
+        .arg("-m")
+        .arg(&config.model_path)
+        .arg("-c")
+        .arg(config.manifest.context_length.to_string())
+        .arg("-n")
+        .arg(config.manifest.max_output_tokens.to_string())
+        .arg("--temp")
+        .arg(config.manifest.temperature.to_string())
+        .arg("--top-p")
+        .arg(config.manifest.top_p.to_string())
+        .arg("--repeat-penalty")
+        .arg(config.manifest.repeat_penalty.to_string())
+        .arg("--no-conversation")
+        .arg("--no-warmup")
+        .arg("--reasoning")
+        .arg("off")
+        .arg("--simple-io")
+        .arg("-p")
+        .arg(prompt);
+
+    if config.manifest.gpu_layers >= 0 {
+        command.arg("-ngl").arg(config.manifest.gpu_layers.to_string());
+    }
+
+    let output = run_command_with_timeout(command, LLAMA_CLI_GENERATION_TIMEOUT_SECONDS)?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!(
+            "llama.cpp 推理失败: {}",
+            if stderr.is_empty() {
+                "未知错误".to_string()
+            } else {
+                clip_text(&stderr, 300)
+            }
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stdout.is_empty() {
+        return Err("llama.cpp 未返回任何文本输出".to_string());
+    }
+
+    parse_runtime_todos(&stdout)
 }
 
 const HTTP_REQUEST_TIMEOUT_SECONDS: u64 = 30;
 const HTTP_MAX_RETRY_ATTEMPTS: usize = 3;
 const MANUAL_FLUSH_COOLDOWN_SECONDS: i64 = 10;
-const EMBEDDED_TODO_MODEL_VERSION: &str = "todo-embedded-v1";
-const EMBEDDED_TODO_RUNTIME_TIMEOUT_SECONDS: u64 = 10;
+const EMBEDDED_TODO_MODEL_VERSION: &str = "qwen3-4b-instruct-2507-q4_k_m";
+const EMBEDDED_TODO_RUNTIME_TIMEOUT_SECONDS: u64 = 60;
+const LLAMA_CLI_HEALTH_CHECK_TIMEOUT_SECONDS: u64 = 60;
+const LLAMA_CLI_GENERATION_TIMEOUT_SECONDS: u64 = 300;
 const EMBEDDED_TODO_MANIFEST_BYTES: &[u8] =
-    include_bytes!("../resources/embedded_models/todo/todo-embedded-v1/manifest.json");
-const EMBEDDED_TODO_RULES_BYTES: &[u8] =
-    include_bytes!("../resources/embedded_models/todo/todo-embedded-v1/extractor_rules.txt");
-const EMBEDDED_TODO_MODEL_STUB_BYTES: &[u8] =
-    include_bytes!("../resources/embedded_models/todo/todo-embedded-v1/model.stub");
+    include_bytes!("../resources/embedded_models/todo/qwen3-4b-instruct-2507-q4_k_m/manifest.json");
+const EMBEDDED_TODO_PROMPT_TEMPLATE_BYTES: &[u8] = include_bytes!(
+    "../resources/embedded_models/todo/qwen3-4b-instruct-2507-q4_k_m/prompt_template.txt"
+);
+const EMBEDDED_TODO_README_BYTES: &[u8] =
+    include_bytes!("../resources/embedded_models/todo/qwen3-4b-instruct-2507-q4_k_m/README.txt");
 
 fn build_http_client() -> Result<Client, String> {
     Client::builder()
@@ -504,7 +753,7 @@ fn ensure_app_settings_columns(connection: &Connection) -> Result<(), String> {
                 ELSE todo_provider_type
               END,
               local_todo_model_version = CASE
-                WHEN TRIM(local_todo_model_version) = '' THEN ?
+                WHEN TRIM(local_todo_model_version) = '' OR local_todo_model_version = 'todo-embedded-v1' THEN ?
                 ELSE local_todo_model_version
               END,
               allow_cloud_fallback = CASE
@@ -896,6 +1145,9 @@ fn query_settings(connection: &Connection) -> Result<SettingsDto, String> {
       "#,
             [],
             |row| {
+                let local_todo_model_version = normalize_local_todo_model_version(
+                    row.get::<_, String>(15)?.as_str(),
+                );
                 Ok(SettingsDto {
                     record_enabled: row.get::<_, i64>(0)? == 1,
                     language: row.get(1)?,
@@ -912,7 +1164,7 @@ fn query_settings(connection: &Connection) -> Result<SettingsDto, String> {
                     todo_base_url: row.get(12)?,
                     todo_model_name: row.get(13)?,
                     todo_api_key_masked: row.get(14)?,
-                    local_todo_model_version: row.get(15)?,
+                    local_todo_model_version,
                     allow_cloud_fallback: row.get::<_, i64>(16)? == 1,
                     local_todo_runtime_status: row.get(17)?,
                     local_todo_last_health_check_at: row.get(18)?,
@@ -1007,34 +1259,65 @@ pub fn run_embedded_todo_runtime_once() -> Result<(), String> {
 
     let request: EmbeddedTodoRuntimeRequest =
         serde_json::from_str(&input).map_err(|error| format!("解析本地运行时请求失败: {error}"))?;
-
-    let response = if request.action == "health_check" {
-        EmbeddedTodoRuntimeResponse {
-            success: true,
-            runtime_status: "ready".into(),
-            model_version: request.model_version,
-            message: "本地 Todo 子进程运行正常".into(),
-            todos: Vec::new(),
-        }
-    } else if request.action == "extract_todos" {
-        let todos = extract_embedded_local_todos(&request.text)
-            .into_iter()
-            .map(|(title, note)| EmbeddedTodoRuntimeTodo { title, note })
-            .collect::<Vec<_>>();
-
-        EmbeddedTodoRuntimeResponse {
-            success: true,
-            runtime_status: "ready".into(),
-            model_version: request.model_version,
-            message: if todos.is_empty() {
-                "本地 Todo 子进程未识别到明确待办".into()
-            } else {
-                format!("本地 Todo 子进程识别出 {} 条待办", todos.len())
+    let runtime_dir = PathBuf::from(request.runtime_dir.as_str());
+    let response = match request.action.as_str() {
+        "health_check" => match load_embedded_todo_runtime_config(&runtime_dir, &request.model_version)
+        {
+            Ok(config) => match health_check_llama_cli(&config) {
+                Ok(message) => EmbeddedTodoRuntimeResponse {
+                    success: true,
+                    runtime_status: "ready".into(),
+                    model_version: request.model_version,
+                    message,
+                    todos: Vec::new(),
+                },
+                Err(error) => EmbeddedTodoRuntimeResponse {
+                    success: false,
+                    runtime_status: "failed".into(),
+                    model_version: request.model_version,
+                    message: error,
+                    todos: Vec::new(),
+                },
             },
-            todos,
-        }
-    } else {
-        return Err(format!("不支持的本地运行时动作: {}", request.action));
+            Err(error) => EmbeddedTodoRuntimeResponse {
+                success: false,
+                runtime_status: "not_ready".into(),
+                model_version: request.model_version,
+                message: error,
+                todos: Vec::new(),
+            },
+        },
+        "extract_todos" => match load_embedded_todo_runtime_config(&runtime_dir, &request.model_version)
+        {
+            Ok(config) => match invoke_llama_cli_todo_extraction(&config, &request.text) {
+                Ok(todos) => EmbeddedTodoRuntimeResponse {
+                    success: true,
+                    runtime_status: "ready".into(),
+                    model_version: request.model_version,
+                    message: if todos.is_empty() {
+                        "Qwen3-4B Q4_K_M 未识别到明确待办".into()
+                    } else {
+                        format!("Qwen3-4B Q4_K_M 识别出 {} 条待办", todos.len())
+                    },
+                    todos,
+                },
+                Err(error) => EmbeddedTodoRuntimeResponse {
+                    success: false,
+                    runtime_status: "failed".into(),
+                    model_version: request.model_version,
+                    message: error,
+                    todos: Vec::new(),
+                },
+            },
+            Err(error) => EmbeddedTodoRuntimeResponse {
+                success: false,
+                runtime_status: "not_ready".into(),
+                model_version: request.model_version,
+                message: error,
+                todos: Vec::new(),
+            },
+        },
+        _ => return Err(format!("不支持的本地运行时动作: {}", request.action)),
     };
 
     let stdout = serde_json::to_string(&response)
@@ -1048,25 +1331,19 @@ fn query_local_todo_runtime_status(
     models_dir: &PathBuf,
 ) -> Result<LocalTodoRuntimeStatusDto, String> {
     let settings = query_settings(connection)?;
-    let version = if settings.local_todo_model_version.trim().is_empty() {
-        EMBEDDED_TODO_MODEL_VERSION.to_string()
-    } else {
-        settings.local_todo_model_version.clone()
-    };
+    let version = normalize_local_todo_model_version(&settings.local_todo_model_version);
     let manifest_path = embedded_todo_manifest_path(models_dir, &version);
 
     let (runtime_status, message) = if manifest_path.exists() {
         match verify_embedded_todo_runtime_files(models_dir, &version) {
             Ok(()) => match spawn_embedded_runtime_request(&EmbeddedTodoRuntimeRequest {
-            action: "health_check".into(),
-            model_version: version.clone(),
-            text: String::new(),
-        }) {
-                Ok(response) if response.success => (
-                    "ready".to_string(),
-                    format!("本地 Todo 子进程运行正常：{}", response.model_version),
-                ),
-                Ok(response) => ("failed".to_string(), response.message),
+                action: "health_check".into(),
+                model_version: version.clone(),
+                runtime_dir: models_dir.to_string_lossy().to_string(),
+                text: String::new(),
+            }) {
+                Ok(response) if response.success => ("ready".to_string(), response.message),
+                Ok(response) => (response.runtime_status, response.message),
                 Err(error) => ("failed".to_string(), error),
             },
             Err(error) => ("failed".to_string(), error),
@@ -1090,7 +1367,7 @@ fn query_local_todo_runtime_status(
         },
         runtime_status,
         last_health_check_at: refreshed.local_todo_last_health_check_at,
-        fallback_enabled: true,
+        fallback_enabled: refreshed.allow_cloud_fallback,
         message,
     })
 }
@@ -1717,7 +1994,7 @@ fn test_todo_embedded_provider(
         message: if success {
             format!(
                 "本地 Todo 运行时测试成功，当前版本 {}",
-                settings.local_todo_model_version
+                normalize_local_todo_model_version(&settings.local_todo_model_version)
             )
         } else {
             runtime.message
@@ -1749,10 +2026,19 @@ fn extract_json_array(input: &str) -> Result<Vec<serde_json::Value>, String> {
         return Ok(value);
     }
 
-    if let (Some(start), Some(end)) = (input.find('['), input.rfind(']')) {
-        let candidate = &input[start..=end];
-        if let Ok(value) = serde_json::from_str::<Vec<serde_json::Value>>(candidate) {
-            return Ok(value);
+    let starts = input.match_indices('[').map(|(idx, _)| idx).collect::<Vec<_>>();
+    let ends = input.match_indices(']').map(|(idx, _)| idx).collect::<Vec<_>>();
+
+    for start in starts.iter().rev() {
+        for end in ends.iter().rev() {
+            if end < start {
+                continue;
+            }
+
+            let candidate = &input[*start..=*end];
+            if let Ok(value) = serde_json::from_str::<Vec<serde_json::Value>>(candidate) {
+                return Ok(value);
+            }
         }
     }
 
@@ -1963,11 +2249,13 @@ fn request_cloud_todo_extraction(
 
 fn request_embedded_todo_extraction(
     settings: &SettingsDto,
+    models_dir: &PathBuf,
     merged_text: &str,
 ) -> Result<Vec<serde_json::Value>, String> {
     let response = spawn_embedded_runtime_request(&EmbeddedTodoRuntimeRequest {
         action: "extract_todos".into(),
-        model_version: settings.local_todo_model_version.clone(),
+        model_version: normalize_local_todo_model_version(&settings.local_todo_model_version),
+        runtime_dir: models_dir.to_string_lossy().to_string(),
         text: merged_text.to_string(),
     })?;
 
@@ -1990,6 +2278,7 @@ fn request_embedded_todo_extraction(
 fn generate_todos_for_session(
     connection: &Connection,
     settings: &SettingsDto,
+    models_dir: &PathBuf,
     session_id: &str,
 ) -> Result<usize, String> {
     let (merged_text, trigger_reason, transcript_count): (String, String, i64) = connection
@@ -2016,11 +2305,11 @@ fn generate_todos_for_session(
 
     let (todos, extraction_model_name, extraction_provider_used, extraction_fallback_used, extraction_fallback_reason) =
         if settings.todo_provider_type == "embedded_local" {
-        match request_embedded_todo_extraction(settings, &merged_text) {
+        match request_embedded_todo_extraction(settings, models_dir, &merged_text) {
             Ok(local_items) if !local_items.is_empty() => {
                 (
                     local_items,
-                    settings.local_todo_model_version.clone(),
+                    normalize_local_todo_model_version(&settings.local_todo_model_version),
                     "embedded_local".to_string(),
                     false,
                     "".to_string(),
@@ -2034,7 +2323,7 @@ fn generate_todos_for_session(
                 {
                     (
                         local_items,
-                        settings.local_todo_model_version.clone(),
+                        normalize_local_todo_model_version(&settings.local_todo_model_version),
                         "embedded_local".to_string(),
                         false,
                         "".to_string(),
@@ -2149,7 +2438,7 @@ fn generate_todos_for_session(
     Ok(inserted)
 }
 
-fn process_pending_jobs_internal(connection: &Connection) -> Result<String, String> {
+fn process_pending_jobs_internal(connection: &Connection, models_dir: &PathBuf) -> Result<String, String> {
     let settings = query_settings(connection)?;
     let mut summary = Vec::new();
 
@@ -2289,7 +2578,7 @@ fn process_pending_jobs_internal(connection: &Connection) -> Result<String, Stri
             job.map_err(|error| format!("读取 Todo 提取任务失败: {error}"))?;
         update_processing_job(connection, &job_id, "running", None)?;
 
-        match generate_todos_for_session(connection, &settings, &session_id) {
+        match generate_todos_for_session(connection, &settings, models_dir, &session_id) {
             Ok(count) => {
                 update_processing_job(connection, &job_id, "success", None)?;
                 summary.push(format!("已从会话 {session_id} 生成 {count} 条 Todo"));
@@ -2321,9 +2610,14 @@ fn process_pending_jobs_internal(connection: &Connection) -> Result<String, Stri
 
 pub fn process_pending_jobs_once_for_cli(db_path: &str) -> Result<String, String> {
     let db_path = PathBuf::from(db_path);
+    let models_dir = db_path
+        .parent()
+        .map(|parent| parent.join("models"))
+        .unwrap_or_else(|| PathBuf::from("models"));
     initialize_database(&db_path)?;
+    ensure_embedded_todo_runtime_files(&models_dir)?;
     let connection = open_connection(&db_path)?;
-    process_pending_jobs_internal(&connection)
+    process_pending_jobs_internal(&connection, &models_dir)
 }
 
 fn test_asr_provider(settings: &SettingsDto) -> Result<ModelTestResult, String> {
@@ -2637,7 +2931,7 @@ fn flush_current_session(state: tauri::State<'_, AppState>) -> Result<SessionDto
     )
     .map_err(|error| format!("写入手动会话失败: {error}"))?;
     insert_processing_job(&connection, "todo_extraction", &session_id, &trace_id)?;
-    let _ = process_pending_jobs_internal(&connection)?;
+    let _ = process_pending_jobs_internal(&connection, &state.models_dir)?;
 
     latest_session(&connection)?.ok_or_else(|| "未找到刚创建的会话".to_string())
 }
@@ -2647,7 +2941,7 @@ fn process_pending_jobs(
     state: tauri::State<'_, AppState>,
 ) -> Result<ProcessingActionResult, String> {
     let connection = open_connection(&state.db_path)?;
-    let message = process_pending_jobs_internal(&connection)?;
+    let message = process_pending_jobs_internal(&connection, &state.models_dir)?;
     Ok(ProcessingActionResult {
         message,
         runtime: query_runtime_status(&connection)?,
@@ -2723,7 +3017,7 @@ fn stop_recording(state: tauri::State<'_, AppState>) -> Result<RecordingActionRe
         &result.trace_id,
     )?;
     set_record_enabled(&connection, false)?;
-    let processing_summary = process_pending_jobs_internal(&connection)?;
+    let processing_summary = process_pending_jobs_internal(&connection, &state.models_dir)?;
 
     Ok(RecordingActionResult {
         message: format!(
@@ -2803,7 +3097,7 @@ fn simulate_audio_slice(
     } else {
         maybe_create_idle_session(&connection)?
     };
-    let processing_summary = process_pending_jobs_internal(&connection)?;
+    let processing_summary = process_pending_jobs_internal(&connection, &state.models_dir)?;
 
     Ok(RecordingActionResult {
         message: if has_effective_voice {
@@ -2863,4 +3157,64 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_build_embedded_prompt_with_input_text() {
+        let template = "前文\n{{input_text}}\n后文";
+        let prompt = build_embedded_todo_prompt(template, "  今天联系客户并发送报价  ");
+        assert!(prompt.contains("今天联系客户并发送报价"));
+        assert!(!prompt.contains("{{input_text}}"));
+    }
+
+    #[test]
+    fn should_parse_runtime_todos_from_wrapped_json_output() {
+        let output = "思考略\n[{\"title\":\"联系客户发送报价并确认税率\",\"note\":\"今天下午联系客户并发送报价，确认税率口径。\"}]";
+        let todos = parse_runtime_todos(output).expect("应能解析 JSON 数组");
+        assert_eq!(todos.len(), 1);
+        assert_eq!(todos[0].title, "联系客户发送报价并确认税率");
+        assert!(todos[0].note.contains("确认税率"));
+    }
+
+    #[test]
+    fn should_extract_last_valid_json_array_from_prompt_echo_output() {
+        let output = "示例输出：\n[{\"title\":\"示例任务\",\"note\":\"示例说明\"}]\n待处理文稿：\n今天下班前把合同发给小李。\n\n[{\"title\":\"给小李发送合同\",\"note\":\"今天下班前把合同发给小李。\"}] [end of text]";
+        let todos = parse_runtime_todos(output).expect("应能从回显提示词中提取最后一个 JSON 数组");
+        assert_eq!(todos.len(), 1);
+        assert_eq!(todos[0].title, "给小李发送合同");
+        assert_eq!(todos[0].note, "今天下班前把合同发给小李。");
+    }
+
+    #[test]
+    fn should_parse_embedded_manifest_text() {
+        let manifest = parse_embedded_todo_manifest_text(
+            std::str::from_utf8(EMBEDDED_TODO_MANIFEST_BYTES).expect("内嵌清单应为 UTF-8"),
+        )
+        .expect("应能解析内嵌清单");
+        assert_eq!(manifest.model_version, EMBEDDED_TODO_MODEL_VERSION);
+        assert_eq!(manifest.engine, "llama.cpp");
+        assert_eq!(manifest.prompt_template_rel_path, "prompt_template.txt");
+    }
+
+    #[test]
+    fn should_report_not_ready_when_llama_cli_or_gguf_missing() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-runtime-test-{}",
+            current_timestamp_label()
+        ));
+        ensure_embedded_todo_runtime_files(&temp_dir).expect("应能释放内嵌模型清单");
+
+        let error = load_embedded_todo_runtime_config(&temp_dir, EMBEDDED_TODO_MODEL_VERSION)
+            .expect_err("缺少 llama-cli 和 GGUF 时不应进入 ready");
+        assert!(
+            error.contains("llama.cpp") || error.contains("GGUF"),
+            "错误信息应明确指出缺失的运行时资源，实际为: {error}"
+        );
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
 }
