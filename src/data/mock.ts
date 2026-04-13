@@ -16,7 +16,7 @@ export const defaultSettings: SettingsState = {
   todoBaseUrl: "https://api.example.com/todo",
   todoModelName: "todo-model-v1",
   todoApiKeyMasked: "sk-todo-****",
-  localTodoModelVersion: "todo-embedded-v1",
+  localTodoModelVersion: "qwen3-4b-instruct-2507-q4_k_m",
   allowCloudFallback: true,
   localTodoRuntimeStatus: "not_ready",
   localTodoLastHealthCheckAt: "",
