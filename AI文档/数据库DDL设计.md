@@ -119,6 +119,7 @@ INSERT OR IGNORE INTO app_settings (
 1. `provider_mode` 作为兼容字段保留，长期建议逐步由 `asr_provider_type`、`todo_provider_type` 取代。
 2. 第一阶段仅允许 `todo_provider_type` 切换到 `embedded_local`。
 3. 本地模型运行状态与健康检查时间需持久化，便于 UI 展示与排障。
+4. 首版默认内嵌模型版本建议固定为 `qwen3-4b-instruct-2507-q4_k_m`。
 
 ### 4.3 `audio_segments`
 

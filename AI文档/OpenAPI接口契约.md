@@ -76,7 +76,7 @@
   "todo_base_url": "https://api.example.com/todo",
   "todo_model_name": "todo-model-v1",
   "todo_api_key_masked": "sk-****",
-  "local_todo_model_version": "todo-embedded-v1",
+  "local_todo_model_version": "qwen3-4b-instruct-2507-q4_k_m",
   "allow_cloud_fallback": true,
   "local_todo_runtime_status": "ready",
   "local_todo_last_health_check_at": "2026-04-12T10:00:00+08:00",
@@ -104,7 +104,7 @@
   "todo_base_url": "https://api.example.com/todo",
   "todo_model_name": "todo-model-v1",
   "todo_api_key": "sk-yyy",
-  "local_todo_model_version": "todo-embedded-v1",
+  "local_todo_model_version": "qwen3-4b-instruct-2507-q4_k_m",
   "allow_cloud_fallback": true
 }
 ```
@@ -212,7 +212,7 @@
       "todo_base_url": "https://api.example.com/todo",
       "todo_model_name": "todo-model-v1",
       "todo_api_key_masked": "sk-****",
-      "local_todo_model_version": "todo-embedded-v1",
+      "local_todo_model_version": "qwen3-4b-instruct-2507-q4_k_m",
       "allow_cloud_fallback": true,
       "local_todo_runtime_status": "ready",
       "local_todo_last_health_check_at": "2026-04-12T10:00:00+08:00"
@@ -347,7 +347,7 @@
   "message": "ok",
   "data": {
     "provider_type": "embedded_local",
-    "model_version": "todo-embedded-v1",
+    "model_version": "qwen3-4b-instruct-2507-q4_k_m",
     "runtime_status": "ready",
     "last_health_check_at": "2026-04-12T10:20:00+08:00",
     "fallback_enabled": true
