@@ -112,9 +112,42 @@ git checkout -b codex/feature-name
 
 1. 自测通过
 2. 确认工作区干净
-3. 合并到 `main`
-4. 发布版本时打 tag
-5. 删除已合并临时分支
+3. 发起合版本流程
+4. 合并到 `main`
+5. 发布版本时打 tag
+6. 删除已合并临时分支
+
+### 4.4 合版本流程
+
+每个版本都应在独立分支开发，完成后必须执行合版本操作。合版本不是简单 push 分支，而是把版本分支验收后合并回 `main`，并在 `main` 上形成可追踪的发布点。
+
+推荐流程：
+
+```bash
+git checkout main
+git pull origin main
+git merge --no-ff codex/shengji-vX.Y.Z-主题
+npm run build
+cargo check --manifest-path src-tauri/Cargo.toml
+git tag -a vX.Y.Z -m "Release vX.Y.Z"
+git push origin main
+git push origin vX.Y.Z
+```
+
+合版本前必须确认：
+
+1. 版本分支已完成目标功能和文档更新。
+2. 版本分支已通过最小验证。
+3. `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 版本号一致。
+4. `AI文档/04-发布记录/发布说明_vX.Y.Z.md` 已补齐。
+5. `AI文档/版本归档/vX.Y.Z/验收记录.md` 已写入验证结果。
+
+合版本后必须确认：
+
+1. `main` 构建仍通过。
+2. tag 打在 `main` 的发布合并提交上。
+3. GitHub Release 与 tag 版本一致。
+4. 已合并的临时分支可以删除。
 
 ## 5. 提交规范
 
@@ -166,6 +199,7 @@ git checkout -b codex/feature-name
 
 ```bash
 git checkout main
+git pull origin main
 git merge --no-ff <branch>
 ```
 
@@ -174,6 +208,7 @@ git merge --no-ff <branch>
 - 保留分支合并痕迹，方便回溯
 - 合并前确认目标分支已经自测通过
 - 合并后再次确认版本号和关键文档
+- 正式版本必须在 `main` 合并提交上打 tag，不能在临时开发分支上打正式 tag
 
 ### 6.2 何时可用 cherry-pick
 
