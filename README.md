@@ -117,14 +117,22 @@ SQLite 数据库：
 
 ## 文档目录
 
-详细文档见 [AI文档](</Users/wwh/Documents/AItools/项目文件夹/录音app_MAC/V3/AI文档>)：
+详细文档见 [AI文档索引](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/README.md>)：
 
-1. `智能Todo_PRD.md`
-2. `技术设计文档.md`
-3. `OpenAPI接口契约.md`
-4. `数据库DDL设计.md`
-5. `开发规范.md`
-6. `UI规范.md`
+1. [工作区目录规范](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/00-项目总览/工作区目录规范.md>)
+2. [声记-版本迭代与项目架构方案](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/02-技术方案/声记-版本迭代与项目架构方案.md>)
+3. [声记-版本迭代目标与代码归档方案](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/03-版本迭代/声记-版本迭代目标与代码归档方案.md>)
+4. [MiniMax-能力验证说明](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/06-验证报告/能力验证/MiniMax-能力验证说明.md>)
+5. [开发规范](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/05-规范制度/开发规范.md>)
+6. [Git规范](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/05-规范制度/Git规范.md>)
+7. [发布说明_v0.2.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v0.2.0.md>)
+8. [发布说明_v0.3.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v0.3.0.md>)
+
+过时的一期文档、旧 v2.0 PRD 和旧设计包已归档到：
+
+```text
+AI文档/废纸篓/2026-06-12-旧方案归档/
+```
 
 ## 当前边界
 
