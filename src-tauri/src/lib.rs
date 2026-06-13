@@ -19,6 +19,7 @@ mod jobs;
 mod providers;
 
 use app::settings_service;
+use domain::runtime::RuntimeStatusDto;
 use domain::session::SessionDto;
 use domain::todo::TodoDto;
 use infra::sqlite::{initialize_database, open_connection};
@@ -92,16 +93,6 @@ pub(crate) struct SettingsDto {
     semantic_model_name: String,
     semantic_api_key_masked: String,
     allow_cloud_fallback: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct RuntimeStatusDto {
-    runtime_label: String,
-    current_session_status: String,
-    last_slice_at: String,
-    last_extraction_at: String,
-    last_extraction_summary: String,
 }
 
 #[derive(Serialize)]
@@ -2534,6 +2525,23 @@ mod tests {
         assert_eq!(payload["id"], "session_domain_contract");
         assert_eq!(payload["relatedTodoIds"][0], "todo_domain_contract");
         assert!(payload.get("related_todo_ids").is_none());
+    }
+
+    #[test]
+    fn should_expose_runtime_domain_dto_contract() {
+        let runtime = domain::runtime::RuntimeStatusDto {
+            runtime_label: "Tauri + SQLite".into(),
+            current_session_status: "collecting".into(),
+            last_slice_at: "2026-06-14 10:00:00".into(),
+            last_extraction_at: "2026-06-14 10:01:00".into(),
+            last_extraction_summary: "最近一次提取成功".into(),
+        };
+
+        let payload = serde_json::to_value(&runtime).expect("Runtime domain DTO 应可序列化");
+
+        assert_eq!(payload["runtimeLabel"], "Tauri + SQLite");
+        assert_eq!(payload["currentSessionStatus"], "collecting");
+        assert!(payload.get("runtime_label").is_none());
     }
 
     fn table_columns(connection: &Connection, table_name: &str) -> Vec<String> {
