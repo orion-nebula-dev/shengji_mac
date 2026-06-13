@@ -4,8 +4,9 @@ use rusqlite::params;
 
 use crate::{
     app::settings_service, current_timestamp_label, infra::sqlite::open_connection,
-    insert_processing_job, maybe_create_idle_session, process_pending_jobs_internal,
-    query_runtime_status, AppState, RecordingActionResult,
+    insert_audio_segment, insert_processing_job, latest_session, maybe_create_idle_session,
+    process_pending_jobs_internal, query_runtime_status, AppState, RecorderControl,
+    RecordingActionResult,
 };
 
 pub(crate) fn simulate_audio_slice_payload(
@@ -87,10 +88,68 @@ pub(crate) fn simulate_audio_slice_payload(
     })
 }
 
+pub(crate) fn stop_recording_payload(state: &AppState) -> Result<RecordingActionResult, String> {
+    let controller = state
+        .recorder
+        .lock()
+        .map_err(|_| "录音状态锁定失败".to_string())?
+        .take();
+
+    let Some(controller) = controller else {
+        let connection = open_connection(&state.db_path)?;
+        return Ok(RecordingActionResult {
+            message: "当前没有进行中的录音".into(),
+            runtime: query_runtime_status(&connection)?,
+            latest_session: latest_session(&connection)?,
+        });
+    };
+
+    controller
+        .stop_tx
+        .send(RecorderControl::Stop)
+        .map_err(|error| format!("发送停止录音指令失败: {error}"))?;
+    let result = controller
+        .join_handle
+        .join()
+        .map_err(|_| "录音线程异常退出".to_string())??;
+
+    let connection = open_connection(&state.db_path)?;
+    insert_audio_segment(
+        &connection,
+        &result.file_path,
+        &result.started_at_label,
+        result.duration_ms,
+        result.sample_rate,
+        result.channels,
+        result.summary.total_energy,
+        result.summary.sample_count,
+        &result.trace_id,
+    )?;
+    settings_service::set_record_enabled(&connection, false)?;
+    let processing_summary = process_pending_jobs_internal(&connection)?;
+
+    Ok(RecordingActionResult {
+        message: format!(
+            "录音已停止，已保存本地 WAV 文件：{}。{}",
+            result.file_path.to_string_lossy(),
+            processing_summary
+        ),
+        runtime: query_runtime_status(&connection)?,
+        latest_session: latest_session(&connection)?,
+    })
+}
+
 #[tauri::command]
 pub(crate) fn simulate_audio_slice(
     has_effective_voice: bool,
     state: tauri::State<'_, AppState>,
 ) -> Result<RecordingActionResult, String> {
     simulate_audio_slice_payload(&state.db_path, has_effective_voice)
+}
+
+#[tauri::command]
+pub(crate) fn stop_recording(
+    state: tauri::State<'_, AppState>,
+) -> Result<RecordingActionResult, String> {
+    stop_recording_payload(&state)
 }

@@ -1289,58 +1289,6 @@ fn start_recording(state: tauri::State<'_, AppState>) -> Result<RecordingActionR
     })
 }
 
-#[tauri::command]
-fn stop_recording(state: tauri::State<'_, AppState>) -> Result<RecordingActionResult, String> {
-    let controller = state
-        .recorder
-        .lock()
-        .map_err(|_| "录音状态锁定失败".to_string())?
-        .take();
-
-    let Some(controller) = controller else {
-        let connection = open_connection(&state.db_path)?;
-        return Ok(RecordingActionResult {
-            message: "当前没有进行中的录音".into(),
-            runtime: query_runtime_status(&connection)?,
-            latest_session: latest_session(&connection)?,
-        });
-    };
-
-    controller
-        .stop_tx
-        .send(RecorderControl::Stop)
-        .map_err(|error| format!("发送停止录音指令失败: {error}"))?;
-    let result = controller
-        .join_handle
-        .join()
-        .map_err(|_| "录音线程异常退出".to_string())??;
-
-    let connection = open_connection(&state.db_path)?;
-    insert_audio_segment(
-        &connection,
-        &result.file_path,
-        &result.started_at_label,
-        result.duration_ms,
-        result.sample_rate,
-        result.channels,
-        result.summary.total_energy,
-        result.summary.sample_count,
-        &result.trace_id,
-    )?;
-    settings_service::set_record_enabled(&connection, false)?;
-    let processing_summary = process_pending_jobs_internal(&connection)?;
-
-    Ok(RecordingActionResult {
-        message: format!(
-            "录音已停止，已保存本地 WAV 文件：{}。{}",
-            result.file_path.to_string_lossy(),
-            processing_summary
-        ),
-        runtime: query_runtime_status(&connection)?,
-        latest_session: latest_session(&connection)?,
-    })
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1379,7 +1327,7 @@ pub fn run() {
             commands::session::flush_current_session,
             commands::jobs::process_pending_jobs,
             start_recording,
-            stop_recording,
+            commands::recording::stop_recording,
             commands::recording::simulate_audio_slice
         ])
         .run(tauri::generate_context!())
@@ -2456,6 +2404,34 @@ mod tests {
             )
             .expect("应能读取转写任务数量");
         assert_eq!(pending_transcription_jobs, 1);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_expose_stop_recording_command_boundary_when_idle() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-stop-recording-command-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        let recordings_dir = temp_dir.join("recordings");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        fs::create_dir_all(&recordings_dir).expect("应能创建测试录音目录");
+        let state = AppState {
+            db_path,
+            recordings_dir,
+            recorder: Arc::new(Mutex::new(None)),
+        };
+
+        let result = commands::recording::stop_recording_payload(&state)
+            .expect("recording command boundary 应能处理空闲停止录音");
+
+        assert_eq!(result.message, "当前没有进行中的录音");
+        assert!(result.latest_session.is_some());
+        assert!(!result.runtime.runtime_label.trim().is_empty());
 
         let _ = fs::remove_dir_all(temp_dir);
     }
