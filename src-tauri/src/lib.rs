@@ -19,6 +19,7 @@ mod jobs;
 mod providers;
 
 use app::settings_service;
+use domain::session::SessionDto;
 use domain::todo::TodoDto;
 use infra::sqlite::{initialize_database, open_connection};
 
@@ -91,22 +92,6 @@ pub(crate) struct SettingsDto {
     semantic_model_name: String,
     semantic_api_key_masked: String,
     allow_cloud_fallback: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct SessionDto {
-    id: String,
-    merged_text: String,
-    started_at: String,
-    ended_at: String,
-    trigger_reason: String,
-    extraction_status: String,
-    extraction_provider_used: String,
-    extraction_fallback_used: bool,
-    extraction_fallback_reason: String,
-    transcript_count: i64,
-    related_todo_ids: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -2526,6 +2511,29 @@ mod tests {
         assert_eq!(payload["id"], "todo_domain_contract");
         assert_eq!(payload["conversationSessionId"], "session_domain_contract");
         assert!(payload.get("conversation_session_id").is_none());
+    }
+
+    #[test]
+    fn should_expose_session_domain_dto_contract() {
+        let session = domain::session::SessionDto {
+            id: "session_domain_contract".into(),
+            merged_text: "同步 v0.4 session domain 边界".into(),
+            started_at: "2026-06-14 09:00:00".into(),
+            ended_at: "2026-06-14 09:05:00".into(),
+            trigger_reason: "manual".into(),
+            extraction_status: "success".into(),
+            extraction_provider_used: "minimax_m3".into(),
+            extraction_fallback_used: false,
+            extraction_fallback_reason: "".into(),
+            transcript_count: 1,
+            related_todo_ids: vec!["todo_domain_contract".into()],
+        };
+
+        let payload = serde_json::to_value(&session).expect("Session domain DTO 应可序列化");
+
+        assert_eq!(payload["id"], "session_domain_contract");
+        assert_eq!(payload["relatedTodoIds"][0], "todo_domain_contract");
+        assert!(payload.get("related_todo_ids").is_none());
     }
 
     fn table_columns(connection: &Connection, table_name: &str) -> Vec<String> {
