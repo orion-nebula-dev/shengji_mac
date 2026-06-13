@@ -1263,17 +1263,6 @@ fn test_asr_provider(settings: &SettingsDto) -> Result<ModelTestResult, String> 
 }
 
 #[tauri::command]
-fn get_bootstrap_data(state: tauri::State<'_, AppState>) -> Result<BootstrapData, String> {
-    let connection = open_connection(&state.db_path)?;
-    Ok(BootstrapData {
-        settings: settings_service::load_settings(&connection)?,
-        todos: query_todos(&connection)?,
-        sessions: query_sessions(&connection)?,
-        runtime: query_runtime_status(&connection)?,
-    })
-}
-
-#[tauri::command]
 fn toggle_todo_status(
     todo_id: String,
     state: tauri::State<'_, AppState>,
@@ -1580,7 +1569,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::desktop_context::get_desktop_context,
-            get_bootstrap_data,
+            commands::bootstrap::get_bootstrap_data,
             commands::settings::save_settings,
             commands::model_test::test_model_connection,
             toggle_todo_status,
@@ -2424,6 +2413,41 @@ mod tests {
         let recording_context =
             commands::desktop_context::build_desktop_context(true, provider_count);
         assert!(recording_context.recorder_status.contains("录音中"));
+    }
+
+    #[test]
+    fn should_expose_bootstrap_command_boundary() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-bootstrap-command-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+
+        let bootstrap = commands::bootstrap::get_bootstrap_data_payload(&db_path)
+            .expect("bootstrap command boundary 应能读取启动数据");
+
+        assert_eq!(
+            bootstrap.settings.todo_provider_type,
+            DEFAULT_TODO_PROVIDER_TYPE
+        );
+        assert_eq!(bootstrap.settings.semantic_provider_type, "minimax_m3");
+        assert!(
+            !bootstrap.todos.is_empty(),
+            "bootstrap 应返回 demo Todo 以支撑前端首屏"
+        );
+        assert!(
+            !bootstrap.sessions.is_empty(),
+            "bootstrap 应返回 demo session 以支撑前端首屏"
+        );
+        assert!(
+            bootstrap.runtime.last_extraction_summary.contains("会话")
+                || bootstrap.runtime.last_extraction_summary.contains("暂无")
+        );
+
+        let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]
