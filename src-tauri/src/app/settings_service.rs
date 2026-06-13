@@ -1,6 +1,6 @@
 use rusqlite::{params, Connection};
 
-use crate::{normalize_asr_provider_type, normalize_todo_provider_type, SettingsDto};
+use crate::{normalize_asr_provider_type, SettingsDto, DEFAULT_TODO_PROVIDER_TYPE};
 
 pub(crate) fn load_settings(connection: &Connection) -> Result<SettingsDto, String> {
     connection
@@ -40,7 +40,7 @@ pub(crate) fn load_settings(connection: &Connection) -> Result<SettingsDto, Stri
                     provider_mode: row.get(4)?,
                     asr_provider_type: normalize_asr_provider_type(&row.get::<_, String>(5)?),
                     speaker_provider_type: row.get(6)?,
-                    todo_provider_type: normalize_todo_provider_type(&row.get::<_, String>(7)?),
+                    todo_provider_type: DEFAULT_TODO_PROVIDER_TYPE.to_string(),
                     semantic_provider_type: row.get(8)?,
                     embedding_provider_type: row.get(9)?,
                     export_provider_type: row.get(10)?,
@@ -97,7 +97,7 @@ pub(crate) fn save_settings(connection: &Connection, payload: &SettingsDto) -> R
                 payload.provider_mode.as_str(),
                 normalize_asr_provider_type(&payload.asr_provider_type),
                 payload.speaker_provider_type.as_str(),
-                normalize_todo_provider_type(&payload.todo_provider_type),
+                DEFAULT_TODO_PROVIDER_TYPE,
                 payload.semantic_provider_type.as_str(),
                 payload.embedding_provider_type.as_str(),
                 payload.export_provider_type.as_str(),

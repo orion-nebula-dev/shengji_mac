@@ -13,7 +13,7 @@ pub(crate) fn build_desktop_context(recording: bool, provider_count: usize) -> D
             "SQLite 已接入 settings / audio_segments / sessions / semantic_artifacts / model_invocations / todos；{} 个 provider 边界已注册",
             provider_count
         ),
-        models_status: "Todo 语义入口已固定为 MiniMax M3；旧本地 Todo 路径已移除".into(),
+        models_status: "Todo 语义入口已固定为 MiniMax M3；产物统一进入 semantic_m3 边界".into(),
     }
 }
 
