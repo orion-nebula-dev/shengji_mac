@@ -1,4 +1,4 @@
-use crate::{is_recording, providers, AppState, DesktopContext};
+use crate::{domain::desktop::DesktopContext, is_recording, providers, AppState};
 
 pub(crate) fn build_desktop_context(recording: bool, provider_count: usize) -> DesktopContext {
     DesktopContext {
