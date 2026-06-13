@@ -22,7 +22,7 @@ fn register_semantic_todo_artifact_boundary(
             "DELETE FROM semantic_artifacts WHERE session_id = ?1 AND artifact_type = 'todo_extraction'",
             params![session_id],
         )
-        .map_err(|error| format!("清理旧 Todo 语义产物失败: {error}"))?;
+        .map_err(|error| format!("清理已有 Todo 语义产物失败: {error}"))?;
 
     connection
         .execute(

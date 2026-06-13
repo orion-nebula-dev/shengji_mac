@@ -242,11 +242,6 @@ fn is_local_asr_provider(provider_type: &str) -> bool {
     )
 }
 
-fn normalize_todo_provider_type(provider_type: &str) -> String {
-    let _ = provider_type;
-    DEFAULT_TODO_PROVIDER_TYPE.to_string()
-}
-
 fn is_placeholder_session_text(text: &str) -> bool {
     let normalized = text.trim();
     normalized.is_empty()
@@ -1129,7 +1124,7 @@ fn process_pending_jobs_internal(connection: &Connection) -> Result<String, Stri
                     .execute(
                         "UPDATE conversation_sessions SET extraction_status = 'failed', extraction_provider_used = ?1, extraction_fallback_used = ?2, extraction_fallback_reason = ?3 WHERE id = ?4",
                         params![
-                            normalize_todo_provider_type(&settings.todo_provider_type).as_str(),
+                            DEFAULT_TODO_PROVIDER_TYPE,
                             0,
                             clip_text(&error, 200),
                             session_id.as_str()
@@ -1900,16 +1895,16 @@ mod tests {
     }
 
     #[test]
-    fn should_migrate_legacy_settings_to_v04_provider_defaults() {
+    fn should_initialize_missing_settings_columns_with_v04_provider_defaults() {
         let temp_dir = std::env::temp_dir().join(format!(
-            "smart-todo-v04-migration-test-{}",
+            "smart-todo-v04-settings-columns-test-{}",
             current_timestamp_label()
         ));
         fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
         let db_path = temp_dir.join("smart-todo.sqlite");
 
         {
-            let connection = open_connection(&db_path).expect("应能打开旧库测试数据库");
+            let connection = open_connection(&db_path).expect("应能打开缺列测试数据库");
             connection
                 .execute_batch(
                     r#"
@@ -1920,8 +1915,7 @@ mod tests {
                         chunk_seconds INTEGER NOT NULL DEFAULT 30,
                         idle_trigger_seconds INTEGER NOT NULL DEFAULT 20,
                         provider_mode TEXT NOT NULL DEFAULT 'local',
-                        asr_provider_type TEXT NOT NULL DEFAULT 'local',
-                        todo_provider_type TEXT NOT NULL DEFAULT 'embedded_local'
+                        asr_provider_type TEXT NOT NULL DEFAULT 'local'
                     );
 
                     INSERT INTO app_settings (
@@ -1931,8 +1925,7 @@ mod tests {
                         chunk_seconds,
                         idle_trigger_seconds,
                         provider_mode,
-                        asr_provider_type,
-                        todo_provider_type
+                        asr_provider_type
                     ) VALUES (
                         'default',
                         0,
@@ -1940,17 +1933,16 @@ mod tests {
                         30,
                         20,
                         'local',
-                        'local',
-                        'embedded_local'
+                        'local'
                     );
                     "#,
                 )
-                .expect("应能准备旧版本设置表");
+                .expect("应能准备缺失 v0.4 列的设置表");
         }
 
-        initialize_database(&db_path).expect("应能迁移旧版本数据库");
-        let connection = open_connection(&db_path).expect("应能打开迁移后的数据库");
-        let settings = settings_service::load_settings(&connection).expect("应能读取迁移后的设置");
+        initialize_database(&db_path).expect("应能补齐 v0.4 设置列");
+        let connection = open_connection(&db_path).expect("应能打开补齐后的数据库");
+        let settings = settings_service::load_settings(&connection).expect("应能读取补齐后的设置");
 
         assert_eq!(settings.asr_provider_type, "local_whisperkit");
         assert_eq!(settings.speaker_provider_type, "local_speakerkit");
@@ -2016,23 +2008,6 @@ mod tests {
         assert_eq!(persisted.semantic_model_name, "MiniMax-M3-Service-Test");
 
         let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn should_normalize_all_todo_provider_inputs_to_minimax_m3() {
-        for provider_type in [
-            "",
-            "semantic_m3",
-            "embedded_local",
-            "legacy_local_llm",
-            "cloud",
-        ] {
-            assert_eq!(
-                normalize_todo_provider_type(provider_type),
-                DEFAULT_TODO_PROVIDER_TYPE,
-                "Todo provider 输入 {provider_type:?} 应统一收敛到 MiniMax M3"
-            );
-        }
     }
 
     #[test]
@@ -2267,7 +2242,7 @@ mod tests {
         jobs::todo_extraction::generate_for_session(&connection, &settings, session_id)
             .expect("首次应登记 Todo 语义产物");
         jobs::todo_extraction::generate_for_session(&connection, &settings, session_id)
-            .expect("再次登记应替换旧 Todo 语义产物");
+            .expect("再次登记应替换已有 Todo 语义产物");
 
         let artifact_count: i64 = connection
             .query_row(
@@ -2295,7 +2270,7 @@ mod tests {
         let mut settings = settings_service::load_settings(&connection).expect("应能读取默认设置");
 
         settings.asr_provider_type = "cloud_volc".into();
-        settings.todo_provider_type = "legacy_local_llm".into();
+        settings.todo_provider_type = DEFAULT_TODO_PROVIDER_TYPE.into();
         settings.semantic_base_url = "https://m3.example.test/v1/responses".into();
         settings.semantic_model_name = "MiniMax-M3-Test".into();
         settings.semantic_api_key_masked = "sk-test-****".into();
@@ -2414,7 +2389,7 @@ mod tests {
         let connection = open_connection(&db_path).expect("应能打开测试数据库");
         let mut settings = settings_service::load_settings(&connection).expect("应能读取默认设置");
         settings.language = "en-US".into();
-        settings.todo_provider_type = "cloud".into();
+        settings.todo_provider_type = DEFAULT_TODO_PROVIDER_TYPE.into();
         settings.semantic_model_name = "MiniMax-M3-Command-Test".into();
 
         let saved = commands::settings::save_settings_payload(&db_path, settings)
@@ -2444,7 +2419,7 @@ mod tests {
             .storage_status
             .contains(&format!("{provider_count} 个 provider")));
         assert!(context.models_status.contains("MiniMax M3"));
-        assert!(context.models_status.contains("旧本地 Todo 路径已移除"));
+        assert!(context.models_status.contains("semantic_m3"));
 
         let recording_context =
             commands::desktop_context::build_desktop_context(true, provider_count);

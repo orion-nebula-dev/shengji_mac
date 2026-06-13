@@ -40,19 +40,7 @@ export function loadState(): PersistedState {
     if (legacyAsrProviderType === "cloud") {
       mergedSettings.asrProviderType = "cloud_volc";
     }
-    const persistedTodoProviderType = String(
-      (mergedSettings as SettingsState & { todoProviderType: string }).todoProviderType,
-    );
     mergedSettings.todoProviderType = "semantic_m3";
-    if (
-      mergedSettings.providerMode === "cloud" &&
-      mergedSettings.asrProviderType === "cloud_volc" &&
-      persistedTodoProviderType === "cloud"
-    ) {
-      mergedSettings.providerMode = "local";
-      mergedSettings.asrProviderType = "local_whisperkit";
-      mergedSettings.todoProviderType = "semantic_m3";
-    }
     const sanitizedSettings: SettingsState = {
       recordEnabled: mergedSettings.recordEnabled,
       language: mergedSettings.language,

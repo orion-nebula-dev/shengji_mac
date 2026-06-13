@@ -644,7 +644,7 @@ function App() {
                       <li><span>产物类型</span><strong>todo_extraction</strong></li>
                       <li><span>状态</span><strong>语义边界已登记</strong></li>
                     </ul>
-                    <p className="runtime-message">{desktopContext?.modelsStatus ?? "旧本地 Todo 运行时已移除"}</p>
+                    <p className="runtime-message">{desktopContext?.modelsStatus ?? "MiniMax M3 语义入口已固定"}</p>
                   </article>
                   <article className="panel-lite system-wide">
                     <p className="section-kicker">失败与回退</p>
@@ -818,7 +818,7 @@ function App() {
                     <div className="runtime-hint">
                       <p className="section-kicker">语义入口</p>
                       <p>v0.4 默认只登记 Todo 语义产物边界，实际 Todo 候选确认在 v0.7 接入。</p>
-                      <p>Todo 不再提供本地小模型或直连旧 Todo 云接口入口，统一通过 MiniMax M3 语义链路承载。</p>
+                      <p>Todo 候选统一通过 MiniMax M3 语义链路承载，产物落库到 semantic_artifacts。</p>
                     </div>
                   </section>
                 </section>
