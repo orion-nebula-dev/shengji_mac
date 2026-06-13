@@ -1,7 +1,7 @@
 use rusqlite::{params, Connection};
 
 use crate::{
-    normalize_asr_provider_type, SettingsDto, DEFAULT_SEMANTIC_PROVIDER_TYPE,
+    domain::settings::SettingsDto, normalize_asr_provider_type, DEFAULT_SEMANTIC_PROVIDER_TYPE,
     DEFAULT_TODO_PROVIDER_TYPE,
 };
 

@@ -1,6 +1,8 @@
 use rusqlite::{params, Connection};
 
-use crate::{clip_text, current_timestamp_label, is_placeholder_session_text, SettingsDto};
+use crate::{
+    clip_text, current_timestamp_label, domain::settings::SettingsDto, is_placeholder_session_text,
+};
 
 fn register_semantic_todo_artifact_boundary(
     connection: &Connection,

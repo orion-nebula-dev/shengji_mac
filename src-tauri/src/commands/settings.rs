@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
-use crate::{app::settings_service, infra::sqlite::open_connection, AppState, SettingsDto};
+use crate::{
+    app::settings_service, domain::settings::SettingsDto, infra::sqlite::open_connection, AppState,
+};
 
 pub(crate) fn save_settings_payload(
     db_path: &PathBuf,
