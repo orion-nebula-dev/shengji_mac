@@ -1,4 +1,7 @@
-use crate::{test_asr_provider, AppState, ModelTestRequest, ModelTestResult};
+use crate::{
+    domain::model_test::{ModelTestRequest, ModelTestResult},
+    test_asr_provider, AppState,
+};
 
 pub(crate) fn test_model_connection_payload(
     payload: ModelTestRequest,

@@ -1,7 +1,7 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use reqwest::blocking::Client;
 use rusqlite::{params, Connection};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::{
     fs,
     path::PathBuf,
@@ -19,6 +19,7 @@ mod jobs;
 mod providers;
 
 use app::settings_service;
+use domain::model_test::ModelTestResult;
 use domain::runtime::RuntimeStatusDto;
 use domain::session::SessionDto;
 use domain::settings::SettingsDto;
@@ -96,23 +97,6 @@ struct ProcessingActionResult {
     latest_session: Option<SessionDto>,
     todos: Vec<TodoDto>,
     sessions: Vec<SessionDto>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ModelTestRequest {
-    provider: String,
-    settings: SettingsDto,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ModelTestResult {
-    provider: String,
-    success: bool,
-    status_code: u16,
-    message: String,
-    response_excerpt: String,
 }
 
 #[derive(Debug)]
@@ -1994,10 +1978,12 @@ mod tests {
         let connection = open_connection(&db_path).expect("应能打开测试数据库");
         let settings = settings_service::load_settings(&connection).expect("应能读取默认设置");
 
-        let result = commands::model_test::test_model_connection_payload(ModelTestRequest {
-            provider: "todo".into(),
-            settings,
-        })
+        let result = commands::model_test::test_model_connection_payload(
+            domain::model_test::ModelTestRequest {
+                provider: "todo".into(),
+                settings,
+            },
+        )
         .expect("model_test command boundary 应能处理 Todo 语义入口测试");
 
         assert!(result.success);
@@ -2026,10 +2012,12 @@ mod tests {
         settings.asr_provider_type = DEFAULT_ASR_PROVIDER_TYPE.into();
         settings.allow_cloud_fallback = false;
 
-        let result = commands::model_test::test_model_connection_payload(ModelTestRequest {
-            provider: "asr".into(),
-            settings,
-        })
+        let result = commands::model_test::test_model_connection_payload(
+            domain::model_test::ModelTestRequest {
+                provider: "asr".into(),
+                settings,
+            },
+        )
         .expect("model_test command boundary 应能处理本地 ASR guard");
 
         assert!(!result.success);
@@ -2054,10 +2042,12 @@ mod tests {
         let connection = open_connection(&db_path).expect("应能打开测试数据库");
         let settings = settings_service::load_settings(&connection).expect("应能读取默认设置");
 
-        let error = commands::model_test::test_model_connection_payload(ModelTestRequest {
-            provider: "embedding".into(),
-            settings,
-        })
+        let error = commands::model_test::test_model_connection_payload(
+            domain::model_test::ModelTestRequest {
+                provider: "embedding".into(),
+                settings,
+            },
+        )
         .expect_err("未知模型测试类型应返回错误");
 
         assert!(error.contains("不支持的模型测试类型: embedding"));
@@ -2551,6 +2541,55 @@ mod tests {
         assert_eq!(payload["semanticProviderType"], "minimax_m3");
         assert_eq!(payload["semanticModelName"], "MiniMax-M3");
         assert!(payload.get("record_enabled").is_none());
+    }
+
+    #[test]
+    fn should_expose_model_test_domain_dto_contract() {
+        let request = domain::model_test::ModelTestRequest {
+            provider: "todo".into(),
+            settings: domain::settings::SettingsDto {
+                record_enabled: false,
+                language: "zh-CN".into(),
+                chunk_seconds: 30,
+                idle_trigger_seconds: 20,
+                provider_mode: "local".into(),
+                asr_provider_type: "local_whisperkit".into(),
+                speaker_provider_type: "local_speakerkit".into(),
+                todo_provider_type: "semantic_m3".into(),
+                semantic_provider_type: "minimax_m3".into(),
+                embedding_provider_type: "reserved".into(),
+                export_provider_type: "local_file".into(),
+                asr_submit_url: "".into(),
+                asr_query_url: "".into(),
+                asr_resource_id: "".into(),
+                asr_model_name: "".into(),
+                asr_api_key_masked: "".into(),
+                semantic_base_url: "https://api.minimax.io/v1/responses".into(),
+                semantic_model_name: "MiniMax-M3".into(),
+                semantic_api_key_masked: "".into(),
+                allow_cloud_fallback: false,
+            },
+        };
+        let result = domain::model_test::ModelTestResult {
+            provider: "todo".into(),
+            success: true,
+            status_code: 0,
+            message: "MiniMax M3 语义 Todo 边界已登记".into(),
+            response_excerpt: "semantic_artifacts(type='todo_extraction')".into(),
+        };
+
+        let request_payload =
+            serde_json::to_value(&request).expect("ModelTest request DTO 应可序列化");
+        let result_payload =
+            serde_json::to_value(&result).expect("ModelTest result DTO 应可序列化");
+
+        assert_eq!(request_payload["provider"], "todo");
+        assert_eq!(
+            request_payload["settings"]["semanticProviderType"],
+            "minimax_m3"
+        );
+        assert_eq!(result_payload["statusCode"], 0);
+        assert!(result_payload.get("status_code").is_none());
     }
 
     fn table_columns(connection: &Connection, table_name: &str) -> Vec<String> {
