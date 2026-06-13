@@ -692,11 +692,11 @@ fn ensure_app_settings_columns(connection: &Connection) -> Result<(), String> {
         ),
         (
             "asr_provider_type",
-            "ALTER TABLE app_settings ADD COLUMN asr_provider_type TEXT NOT NULL DEFAULT 'cloud'",
+            "ALTER TABLE app_settings ADD COLUMN asr_provider_type TEXT NOT NULL DEFAULT 'local'",
         ),
         (
             "todo_provider_type",
-            "ALTER TABLE app_settings ADD COLUMN todo_provider_type TEXT NOT NULL DEFAULT 'cloud'",
+            "ALTER TABLE app_settings ADD COLUMN todo_provider_type TEXT NOT NULL DEFAULT 'embedded_local'",
         ),
         (
             "local_todo_model_version",
@@ -745,11 +745,11 @@ fn ensure_app_settings_columns(connection: &Connection) -> Result<(), String> {
                 ELSE asr_model_name
               END,
               asr_provider_type = CASE
-                WHEN TRIM(asr_provider_type) = '' THEN 'cloud'
+                WHEN TRIM(asr_provider_type) = '' OR asr_provider_type = 'cloud' THEN 'local'
                 ELSE asr_provider_type
               END,
               todo_provider_type = CASE
-                WHEN TRIM(todo_provider_type) = '' THEN 'cloud'
+                WHEN TRIM(todo_provider_type) = '' OR todo_provider_type = 'cloud' THEN 'embedded_local'
                 ELSE todo_provider_type
               END,
               local_todo_model_version = CASE
@@ -854,9 +854,9 @@ fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
         language TEXT NOT NULL DEFAULT 'zh-CN',
         chunk_seconds INTEGER NOT NULL DEFAULT 30 CHECK (chunk_seconds > 0),
         idle_trigger_seconds INTEGER NOT NULL DEFAULT 20 CHECK (idle_trigger_seconds > 0),
-        provider_mode TEXT NOT NULL DEFAULT 'cloud' CHECK (provider_mode IN ('cloud', 'local')),
-        asr_provider_type TEXT NOT NULL DEFAULT 'cloud',
-        todo_provider_type TEXT NOT NULL DEFAULT 'cloud',
+        provider_mode TEXT NOT NULL DEFAULT 'local' CHECK (provider_mode IN ('cloud', 'local')),
+        asr_provider_type TEXT NOT NULL DEFAULT 'local',
+        todo_provider_type TEXT NOT NULL DEFAULT 'embedded_local',
         asr_base_url TEXT NOT NULL DEFAULT '',
         asr_submit_url TEXT NOT NULL DEFAULT '',
         asr_query_url TEXT NOT NULL DEFAULT '',
@@ -1013,9 +1013,9 @@ fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
                 "zh-CN",
                 30,
                 20,
-                "cloud",
-                "cloud",
-                "cloud",
+                "local",
+                "local",
+                "embedded_local",
                 "https://api.example.com/asr/query",
                 "https://api.example.com/asr/submit",
                 "https://api.example.com/asr/query",
@@ -1072,7 +1072,7 @@ fn seed_demo_data(connection: &Connection) -> Result<(), String> {
         'manual',
         1,
         'success',
-        'cloud',
+        'embedded_local',
         0,
         '',
         'trace_seed_001'
@@ -2046,6 +2046,21 @@ fn extract_json_array(input: &str) -> Result<Vec<serde_json::Value>, String> {
 }
 
 fn transcribe_audio_file(settings: &SettingsDto, file_path: &str) -> Result<String, String> {
+    if settings.asr_provider_type == "local" {
+        let message = "本地 ASR 尚未接入，无法执行纯本地语音转写";
+        if !settings.allow_cloud_fallback {
+            return Err(message.to_string());
+        }
+        log::warn!("{message}，将按配置使用云端 ASR 兜底");
+    }
+
+    if settings.asr_api_key_masked.trim().is_empty()
+        || settings.asr_resource_id.trim().is_empty()
+        || settings.asr_model_name.trim().is_empty()
+    {
+        return Err("云端 ASR 配置不完整，无法执行转写兜底".to_string());
+    }
+
     let file_bytes = fs::read(file_path).map_err(|error| format!("读取录音文件失败: {error}"))?;
     let audio_data = {
         use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -2334,7 +2349,7 @@ fn generate_todos_for_session(
                         settings.todo_model_name.clone(),
                         "cloud".to_string(),
                         true,
-                        "本地提取结果为空，已回退到云端".to_string(),
+                        "本地提取结果为空，已使用云端兜底".to_string(),
                     )
                 }
             }
@@ -2347,13 +2362,13 @@ fn generate_todos_for_session(
                     return Err(error);
                 }
 
-                log::warn!("本地 Todo 子进程提取失败，回退到云端 Provider: {error}");
+                log::warn!("本地 Todo 子进程提取失败，使用云端 Provider 兜底: {error}");
                 (
                     request_cloud_todo_extraction(settings, &merged_text)?,
                     settings.todo_model_name.clone(),
                     "cloud".to_string(),
                     true,
-                    format!("本地提取失败后回退到云端：{}", clip_text(&error, 120)),
+                    format!("本地提取失败后使用云端兜底：{}", clip_text(&error, 120)),
                 )
             }
         }
@@ -2621,6 +2636,17 @@ pub fn process_pending_jobs_once_for_cli(db_path: &str) -> Result<String, String
 }
 
 fn test_asr_provider(settings: &SettingsDto) -> Result<ModelTestResult, String> {
+    let local_asr_unavailable = settings.asr_provider_type == "local";
+    if local_asr_unavailable && !settings.allow_cloud_fallback {
+        return Ok(ModelTestResult {
+            provider: "asr".into(),
+            success: false,
+            status_code: 503,
+            message: "当前为纯本地 ASR 模式，但本地 ASR 尚未接入".into(),
+            response_excerpt: "关闭云端兜底后，语音转写不会调用云端服务。".into(),
+        });
+    }
+
     if settings.asr_submit_url.trim().is_empty()
         || settings.asr_query_url.trim().is_empty()
         || settings.asr_resource_id.trim().is_empty()
@@ -2708,7 +2734,11 @@ fn test_asr_provider(settings: &SettingsDto) -> Result<ModelTestResult, String> 
         success,
         status_code,
         message: if success {
-            "ASR 提交与查询测试成功".into()
+            if local_asr_unavailable {
+                "本地 ASR 尚未接入，云端兜底 ASR 测试成功".into()
+            } else {
+                "ASR 提交与查询测试成功".into()
+            }
         } else {
             format!("ASR 查询请求失败，HTTP {status_code}")
         },
