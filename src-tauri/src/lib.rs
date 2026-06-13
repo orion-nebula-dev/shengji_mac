@@ -2,20 +2,19 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use reqwest::blocking::Client;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::{
     fs,
-    io::{Read, Write},
     path::PathBuf,
-    process::{Command, Stdio},
     sync::{mpsc, Arc, Mutex},
     thread::{self, JoinHandle},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::Manager;
 
 mod domain;
 mod providers;
+
+use providers::semantic::legacy_local_llm;
 
 #[derive(Clone)]
 struct AppState {
@@ -188,70 +187,6 @@ struct LocalTodoRuntimeStatusDto {
     message: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct EmbeddedTodoRuntimeRequest {
-    action: String,
-    model_version: String,
-    runtime_dir: String,
-    text: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct EmbeddedTodoRuntimeTodo {
-    title: String,
-    note: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct EmbeddedTodoRuntimeResponse {
-    success: bool,
-    runtime_status: String,
-    model_version: String,
-    message: String,
-    todos: Vec<EmbeddedTodoRuntimeTodo>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-struct EmbeddedTodoManifestAsset {
-    path: String,
-    role: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-struct EmbeddedTodoManifest {
-    model_version: String,
-    runtime_type: String,
-    engine: String,
-    description: String,
-    executable_rel_path: String,
-    model_rel_path: String,
-    prompt_template_rel_path: String,
-    context_length: u32,
-    max_output_tokens: u32,
-    temperature: f32,
-    top_p: f32,
-    repeat_penalty: f32,
-    gpu_layers: i32,
-    assets: Vec<EmbeddedTodoManifestAsset>,
-}
-
-#[derive(Debug)]
-struct EmbeddedTodoRuntimeConfig {
-    executable_path: PathBuf,
-    completion_executable_path: PathBuf,
-    model_path: PathBuf,
-    prompt_template_path: PathBuf,
-    manifest: EmbeddedTodoManifest,
-}
-
-struct EmbeddedAsset {
-    relative_path: &'static str,
-    bytes: &'static [u8],
-}
-
 #[derive(Debug)]
 struct AudioSegmentRecord {
     id: String,
@@ -278,339 +213,10 @@ fn current_timestamp_label() -> String {
     millis.to_string()
 }
 
-fn normalize_local_todo_model_version(version: &str) -> String {
-    let trimmed = version.trim();
-    if trimmed.is_empty() || trimmed == "todo-embedded-v1" {
-        EMBEDDED_TODO_MODEL_VERSION.to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
-fn embedded_todo_model_dir(models_dir: &PathBuf, version: &str) -> PathBuf {
-    models_dir.join("todo").join(version)
-}
-
-fn embedded_todo_manifest_path(models_dir: &PathBuf, version: &str) -> PathBuf {
-    embedded_todo_model_dir(models_dir, version).join("manifest.json")
-}
-
-fn embedded_todo_assets() -> [EmbeddedAsset; 3] {
-    [
-        EmbeddedAsset {
-            relative_path: "manifest.json",
-            bytes: EMBEDDED_TODO_MANIFEST_BYTES,
-        },
-        EmbeddedAsset {
-            relative_path: "prompt_template.txt",
-            bytes: EMBEDDED_TODO_PROMPT_TEMPLATE_BYTES,
-        },
-        EmbeddedAsset {
-            relative_path: "README.txt",
-            bytes: EMBEDDED_TODO_README_BYTES,
-        },
-    ]
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    format!("{:x}", hasher.finalize())
-}
-
-fn embedded_todo_checksums_path(models_dir: &PathBuf, version: &str) -> PathBuf {
-    embedded_todo_model_dir(models_dir, version).join("checksums.sha256")
-}
-
-fn ensure_embedded_todo_runtime_files(models_dir: &PathBuf) -> Result<(), String> {
-    let model_dir = embedded_todo_model_dir(models_dir, EMBEDDED_TODO_MODEL_VERSION);
-    fs::create_dir_all(&model_dir).map_err(|error| format!("创建本地模型目录失败: {error}"))?;
-
-    let mut checksum_lines = Vec::new();
-    for asset in embedded_todo_assets() {
-        let target_path = model_dir.join(asset.relative_path);
-        let should_write = if target_path.exists() {
-            let existing =
-                fs::read(&target_path).map_err(|error| format!("读取本地模型文件失败: {error}"))?;
-            sha256_hex(&existing) != sha256_hex(asset.bytes)
-        } else {
-            true
-        };
-
-        if should_write {
-            if let Some(parent) = target_path.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|error| format!("创建本地模型子目录失败: {error}"))?;
-            }
-            fs::write(&target_path, asset.bytes)
-                .map_err(|error| format!("释放本地模型文件失败: {error}"))?;
-        }
-
-        checksum_lines.push(format!(
-            "{}  {}",
-            sha256_hex(asset.bytes),
-            asset.relative_path
-        ));
-    }
-
-    fs::write(
-        embedded_todo_checksums_path(models_dir, EMBEDDED_TODO_MODEL_VERSION),
-        checksum_lines.join("\n"),
-    )
-    .map_err(|error| format!("写入本地模型校验文件失败: {error}"))?;
-
-    let manifest = parse_embedded_todo_manifest_text(
-        std::str::from_utf8(EMBEDDED_TODO_MANIFEST_BYTES)
-            .map_err(|error| format!("解析内嵌模型清单文本失败: {error}"))?,
-    )?;
-    let executable_parent = model_dir.join(&manifest.executable_rel_path);
-    if let Some(parent) = executable_parent.parent() {
-        fs::create_dir_all(parent).map_err(|error| format!("创建 llama.cpp 目录失败: {error}"))?;
-    }
-    let model_parent = model_dir.join(&manifest.model_rel_path);
-    if let Some(parent) = model_parent.parent() {
-        fs::create_dir_all(parent).map_err(|error| format!("创建 GGUF 模型目录失败: {error}"))?;
-    }
-
-    Ok(())
-}
-
-fn verify_embedded_todo_runtime_files(models_dir: &PathBuf, version: &str) -> Result<(), String> {
-    let model_dir = embedded_todo_model_dir(models_dir, version);
-    for asset in embedded_todo_assets() {
-        let target_path = model_dir.join(asset.relative_path);
-        if !target_path.exists() {
-            return Err(format!("缺少本地模型文件: {}", asset.relative_path));
-        }
-
-        let existing =
-            fs::read(&target_path).map_err(|error| format!("读取本地模型文件失败: {error}"))?;
-        if sha256_hex(&existing) != sha256_hex(asset.bytes) {
-            return Err(format!("本地模型文件校验失败: {}", asset.relative_path));
-        }
-    }
-
-    let checksum_path = embedded_todo_checksums_path(models_dir, version);
-    if !checksum_path.exists() {
-        return Err("缺少本地模型校验文件".to_string());
-    }
-
-    Ok(())
-}
-
-fn parse_embedded_todo_manifest_text(input: &str) -> Result<EmbeddedTodoManifest, String> {
-    serde_json::from_str::<EmbeddedTodoManifest>(input)
-        .map_err(|error| format!("解析内嵌模型清单失败: {error}"))
-}
-
-fn read_embedded_todo_manifest(
-    models_dir: &PathBuf,
-    version: &str,
-) -> Result<EmbeddedTodoManifest, String> {
-    let manifest_path = embedded_todo_manifest_path(models_dir, version);
-    let manifest_text =
-        fs::read_to_string(&manifest_path).map_err(|error| format!("读取模型清单失败: {error}"))?;
-    parse_embedded_todo_manifest_text(&manifest_text)
-}
-
-fn resolve_runtime_override_path(env_name: &str) -> Option<PathBuf> {
-    std::env::var(env_name)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-}
-
-fn load_embedded_todo_runtime_config(
-    models_dir: &PathBuf,
-    version: &str,
-) -> Result<EmbeddedTodoRuntimeConfig, String> {
-    verify_embedded_todo_runtime_files(models_dir, version)?;
-    let runtime_dir = embedded_todo_model_dir(models_dir, version);
-    let manifest = read_embedded_todo_manifest(models_dir, version)?;
-    let executable_path = resolve_runtime_override_path("SMART_TODO_LLAMA_CLI_PATH")
-        .unwrap_or_else(|| runtime_dir.join(&manifest.executable_rel_path));
-    let completion_executable_path = executable_path
-        .parent()
-        .map(|parent| parent.join("llama-completion"))
-        .unwrap_or_else(|| PathBuf::from("llama-completion"));
-    let model_path = resolve_runtime_override_path("SMART_TODO_QWEN_GGUF_PATH")
-        .unwrap_or_else(|| runtime_dir.join(&manifest.model_rel_path));
-    let prompt_template_path = runtime_dir.join(&manifest.prompt_template_rel_path);
-
-    if !prompt_template_path.exists() {
-        return Err(format!(
-            "缺少 Prompt 模板文件: {}",
-            prompt_template_path.display()
-        ));
-    }
-    if !executable_path.exists() {
-        return Err(format!(
-            "未找到 llama.cpp 可执行文件，请放入 {} 或设置 SMART_TODO_LLAMA_CLI_PATH",
-            executable_path.display()
-        ));
-    }
-    if !completion_executable_path.exists() {
-        return Err(format!(
-            "未找到 llama-completion 可执行文件，请放入 {}",
-            completion_executable_path.display()
-        ));
-    }
-    if !model_path.exists() {
-        return Err(format!(
-            "未找到 Qwen GGUF 模型文件，请放入 {} 或设置 SMART_TODO_QWEN_GGUF_PATH",
-            model_path.display()
-        ));
-    }
-
-    Ok(EmbeddedTodoRuntimeConfig {
-        executable_path,
-        completion_executable_path,
-        model_path,
-        prompt_template_path,
-        manifest,
-    })
-}
-
-fn build_embedded_todo_prompt(template: &str, merged_text: &str) -> String {
-    template.replace("{{input_text}}", merged_text.trim())
-}
-
-fn run_command_with_timeout(
-    mut command: Command,
-    timeout_seconds: u64,
-) -> Result<std::process::Output, String> {
-    let child = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("启动外部命令失败: {error}"))?;
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        let output = child.wait_with_output();
-        let _ = tx.send(output);
-    });
-
-    match rx.recv_timeout(Duration::from_secs(timeout_seconds)) {
-        Ok(Ok(output)) => Ok(output),
-        Ok(Err(error)) => Err(format!("等待外部命令失败: {error}")),
-        Err(_) => Err(format!("外部命令执行超时（{} 秒）", timeout_seconds)),
-    }
-}
-
-fn health_check_llama_cli(config: &EmbeddedTodoRuntimeConfig) -> Result<String, String> {
-    let mut command = Command::new(&config.executable_path);
-    command.arg("--version");
-    let output = run_command_with_timeout(command, LLAMA_CLI_HEALTH_CHECK_TIMEOUT_SECONDS)?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(format!(
-            "llama.cpp 健康检查失败: {}",
-            if stderr.is_empty() {
-                "未知错误".to_string()
-            } else {
-                stderr
-            }
-        ));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    Ok(if stdout.is_empty() {
-        "llama.cpp 可执行文件已就绪".to_string()
-    } else {
-        clip_text(&stdout, 120)
-    })
-}
-
-fn parse_runtime_todos(output_text: &str) -> Result<Vec<EmbeddedTodoRuntimeTodo>, String> {
-    let items = extract_json_array(output_text)?;
-    let todos = items
-        .into_iter()
-        .filter_map(|item| {
-            let title = item.get("title")?.as_str()?.trim().to_string();
-            let note = item
-                .get("note")
-                .and_then(|entry| entry.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            if title.is_empty() {
-                return None;
-            }
-            Some(EmbeddedTodoRuntimeTodo {
-                title: clip_text(&title, 18),
-                note,
-            })
-        })
-        .collect::<Vec<_>>();
-
-    Ok(todos)
-}
-
-fn invoke_llama_cli_todo_extraction(
-    config: &EmbeddedTodoRuntimeConfig,
-    merged_text: &str,
-) -> Result<Vec<EmbeddedTodoRuntimeTodo>, String> {
-    let prompt_template = fs::read_to_string(&config.prompt_template_path)
-        .map_err(|error| format!("读取 Prompt 模板失败: {error}"))?;
-    let prompt = build_embedded_todo_prompt(&prompt_template, merged_text);
-
-    let mut command = Command::new(&config.completion_executable_path);
-    command
-        .arg("-m")
-        .arg(&config.model_path)
-        .arg("-c")
-        .arg(config.manifest.context_length.to_string())
-        .arg("-n")
-        .arg(config.manifest.max_output_tokens.to_string())
-        .arg("--temp")
-        .arg(config.manifest.temperature.to_string())
-        .arg("--top-p")
-        .arg(config.manifest.top_p.to_string())
-        .arg("--repeat-penalty")
-        .arg(config.manifest.repeat_penalty.to_string())
-        .arg("--no-conversation")
-        .arg("--no-warmup")
-        .arg("--reasoning")
-        .arg("off")
-        .arg("--simple-io")
-        .arg("-p")
-        .arg(prompt);
-
-    if config.manifest.gpu_layers >= 0 {
-        command
-            .arg("-ngl")
-            .arg(config.manifest.gpu_layers.to_string());
-    }
-
-    let output = run_command_with_timeout(command, LLAMA_CLI_GENERATION_TIMEOUT_SECONDS)?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(format!(
-            "llama.cpp 推理失败: {}",
-            if stderr.is_empty() {
-                "未知错误".to_string()
-            } else {
-                clip_text(&stderr, 300)
-            }
-        ));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if stdout.is_empty() {
-        return Err("llama.cpp 未返回任何文本输出".to_string());
-    }
-
-    parse_runtime_todos(&stdout)
-}
-
 const HTTP_REQUEST_TIMEOUT_SECONDS: u64 = 30;
 const HTTP_MAX_RETRY_ATTEMPTS: usize = 3;
 const MANUAL_FLUSH_COOLDOWN_SECONDS: i64 = 10;
-const EMBEDDED_TODO_MODEL_VERSION: &str = "qwen3-4b-instruct-2507-q4_k_m";
-const EMBEDDED_TODO_RUNTIME_TIMEOUT_SECONDS: u64 = 60;
-const LLAMA_CLI_HEALTH_CHECK_TIMEOUT_SECONDS: u64 = 60;
-const LLAMA_CLI_GENERATION_TIMEOUT_SECONDS: u64 = 300;
+const EMBEDDED_TODO_MODEL_VERSION: &str = legacy_local_llm::MODEL_VERSION;
 const DEFAULT_ASR_PROVIDER_TYPE: &str = "local_whisperkit";
 const DEFAULT_SPEAKER_PROVIDER_TYPE: &str = "local_speakerkit";
 const DEFAULT_SEMANTIC_PROVIDER_TYPE: &str = "minimax_m3";
@@ -620,14 +226,6 @@ const DEFAULT_TODO_PROVIDER_TYPE: &str = "semantic_m3";
 const LEGACY_TODO_PROVIDER_TYPE: &str = "legacy_local_llm";
 const DEFAULT_SEMANTIC_BASE_URL: &str = "https://api.minimax.io/v1/responses";
 const DEFAULT_SEMANTIC_MODEL_NAME: &str = "MiniMax-M3";
-const EMBEDDED_TODO_MANIFEST_BYTES: &[u8] =
-    include_bytes!("../resources/embedded_models/todo/qwen3-4b-instruct-2507-q4_k_m/manifest.json");
-const EMBEDDED_TODO_PROMPT_TEMPLATE_BYTES: &[u8] = include_bytes!(
-    "../resources/embedded_models/todo/qwen3-4b-instruct-2507-q4_k_m/prompt_template.txt"
-);
-const EMBEDDED_TODO_README_BYTES: &[u8] =
-    include_bytes!("../resources/embedded_models/todo/qwen3-4b-instruct-2507-q4_k_m/README.txt");
-
 fn build_http_client() -> Result<Client, String> {
     Client::builder()
         .timeout(std::time::Duration::from_secs(HTTP_REQUEST_TIMEOUT_SECONDS))
@@ -1387,7 +985,7 @@ fn query_settings(connection: &Connection) -> Result<SettingsDto, String> {
             [],
             |row| {
                 let local_todo_model_version =
-                    normalize_local_todo_model_version(row.get::<_, String>(22)?.as_str());
+                    legacy_local_llm::normalize_model_version(row.get::<_, String>(22)?.as_str());
                 Ok(SettingsDto {
                     record_enabled: row.get::<_, i64>(0)? == 1,
                     language: row.get(1)?,
@@ -1446,133 +1044,20 @@ fn persist_local_todo_runtime_status(
     Ok(())
 }
 
-fn spawn_embedded_runtime_request(
-    request: &EmbeddedTodoRuntimeRequest,
-) -> Result<EmbeddedTodoRuntimeResponse, String> {
-    let executable =
-        std::env::current_exe().map_err(|error| format!("读取当前应用路径失败: {error}"))?;
-    let request_bytes = serde_json::to_vec(request)
-        .map_err(|error| format!("序列化本地运行时请求失败: {error}"))?;
-
-    let mut child = Command::new(executable)
-        .env_remove("SMART_TODO_PROCESS_PENDING_ONCE")
-        .env_remove("SMART_TODO_DB_PATH")
-        .env("SMART_TODO_EMBEDDED_TODO_RUNTIME", "1")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("启动本地 Todo 子进程失败: {error}"))?;
-
-    if let Some(stdin) = child.stdin.as_mut() {
-        stdin
-            .write_all(&request_bytes)
-            .map_err(|error| format!("写入本地运行时请求失败: {error}"))?;
+fn ensure_legacy_todo_runtime_files_if_selected(
+    connection: &Connection,
+    models_dir: &PathBuf,
+) -> Result<(), String> {
+    let settings = query_settings(connection)?;
+    if normalize_todo_provider_type(&settings.todo_provider_type) == LEGACY_TODO_PROVIDER_TYPE {
+        legacy_local_llm::ensure_runtime_files(models_dir)?;
     }
 
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        let output = child.wait_with_output();
-        let _ = tx.send(output);
-    });
-
-    let output = match rx.recv_timeout(Duration::from_secs(EMBEDDED_TODO_RUNTIME_TIMEOUT_SECONDS)) {
-        Ok(Ok(output)) => output,
-        Ok(Err(error)) => return Err(format!("等待本地 Todo 子进程失败: {error}")),
-        Err(_) => return Err("本地 Todo 子进程执行超时".to_string()),
-    };
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(format!(
-            "本地 Todo 子进程执行失败: {}",
-            if stderr.is_empty() {
-                "未知错误".to_string()
-            } else {
-                stderr
-            }
-        ));
-    }
-
-    serde_json::from_slice::<EmbeddedTodoRuntimeResponse>(&output.stdout)
-        .map_err(|error| format!("解析本地运行时响应失败: {error}"))
+    Ok(())
 }
 
 pub fn run_embedded_todo_runtime_once() -> Result<(), String> {
-    let mut input = String::new();
-    std::io::stdin()
-        .read_to_string(&mut input)
-        .map_err(|error| format!("读取本地运行时输入失败: {error}"))?;
-
-    let request: EmbeddedTodoRuntimeRequest =
-        serde_json::from_str(&input).map_err(|error| format!("解析本地运行时请求失败: {error}"))?;
-    let runtime_dir = PathBuf::from(request.runtime_dir.as_str());
-    let response = match request.action.as_str() {
-        "health_check" => {
-            match load_embedded_todo_runtime_config(&runtime_dir, &request.model_version) {
-                Ok(config) => match health_check_llama_cli(&config) {
-                    Ok(message) => EmbeddedTodoRuntimeResponse {
-                        success: true,
-                        runtime_status: "ready".into(),
-                        model_version: request.model_version,
-                        message,
-                        todos: Vec::new(),
-                    },
-                    Err(error) => EmbeddedTodoRuntimeResponse {
-                        success: false,
-                        runtime_status: "failed".into(),
-                        model_version: request.model_version,
-                        message: error,
-                        todos: Vec::new(),
-                    },
-                },
-                Err(error) => EmbeddedTodoRuntimeResponse {
-                    success: false,
-                    runtime_status: "not_ready".into(),
-                    model_version: request.model_version,
-                    message: error,
-                    todos: Vec::new(),
-                },
-            }
-        }
-        "extract_todos" => {
-            match load_embedded_todo_runtime_config(&runtime_dir, &request.model_version) {
-                Ok(config) => match invoke_llama_cli_todo_extraction(&config, &request.text) {
-                    Ok(todos) => EmbeddedTodoRuntimeResponse {
-                        success: true,
-                        runtime_status: "ready".into(),
-                        model_version: request.model_version,
-                        message: if todos.is_empty() {
-                            "Qwen3-4B Q4_K_M 未识别到明确待办".into()
-                        } else {
-                            format!("Qwen3-4B Q4_K_M 识别出 {} 条待办", todos.len())
-                        },
-                        todos,
-                    },
-                    Err(error) => EmbeddedTodoRuntimeResponse {
-                        success: false,
-                        runtime_status: "failed".into(),
-                        model_version: request.model_version,
-                        message: error,
-                        todos: Vec::new(),
-                    },
-                },
-                Err(error) => EmbeddedTodoRuntimeResponse {
-                    success: false,
-                    runtime_status: "not_ready".into(),
-                    model_version: request.model_version,
-                    message: error,
-                    todos: Vec::new(),
-                },
-            }
-        }
-        _ => return Err(format!("不支持的本地运行时动作: {}", request.action)),
-    };
-
-    let stdout = serde_json::to_string(&response)
-        .map_err(|error| format!("序列化本地运行时响应失败: {error}"))?;
-    println!("{stdout}");
-    Ok(())
+    legacy_local_llm::run_once()
 }
 
 fn query_local_todo_runtime_status(
@@ -1583,7 +1068,9 @@ fn query_local_todo_runtime_status(
     if normalize_todo_provider_type(&settings.todo_provider_type) != LEGACY_TODO_PROVIDER_TYPE {
         return Ok(LocalTodoRuntimeStatusDto {
             provider_type: settings.todo_provider_type,
-            model_version: normalize_local_todo_model_version(&settings.local_todo_model_version),
+            model_version: legacy_local_llm::normalize_model_version(
+                &settings.local_todo_model_version,
+            ),
             runtime_status: "not_ready".into(),
             last_health_check_at: settings.local_todo_last_health_check_at,
             fallback_enabled: settings.allow_cloud_fallback,
@@ -1591,21 +1078,23 @@ fn query_local_todo_runtime_status(
         });
     }
 
-    let version = normalize_local_todo_model_version(&settings.local_todo_model_version);
-    let manifest_path = embedded_todo_manifest_path(models_dir, &version);
+    let version = legacy_local_llm::normalize_model_version(&settings.local_todo_model_version);
+    let manifest_path = legacy_local_llm::manifest_path(models_dir, &version);
 
     let (runtime_status, message) = if manifest_path.exists() {
-        match verify_embedded_todo_runtime_files(models_dir, &version) {
-            Ok(()) => match spawn_embedded_runtime_request(&EmbeddedTodoRuntimeRequest {
-                action: "health_check".into(),
-                model_version: version.clone(),
-                runtime_dir: models_dir.to_string_lossy().to_string(),
-                text: String::new(),
-            }) {
-                Ok(response) if response.success => ("ready".to_string(), response.message),
-                Ok(response) => (response.runtime_status, response.message),
-                Err(error) => ("failed".to_string(), error),
-            },
+        match legacy_local_llm::verify_runtime_files(models_dir, &version) {
+            Ok(()) => {
+                match legacy_local_llm::spawn_runtime_request(&legacy_local_llm::RuntimeRequest {
+                    action: "health_check".into(),
+                    model_version: version.clone(),
+                    runtime_dir: models_dir.to_string_lossy().to_string(),
+                    text: String::new(),
+                }) {
+                    Ok(response) if response.success => ("ready".to_string(), response.message),
+                    Ok(response) => (response.runtime_status, response.message),
+                    Err(error) => ("failed".to_string(), error),
+                }
+            }
             Err(error) => ("failed".to_string(), error),
         }
     } else {
@@ -2254,7 +1743,7 @@ fn test_todo_embedded_provider(
         message: if success {
             format!(
                 "本地 Todo 运行时测试成功，当前版本 {}",
-                normalize_local_todo_model_version(&settings.local_todo_model_version)
+                legacy_local_llm::normalize_model_version(&settings.local_todo_model_version)
             )
         } else {
             runtime.message
@@ -2533,27 +2022,19 @@ fn request_embedded_todo_extraction(
     models_dir: &PathBuf,
     merged_text: &str,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let response = spawn_embedded_runtime_request(&EmbeddedTodoRuntimeRequest {
-        action: "extract_todos".into(),
-        model_version: normalize_local_todo_model_version(&settings.local_todo_model_version),
-        runtime_dir: models_dir.to_string_lossy().to_string(),
-        text: merged_text.to_string(),
-    })?;
-
-    if !response.success {
-        return Err(response.message);
-    }
-
-    Ok(response
-        .todos
-        .into_iter()
-        .map(|item| {
-            serde_json::json!({
-                "title": item.title,
-                "note": item.note
-            })
+    Ok(legacy_local_llm::request_todo_extraction(
+        models_dir,
+        &settings.local_todo_model_version,
+        merged_text,
+    )?
+    .into_iter()
+    .map(|item| {
+        serde_json::json!({
+            "title": item.title,
+            "note": item.note
         })
-        .collect::<Vec<_>>())
+    })
+    .collect::<Vec<_>>())
 }
 
 fn register_semantic_todo_artifact_boundary(
@@ -2667,7 +2148,7 @@ fn generate_todos_for_session(
         match request_embedded_todo_extraction(settings, models_dir, &merged_text) {
             Ok(local_items) if !local_items.is_empty() => (
                 local_items,
-                normalize_local_todo_model_version(&settings.local_todo_model_version),
+                legacy_local_llm::normalize_model_version(&settings.local_todo_model_version),
                 LEGACY_TODO_PROVIDER_TYPE.to_string(),
                 false,
                 "".to_string(),
@@ -2680,7 +2161,9 @@ fn generate_todos_for_session(
                 {
                     (
                         local_items,
-                        normalize_local_todo_model_version(&settings.local_todo_model_version),
+                        legacy_local_llm::normalize_model_version(
+                            &settings.local_todo_model_version,
+                        ),
                         LEGACY_TODO_PROVIDER_TYPE.to_string(),
                         false,
                         "".to_string(),
@@ -2975,8 +2458,8 @@ pub fn process_pending_jobs_once_for_cli(db_path: &str) -> Result<String, String
         .map(|parent| parent.join("models"))
         .unwrap_or_else(|| PathBuf::from("models"));
     initialize_database(&db_path)?;
-    ensure_embedded_todo_runtime_files(&models_dir)?;
     let connection = open_connection(&db_path)?;
+    ensure_legacy_todo_runtime_files_if_selected(&connection, &models_dir)?;
     process_pending_jobs_internal(&connection, &models_dir)
 }
 
@@ -3533,7 +3016,8 @@ pub fn run() {
             initialize_database(&db_path)?;
             fs::create_dir_all(&recordings_dir)
                 .map_err(|error| format!("创建录音目录失败: {error}"))?;
-            ensure_embedded_todo_runtime_files(&models_dir)?;
+            let connection = open_connection(&db_path)?;
+            ensure_legacy_todo_runtime_files_if_selected(&connection, &models_dir)?;
             app.manage(AppState {
                 db_path,
                 recordings_dir,
@@ -3574,7 +3058,7 @@ mod tests {
     #[test]
     fn should_build_embedded_prompt_with_input_text() {
         let template = "前文\n{{input_text}}\n后文";
-        let prompt = build_embedded_todo_prompt(template, "  今天联系客户并发送报价  ");
+        let prompt = legacy_local_llm::build_prompt(template, "  今天联系客户并发送报价  ");
         assert!(prompt.contains("今天联系客户并发送报价"));
         assert!(!prompt.contains("{{input_text}}"));
     }
@@ -3582,7 +3066,7 @@ mod tests {
     #[test]
     fn should_parse_runtime_todos_from_wrapped_json_output() {
         let output = "思考略\n[{\"title\":\"联系客户发送报价并确认税率\",\"note\":\"今天下午联系客户并发送报价，确认税率口径。\"}]";
-        let todos = parse_runtime_todos(output).expect("应能解析 JSON 数组");
+        let todos = legacy_local_llm::parse_runtime_todos(output).expect("应能解析 JSON 数组");
         assert_eq!(todos.len(), 1);
         assert_eq!(todos[0].title, "联系客户发送报价并确认税率");
         assert!(todos[0].note.contains("确认税率"));
@@ -3591,7 +3075,8 @@ mod tests {
     #[test]
     fn should_extract_last_valid_json_array_from_prompt_echo_output() {
         let output = "示例输出：\n[{\"title\":\"示例任务\",\"note\":\"示例说明\"}]\n待处理文稿：\n今天下班前把合同发给小李。\n\n[{\"title\":\"给小李发送合同\",\"note\":\"今天下班前把合同发给小李。\"}] [end of text]";
-        let todos = parse_runtime_todos(output).expect("应能从回显提示词中提取最后一个 JSON 数组");
+        let todos = legacy_local_llm::parse_runtime_todos(output)
+            .expect("应能从回显提示词中提取最后一个 JSON 数组");
         assert_eq!(todos.len(), 1);
         assert_eq!(todos[0].title, "给小李发送合同");
         assert_eq!(todos[0].note, "今天下班前把合同发给小李。");
@@ -3599,8 +3084,8 @@ mod tests {
 
     #[test]
     fn should_parse_embedded_manifest_text() {
-        let manifest = parse_embedded_todo_manifest_text(
-            std::str::from_utf8(EMBEDDED_TODO_MANIFEST_BYTES).expect("内嵌清单应为 UTF-8"),
+        let manifest = legacy_local_llm::parse_manifest_text(
+            legacy_local_llm::embedded_manifest_text().expect("内嵌清单应为 UTF-8"),
         )
         .expect("应能解析内嵌清单");
         assert_eq!(manifest.model_version, EMBEDDED_TODO_MODEL_VERSION);
@@ -3614,9 +3099,9 @@ mod tests {
             "smart-todo-runtime-test-{}",
             current_timestamp_label()
         ));
-        ensure_embedded_todo_runtime_files(&temp_dir).expect("应能释放内嵌模型清单");
+        legacy_local_llm::ensure_runtime_files(&temp_dir).expect("应能释放内嵌模型清单");
 
-        let error = load_embedded_todo_runtime_config(&temp_dir, EMBEDDED_TODO_MODEL_VERSION)
+        let error = legacy_local_llm::load_runtime_config(&temp_dir, EMBEDDED_TODO_MODEL_VERSION)
             .expect_err("缺少 llama-cli 和 GGUF 时不应进入 ready");
         assert!(
             error.contains("llama.cpp") || error.contains("GGUF"),
@@ -3835,6 +3320,41 @@ mod tests {
     }
 
     #[test]
+    fn should_prepare_legacy_runtime_files_only_when_selected() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-legacy-runtime-gate-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        let models_dir = temp_dir.join("models");
+        let manifest_path =
+            legacy_local_llm::manifest_path(&models_dir, legacy_local_llm::MODEL_VERSION);
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+
+        ensure_legacy_todo_runtime_files_if_selected(&connection, &models_dir)
+            .expect("默认语义路径不应要求 legacy 资源");
+        assert!(
+            !manifest_path.exists(),
+            "默认 semantic_m3 路径不应释放 legacy manifest"
+        );
+
+        connection
+            .execute(
+                "UPDATE app_settings SET todo_provider_type = ?1 WHERE id = 'default'",
+                params![LEGACY_TODO_PROVIDER_TYPE],
+            )
+            .expect("应能切换到 legacy Todo provider");
+        ensure_legacy_todo_runtime_files_if_selected(&connection, &models_dir)
+            .expect("显式 legacy provider 应释放本地运行时资源");
+        assert!(manifest_path.exists(), "legacy provider 应释放 manifest");
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
     fn should_persist_v04_provider_settings_round_trip() {
         let temp_dir = std::env::temp_dir().join(format!(
             "smart-todo-v04-settings-roundtrip-test-{}",
@@ -3868,6 +3388,18 @@ mod tests {
         assert_eq!(persisted.export_provider_type, "local_file");
 
         let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_expose_legacy_local_llm_provider_boundary() {
+        let normalized = legacy_local_llm::normalize_model_version("todo-embedded-v1");
+
+        assert_eq!(normalized, legacy_local_llm::MODEL_VERSION);
+        assert!(legacy_local_llm::manifest_path(
+            &PathBuf::from("/tmp/models"),
+            legacy_local_llm::MODEL_VERSION
+        )
+        .ends_with("todo/qwen3-4b-instruct-2507-q4_k_m/manifest.json"));
     }
 
     #[test]
