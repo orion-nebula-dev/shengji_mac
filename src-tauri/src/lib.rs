@@ -1,7 +1,6 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use reqwest::blocking::Client;
 use rusqlite::{params, Connection};
-use serde::Serialize;
 use std::{
     fs,
     path::PathBuf,
@@ -60,16 +59,6 @@ struct RecordingResult {
 struct RecordingSummary {
     sample_count: u64,
     total_energy: u64,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ProcessingActionResult {
-    message: String,
-    runtime: RuntimeStatusDto,
-    latest_session: Option<SessionDto>,
-    todos: Vec<TodoDto>,
-    sessions: Vec<SessionDto>,
 }
 
 #[derive(Debug)]
@@ -2652,6 +2641,35 @@ mod tests {
         assert_eq!(payload["message"], "录音已在进行中");
         assert_eq!(payload["runtime"]["runtimeLabel"], "录音中");
         assert!(payload["latestSession"].is_null());
+        assert!(payload.get("latest_session").is_none());
+    }
+
+    #[test]
+    fn should_expose_processing_action_domain_dto_contract() {
+        let result = domain::processing::ProcessingActionResult {
+            message: "暂无待处理任务".into(),
+            runtime: domain::runtime::RuntimeStatusDto {
+                runtime_label: "已暂停".into(),
+                current_session_status: "idle_waiting".into(),
+                last_slice_at: "暂无切片".into(),
+                last_extraction_at: "暂无".into(),
+                last_extraction_summary: "暂无会话提取记录".into(),
+            },
+            latest_session: None,
+            todos: Vec::new(),
+            sessions: Vec::new(),
+        };
+
+        let payload =
+            serde_json::to_value(&result).expect("ProcessingActionResult domain DTO 应可序列化");
+
+        assert_eq!(payload["message"], "暂无待处理任务");
+        assert_eq!(payload["runtime"]["runtimeLabel"], "已暂停");
+        assert!(payload["latestSession"].is_null());
+        assert!(payload["todos"]
+            .as_array()
+            .expect("todos 应为数组")
+            .is_empty());
         assert!(payload.get("latest_session").is_none());
     }
 
