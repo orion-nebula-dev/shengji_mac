@@ -1,9 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   flushDesktopSession,
+  importDesktopLocalAudio,
   loadBootstrapData,
   loadDesktopContext,
+  loadTranscriptReview,
+  markDesktopTranscriptSegment,
   processDesktopPendingJobs,
+  renameDesktopSpeaker,
+  retryDesktopTranscriptJob,
   saveDesktopSettings,
   simulateDesktopAudioSlice,
   startDesktopRecording,
@@ -11,10 +16,11 @@ import {
   testDesktopModelConnection,
   toggleDesktopTodoStatus,
 } from "./lib/desktop";
+import { defaultTranscriptReview } from "./data/mock";
 import { getDefaultState, loadState, saveState } from "./lib/storage";
-import type { SessionItem, SettingsState, TodoItem } from "./types";
+import type { SessionItem, SettingsState, TodoItem, TranscriptReview } from "./types";
 
-type TabKey = "overview" | "actions" | "history" | "system" | "settings";
+type TabKey = "overview" | "actions" | "transcript" | "history" | "system" | "settings";
 
 const statusLabelMap = {
   pending: "未完成",
@@ -34,6 +40,23 @@ const extractionStatusLabelMap = {
   failed: "失败可重试",
   pending: "等待中",
 } as const;
+
+const transcriptJobStatusLabelMap = {
+  queued: "已排队",
+  running: "转写中",
+  succeeded: "已完成",
+  failed: "失败可重试",
+  retrying: "重试中",
+} as const;
+
+function formatDuration(ms: number) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60)
+    .toString()
+    .padStart(2, "0");
+  const seconds = (totalSeconds % 60).toString().padStart(2, "0");
+  return `${minutes}:${seconds}`;
+}
 
 function getFallbackReasonText(session?: SessionItem) {
   if (!session) {
@@ -62,6 +85,14 @@ function App() {
   const [saveBanner, setSaveBanner] = useState("");
   const [testingProvider, setTestingProvider] = useState<"" | "asr" | "todo">("");
   const [lastManualFlushAt, setLastManualFlushAt] = useState(0);
+  const [transcriptReview, setTranscriptReview] =
+    useState<TranscriptReview>(defaultTranscriptReview);
+  const [audioImportPath, setAudioImportPath] = useState("");
+  const [selectedTranscriptSegmentId, setSelectedTranscriptSegmentId] = useState(
+    defaultTranscriptReview.segments[0]?.id ?? "",
+  );
+  const [currentPlaybackMs, setCurrentPlaybackMs] = useState(0);
+  const [speakerDrafts, setSpeakerDrafts] = useState<Record<string, string>>({});
   const [desktopContext, setDesktopContext] = useState<{
     runtime: string;
     platform: string;
@@ -86,6 +117,37 @@ function App() {
       .catch(() => {
         if (!cancelled) {
           setDesktopContext(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    loadTranscriptReview()
+      .then((review) => {
+        if (!review || cancelled) {
+          return;
+        }
+
+        setTranscriptReview(review);
+        setSelectedTranscriptSegmentId(review.segments[0]?.id ?? "");
+        setSpeakerDrafts(
+          Object.fromEntries(review.speakers.map((speaker) => [speaker.id, speaker.label])),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setTranscriptReview(defaultTranscriptReview);
+          setSpeakerDrafts(
+            Object.fromEntries(
+              defaultTranscriptReview.speakers.map((speaker) => [speaker.id, speaker.label]),
+            ),
+          );
         }
       });
 
@@ -288,6 +350,117 @@ function App() {
     window.setTimeout(() => setSaveBanner(""), 4000);
   }
 
+  async function handleImportAudio() {
+    if (!audioImportPath.trim()) {
+      setSaveBanner("请输入本地音频文件路径，用于 v0.5 离线评估。");
+      window.setTimeout(() => setSaveBanner(""), 2600);
+      return;
+    }
+
+    const review = await importDesktopLocalAudio(audioImportPath.trim()).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : "导入本地音频失败。";
+      setSaveBanner(message);
+      window.setTimeout(() => setSaveBanner(""), 3600);
+      return null;
+    });
+
+    if (!review) {
+      const nextReview = {
+        ...defaultTranscriptReview,
+        audio: {
+          ...defaultTranscriptReview.audio,
+          fileName: audioImportPath.trim().split("/").filter(Boolean).pop() || "local-audio.wav",
+        },
+      };
+      setTranscriptReview(nextReview);
+      setSelectedTranscriptSegmentId(nextReview.segments[0]?.id ?? "");
+      setSaveBanner("浏览器原型模式已载入本地评估样例。桌面端会读取真实路径。");
+      window.setTimeout(() => setSaveBanner(""), 3600);
+      return;
+    }
+
+    setTranscriptReview(review);
+    setSelectedTranscriptSegmentId(review.segments[0]?.id ?? "");
+    setSpeakerDrafts(Object.fromEntries(review.speakers.map((speaker) => [speaker.id, speaker.label])));
+    setSaveBanner("已导入音频并生成本地转写评估时间轴。");
+    window.setTimeout(() => setSaveBanner(""), 3600);
+  }
+
+  function jumpToTranscriptSegment(segmentId: string, startMs: number) {
+    setSelectedTranscriptSegmentId(segmentId);
+    setCurrentPlaybackMs(startMs);
+  }
+
+  async function handleRenameSpeaker(speakerId: string) {
+    const label = speakerDrafts[speakerId]?.trim();
+    if (!label) {
+      setSaveBanner("说话人名称不能为空。");
+      window.setTimeout(() => setSaveBanner(""), 2400);
+      return;
+    }
+
+    const renamed = await renameDesktopSpeaker(speakerId, label).catch(() => null);
+    setTranscriptReview((current) => ({
+      ...current,
+      speakers: current.speakers.map((speaker) =>
+        speaker.id === speakerId
+          ? { ...speaker, label, displayName: label, corrected: true }
+          : speaker,
+      ),
+      segments: current.segments.map((segment) =>
+        segment.speakerId === speakerId ? { ...segment, speakerLabel: label } : segment,
+      ),
+    }));
+
+    if (renamed) {
+      setSpeakerDrafts((current) => ({ ...current, [speakerId]: renamed.label }));
+    }
+    setSaveBanner("说话人名称已保存。");
+    window.setTimeout(() => setSaveBanner(""), 2400);
+  }
+
+  async function handleMarkTranscriptSegment(segmentId: string) {
+    const reason = "用户标注：该片段需要人工复核";
+    const marked = await markDesktopTranscriptSegment(segmentId, "manual_review", reason).catch(
+      () => null,
+    );
+
+    setTranscriptReview((current) => ({
+      ...current,
+      segments: current.segments.map((segment) =>
+        segment.id === segmentId
+          ? {
+              ...segment,
+              reviewStatus: "flagged",
+              reviewReason: marked?.reviewReason || reason,
+            }
+          : segment,
+      ),
+    }));
+    setSaveBanner("已标注错误片段。");
+    window.setTimeout(() => setSaveBanner(""), 2400);
+  }
+
+  async function handleRetryTranscriptJob(jobId: string) {
+    const retried = await retryDesktopTranscriptJob(jobId).catch(() => null);
+
+    setTranscriptReview((current) => ({
+      ...current,
+      jobs: current.jobs.map((job) =>
+        job.id === jobId
+          ? {
+              ...job,
+              status: "queued",
+              retryCount: retried?.retryCount ?? job.retryCount + 1,
+              errorMessage: "",
+            }
+          : job,
+      ),
+    }));
+    setSaveBanner("失败转写任务已重新排队。");
+    window.setTimeout(() => setSaveBanner(""), 2400);
+  }
+
   const pendingTodoCount = todos.filter((todo) => todo.status === "pending").length;
   const completedTodoCount = todos.filter((todo) => todo.status === "completed").length;
   const failedSessionCount = sessions.filter((session) => session.extractionStatus === "failed").length;
@@ -295,6 +468,7 @@ function App() {
   const navItems: Array<{ key: TabKey; label: string; description: string }> = [
     { key: "overview", label: "今日工作台", description: "录音与概览" },
     { key: "actions", label: "行动中心", description: "Todo 执行" },
+    { key: "transcript", label: "转写评估", description: "音频与说话人" },
     { key: "history", label: "会话日志", description: "文稿与来源" },
     { key: "system", label: "系统状态", description: "排障与运行时" },
     { key: "settings", label: "设置", description: "模型与录音" },
@@ -569,6 +743,239 @@ function App() {
                     <div className="empty-state">暂无 Todo 数据</div>
                   )}
                 </aside>
+              </main>
+            ) : null}
+
+            {activeTab === "transcript" ? (
+              <main className="page-stack">
+                <div className="page-heading">
+                  <div>
+                    <p className="section-kicker">Transcript Review</p>
+                    <h2>转写评估与说话人</h2>
+                  </div>
+                  <span
+                    className={`status-chip ${
+                      transcriptReview.audio.offlineAvailable ? "chip-live" : "chip-danger"
+                    }`}
+                  >
+                    {transcriptReview.audio.offlineAvailable ? "离线可用" : "需联网"}
+                  </span>
+                </div>
+
+                <section className="transcript-import-bar panel-lite">
+                  <label className="field field-wide">
+                    <span>本地音频路径</span>
+                    <input
+                      type="text"
+                      value={audioImportPath}
+                      onChange={(event) => setAudioImportPath(event.target.value)}
+                      placeholder="/Users/wwh/Audio/meeting.wav"
+                    />
+                  </label>
+                  <button className="primary-button" type="button" onClick={handleImportAudio}>
+                    导入音频
+                  </button>
+                </section>
+
+                <section className="transcript-layout">
+                  <section className="panel-lite transcript-main-panel">
+                    <div className="panel-head">
+                      <div>
+                        <p className="section-kicker">Timeline</p>
+                        <h3>{transcriptReview.audio.fileName}</h3>
+                      </div>
+                      <div className="playback-meter">
+                        <strong>{formatDuration(currentPlaybackMs)}</strong>
+                        <span>/ {formatDuration(transcriptReview.audio.durationMs)}</span>
+                      </div>
+                    </div>
+
+                    <div className="audio-state-grid">
+                      <div>
+                        <span>状态</span>
+                        <strong>{transcriptJobStatusLabelMap[transcriptReview.audio.status as keyof typeof transcriptJobStatusLabelMap] ?? transcriptReview.audio.status}</strong>
+                      </div>
+                      <div>
+                        <span>Provider</span>
+                        <strong>{transcriptReview.audio.provider}</strong>
+                      </div>
+                      <div>
+                        <span>模型</span>
+                        <strong>{transcriptReview.audio.modelName}</strong>
+                      </div>
+                    </div>
+
+                    <div className="transcript-timeline">
+                      {transcriptReview.segments.map((segment) => (
+                        <article
+                          key={segment.id}
+                          className={`transcript-segment ${
+                            selectedTranscriptSegmentId === segment.id
+                              ? "transcript-segment-active"
+                              : ""
+                          }`}
+                        >
+                          <button
+                            className="segment-jump"
+                            type="button"
+                            onClick={() =>
+                              jumpToTranscriptSegment(segment.id, segment.startMs)
+                            }
+                          >
+                            <span className="segment-time">
+                              {formatDuration(segment.startMs)} - {formatDuration(segment.endMs)}
+                            </span>
+                            <span className="speaker-pill">{segment.speakerLabel}</span>
+                          </button>
+                          <p>{segment.text}</p>
+                          <div className="segment-meta">
+                            <span>置信度 {(segment.confidence * 100).toFixed(0)}%</span>
+                            <span>{segment.provider}</span>
+                            {segment.reviewStatus === "flagged" ? (
+                              <span className="badge badge-failed">需复核</span>
+                            ) : (
+                              <span className="badge badge-completed">正常</span>
+                            )}
+                          </div>
+                          {segment.reviewReason ? (
+                            <p className="review-note">{segment.reviewReason}</p>
+                          ) : null}
+                          <button
+                            className="text-button"
+                            type="button"
+                            onClick={() => handleMarkTranscriptSegment(segment.id)}
+                          >
+                            标注错误
+                          </button>
+                        </article>
+                      ))}
+                      {transcriptReview.segments.length === 0 ? (
+                        <div className="empty-state">暂无转写时间轴，请先导入本地音频</div>
+                      ) : null}
+                    </div>
+                  </section>
+
+                  <aside className="transcript-side-stack">
+                    <section className="panel-lite">
+                      <div className="panel-head">
+                        <div>
+                          <p className="section-kicker">Speakers</p>
+                          <h3>说话人标签</h3>
+                        </div>
+                      </div>
+                      <div className="speaker-list">
+                        {transcriptReview.speakers.map((speaker) => (
+                          <article key={speaker.id} className="speaker-row">
+                            <span
+                              className="speaker-dot"
+                              style={{ backgroundColor: speaker.color }}
+                            />
+                            <label className="field">
+                              <span>{speaker.segmentCount} 个片段</span>
+                              <input
+                                type="text"
+                                value={speakerDrafts[speaker.id] ?? speaker.label}
+                                onChange={(event) =>
+                                  setSpeakerDrafts((current) => ({
+                                    ...current,
+                                    [speaker.id]: event.target.value,
+                                  }))
+                                }
+                              />
+                            </label>
+                            <button
+                              className="secondary-button"
+                              type="button"
+                              onClick={() => handleRenameSpeaker(speaker.id)}
+                            >
+                              保存
+                            </button>
+                          </article>
+                        ))}
+                        {transcriptReview.speakers.length === 0 ? (
+                          <div className="empty-state">暂无说话人</div>
+                        ) : null}
+                      </div>
+                    </section>
+
+                    <section className="panel-lite">
+                      <div className="panel-head">
+                        <div>
+                          <p className="section-kicker">Local Model</p>
+                          <h3>本地模型状态</h3>
+                        </div>
+                        <span className="status-chip">{transcriptReview.modelStatus.downloadProgress}%</span>
+                      </div>
+                      <div className="model-progress-track">
+                        <span style={{ width: `${transcriptReview.modelStatus.downloadProgress}%` }} />
+                      </div>
+                      <ul className="compact-list">
+                        <li>
+                          <span>Provider</span>
+                          <strong>{transcriptReview.modelStatus.provider}</strong>
+                        </li>
+                        <li>
+                          <span>模型</span>
+                          <strong>{transcriptReview.modelStatus.modelName}</strong>
+                        </li>
+                        <li>
+                          <span>缓存</span>
+                          <strong>{transcriptReview.modelStatus.cacheDir}</strong>
+                        </li>
+                        <li>
+                          <span>状态</span>
+                          <strong>{transcriptReview.modelStatus.downloadStatus}</strong>
+                        </li>
+                      </ul>
+                      <p className="runtime-message">
+                        {transcriptReview.modelStatus.deviceRecommendation}
+                      </p>
+                    </section>
+
+                    <section className="panel-lite">
+                      <div className="panel-head">
+                        <div>
+                          <p className="section-kicker">Jobs</p>
+                          <h3>转写任务</h3>
+                        </div>
+                      </div>
+                      <div className="job-list">
+                        {transcriptReview.jobs.map((job) => (
+                          <article key={job.id} className="job-row">
+                            <div>
+                              <strong>{job.modelName}</strong>
+                              <span>{job.provider}</span>
+                            </div>
+                            <span
+                              className={`badge ${
+                                job.status === "failed"
+                                  ? "badge-failed"
+                                  : job.status === "succeeded"
+                                    ? "badge-completed"
+                                    : "badge-waiting"
+                              }`}
+                            >
+                              {transcriptJobStatusLabelMap[job.status]}
+                            </span>
+                            {job.errorMessage ? <p>{job.errorMessage}</p> : null}
+                            {job.status === "failed" ? (
+                              <button
+                                className="secondary-button"
+                                type="button"
+                                onClick={() => handleRetryTranscriptJob(job.id)}
+                              >
+                                重试
+                              </button>
+                            ) : null}
+                          </article>
+                        ))}
+                        {transcriptReview.jobs.length === 0 ? (
+                          <div className="empty-state">暂无转写任务</div>
+                        ) : null}
+                      </div>
+                    </section>
+                  </aside>
+                </section>
               </main>
             ) : null}
 

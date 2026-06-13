@@ -269,6 +269,59 @@ fn ensure_model_invocations_columns(connection: &Connection) -> Result<(), Strin
     Ok(())
 }
 
+fn ensure_transcript_segments_v05_columns(connection: &Connection) -> Result<(), String> {
+    let mut columns = Vec::new();
+    let mut statement = connection
+        .prepare("PRAGMA table_info(transcript_segments)")
+        .map_err(|error| format!("读取转写片段表结构失败: {error}"))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| format!("查询转写片段表字段失败: {error}"))?;
+
+    for column in rows {
+        columns.push(column.map_err(|error| format!("读取转写片段字段失败: {error}"))?);
+    }
+
+    for (name, sql) in [
+        (
+            "speaker_id",
+            "ALTER TABLE transcript_segments ADD COLUMN speaker_id TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "start_ms",
+            "ALTER TABLE transcript_segments ADD COLUMN start_ms INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "end_ms",
+            "ALTER TABLE transcript_segments ADD COLUMN end_ms INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "confidence",
+            "ALTER TABLE transcript_segments ADD COLUMN confidence REAL NOT NULL DEFAULT 0",
+        ),
+        (
+            "provider",
+            "ALTER TABLE transcript_segments ADD COLUMN provider TEXT NOT NULL DEFAULT 'local_whisperkit'",
+        ),
+        (
+            "review_status",
+            "ALTER TABLE transcript_segments ADD COLUMN review_status TEXT NOT NULL DEFAULT 'normal'",
+        ),
+        (
+            "review_reason",
+            "ALTER TABLE transcript_segments ADD COLUMN review_reason TEXT NOT NULL DEFAULT ''",
+        ),
+    ] {
+        if !columns.iter().any(|column| column == name) {
+            connection
+                .execute(sql, [])
+                .map_err(|error| format!("补充转写片段字段 {name} 失败: {error}"))?;
+        }
+    }
+
+    Ok(())
+}
+
 fn ensure_semantic_artifact_type_constraint(connection: &Connection) -> Result<(), String> {
     let table_sql = connection
         .query_row(
@@ -432,15 +485,74 @@ pub(crate) fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
         id TEXT PRIMARY KEY,
         audio_segment_id TEXT NOT NULL,
         conversation_session_id TEXT,
+        speaker_id TEXT NOT NULL DEFAULT '',
+        start_ms INTEGER NOT NULL DEFAULT 0 CHECK (start_ms >= 0),
+        end_ms INTEGER NOT NULL DEFAULT 0 CHECK (end_ms >= 0),
         text TEXT NOT NULL,
+        confidence REAL NOT NULL DEFAULT 0,
         language TEXT NOT NULL DEFAULT 'zh-CN',
         status TEXT NOT NULL DEFAULT 'success'
           CHECK (status IN ('pending', 'success', 'failed')),
+        provider TEXT NOT NULL DEFAULT 'local_whisperkit',
         provider_model_name TEXT NOT NULL DEFAULT '',
+        review_status TEXT NOT NULL DEFAULT 'normal'
+          CHECK (review_status IN ('normal', 'flagged', 'corrected')),
+        review_reason TEXT NOT NULL DEFAULT '',
         trace_id TEXT,
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (audio_segment_id) REFERENCES audio_segments(id) ON DELETE CASCADE,
         FOREIGN KEY (conversation_session_id) REFERENCES conversation_sessions(id) ON DELETE SET NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS speakers (
+        id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        color TEXT NOT NULL DEFAULT '#2f7df6',
+        corrected INTEGER NOT NULL DEFAULT 0 CHECK (corrected IN (0, 1)),
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS speaker_segments (
+        id TEXT PRIMARY KEY,
+        speaker_id TEXT NOT NULL,
+        audio_segment_id TEXT NOT NULL,
+        start_ms INTEGER NOT NULL DEFAULT 0 CHECK (start_ms >= 0),
+        end_ms INTEGER NOT NULL DEFAULT 0 CHECK (end_ms >= 0),
+        confidence REAL NOT NULL DEFAULT 0,
+        corrected INTEGER NOT NULL DEFAULT 0 CHECK (corrected IN (0, 1)),
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (speaker_id) REFERENCES speakers(id) ON DELETE CASCADE,
+        FOREIGN KEY (audio_segment_id) REFERENCES audio_segments(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS transcript_jobs (
+        id TEXT PRIMARY KEY,
+        audio_segment_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'queued'
+          CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'retrying')),
+        retry_count INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
+        max_retry_count INTEGER NOT NULL DEFAULT 3 CHECK (max_retry_count >= 0),
+        error_message TEXT NOT NULL DEFAULT '',
+        provider TEXT NOT NULL DEFAULT 'local_whisperkit',
+        model_name TEXT NOT NULL DEFAULT 'large-v3-turbo',
+        started_at DATETIME,
+        finished_at DATETIME,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS local_model_status (
+        provider TEXT PRIMARY KEY,
+        model_name TEXT NOT NULL,
+        cache_dir TEXT NOT NULL,
+        download_status TEXT NOT NULL DEFAULT 'available'
+          CHECK (download_status IN ('not_started', 'downloading', 'available', 'failed')),
+        download_progress INTEGER NOT NULL DEFAULT 100 CHECK (download_progress >= 0 AND download_progress <= 100),
+        offline_available INTEGER NOT NULL DEFAULT 1 CHECK (offline_available IN (0, 1)),
+        device_recommendation TEXT NOT NULL DEFAULT '',
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
 
       CREATE TABLE IF NOT EXISTS semantic_artifacts (
@@ -526,6 +638,12 @@ pub(crate) fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
         ON transcript_segments(audio_segment_id);
       CREATE INDEX IF NOT EXISTS idx_transcript_segments_session
         ON transcript_segments(conversation_session_id);
+      CREATE INDEX IF NOT EXISTS idx_transcript_segments_timeline
+        ON transcript_segments(audio_segment_id, start_ms);
+      CREATE INDEX IF NOT EXISTS idx_speaker_segments_audio
+        ON speaker_segments(audio_segment_id, start_ms);
+      CREATE INDEX IF NOT EXISTS idx_transcript_jobs_status
+        ON transcript_jobs(status);
       CREATE INDEX IF NOT EXISTS idx_semantic_artifacts_session_type
         ON semantic_artifacts(session_id, artifact_type);
       CREATE INDEX IF NOT EXISTS idx_semantic_artifacts_status
@@ -548,6 +666,7 @@ pub(crate) fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
     ensure_conversation_sessions_columns(&connection)?;
     ensure_semantic_artifact_type_constraint(&connection)?;
     ensure_model_invocations_columns(&connection)?;
+    ensure_transcript_segments_v05_columns(&connection)?;
 
     connection
         .execute(
@@ -603,6 +722,31 @@ pub(crate) fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
             ],
         )
         .map_err(|error| format!("初始化默认设置失败: {error}"))?;
+
+    connection
+        .execute(
+            r#"
+      INSERT OR IGNORE INTO local_model_status (
+        provider,
+        model_name,
+        cache_dir,
+        download_status,
+        download_progress,
+        offline_available,
+        device_recommendation
+      ) VALUES (
+        'local_whisperkit',
+        'large-v3-turbo',
+        '~/Library/Application Support/com.smarttodo.desktop/models/argmax',
+        'available',
+        100,
+        1,
+        'Apple Silicon 推荐 large-v3-turbo；Intel 机型建议 small/base'
+      )
+      "#,
+            [],
+        )
+        .map_err(|error| format!("初始化本地模型状态失败: {error}"))?;
 
     seed_demo_data(&connection)?;
     Ok(())
