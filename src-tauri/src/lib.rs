@@ -23,6 +23,7 @@ use domain::runtime::RuntimeStatusDto;
 use domain::session::SessionDto;
 use domain::settings::SettingsDto;
 use domain::todo::TodoDto;
+use domain::transcript::TranscriptRecord;
 use infra::sqlite::{initialize_database, open_connection};
 
 #[derive(Clone)]
@@ -65,13 +66,6 @@ struct RecordingSummary {
 struct AudioSegmentRecord {
     id: String,
     file_path: String,
-    trace_id: String,
-}
-
-#[derive(Debug)]
-struct TranscriptRecord {
-    id: String,
-    text: String,
     trace_id: String,
 }
 
@@ -2671,6 +2665,22 @@ mod tests {
             .expect("todos 应为数组")
             .is_empty());
         assert!(payload.get("latest_session").is_none());
+    }
+
+    #[test]
+    fn should_expose_transcript_domain_record_contract() {
+        let transcript = domain::transcript::TranscriptRecord {
+            id: "transcript_domain_contract".into(),
+            text: "请把转写记录移动到 domain::transcript".into(),
+            trace_id: "trace_transcript_domain_contract".into(),
+        };
+
+        assert_eq!(transcript.id, "transcript_domain_contract");
+        assert_eq!(transcript.trace_id, "trace_transcript_domain_contract");
+        assert!(
+            format!("{transcript:?}").contains("transcript_domain_contract"),
+            "TranscriptRecord 应保留 Debug 能力，便于测试和诊断"
+        );
     }
 
     fn table_columns(connection: &Connection, table_name: &str) -> Vec<String> {
