@@ -64,14 +64,6 @@ struct RecordingSummary {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct RecordingActionResult {
-    message: String,
-    runtime: RuntimeStatusDto,
-    latest_session: Option<SessionDto>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
 struct ProcessingActionResult {
     message: String,
     runtime: RuntimeStatusDto,
@@ -2638,6 +2630,29 @@ mod tests {
             .is_empty());
         assert_eq!(payload["runtime"]["runtimeLabel"], "已暂停");
         assert!(payload.get("runtime_label").is_none());
+    }
+
+    #[test]
+    fn should_expose_recording_action_domain_dto_contract() {
+        let result = domain::recording::RecordingActionResult {
+            message: "录音已在进行中".into(),
+            runtime: domain::runtime::RuntimeStatusDto {
+                runtime_label: "录音中".into(),
+                current_session_status: "collecting".into(),
+                last_slice_at: "暂无切片".into(),
+                last_extraction_at: "暂无".into(),
+                last_extraction_summary: "暂无会话提取记录".into(),
+            },
+            latest_session: None,
+        };
+
+        let payload =
+            serde_json::to_value(&result).expect("RecordingActionResult domain DTO 应可序列化");
+
+        assert_eq!(payload["message"], "录音已在进行中");
+        assert_eq!(payload["runtime"]["runtimeLabel"], "录音中");
+        assert!(payload["latestSession"].is_null());
+        assert!(payload.get("latest_session").is_none());
     }
 
     fn table_columns(connection: &Connection, table_name: &str) -> Vec<String> {

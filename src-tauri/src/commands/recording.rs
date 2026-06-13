@@ -3,10 +3,10 @@ use std::path::PathBuf;
 use rusqlite::params;
 
 use crate::{
-    app::settings_service, current_timestamp_label, infra::sqlite::open_connection,
-    insert_audio_segment, insert_processing_job, latest_session, maybe_create_idle_session,
-    process_pending_jobs_internal, query_runtime_status, spawn_recording_controller, AppState,
-    RecorderControl, RecordingActionResult,
+    app::settings_service, current_timestamp_label, domain::recording::RecordingActionResult,
+    infra::sqlite::open_connection, insert_audio_segment, insert_processing_job, latest_session,
+    maybe_create_idle_session, process_pending_jobs_internal, query_runtime_status,
+    spawn_recording_controller, AppState, RecorderControl,
 };
 
 pub(crate) fn simulate_audio_slice_payload(
