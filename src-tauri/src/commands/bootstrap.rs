@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use crate::{
-    app::settings_service, infra::sqlite::open_connection, query_runtime_status, query_sessions,
-    query_todos, AppState, BootstrapData,
+    app::settings_service, domain::bootstrap::BootstrapData, infra::sqlite::open_connection,
+    query_runtime_status, query_sessions, query_todos, AppState,
 };
 
 pub(crate) fn get_bootstrap_data_payload(db_path: &PathBuf) -> Result<BootstrapData, String> {
