@@ -2,6 +2,7 @@ pub(crate) mod bootstrap;
 pub(crate) mod desktop;
 pub(crate) mod model_test;
 pub mod provider;
+pub(crate) mod recording;
 pub(crate) mod runtime;
 pub(crate) mod session;
 pub(crate) mod settings;
