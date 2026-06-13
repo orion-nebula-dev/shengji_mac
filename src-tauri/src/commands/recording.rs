@@ -3,10 +3,12 @@ use std::path::PathBuf;
 use rusqlite::params;
 
 use crate::{
-    app::settings_service, current_timestamp_label, domain::recording::RecordingActionResult,
-    infra::sqlite::open_connection, insert_audio_segment, insert_processing_job, latest_session,
-    maybe_create_idle_session, process_pending_jobs_internal, query_runtime_status,
-    spawn_recording_controller, AppState, RecorderControl,
+    app::{query_service, settings_service},
+    current_timestamp_label,
+    domain::recording::RecordingActionResult,
+    infra::sqlite::open_connection,
+    insert_audio_segment, insert_processing_job, maybe_create_idle_session,
+    process_pending_jobs_internal, spawn_recording_controller, AppState, RecorderControl,
 };
 
 pub(crate) fn simulate_audio_slice_payload(
@@ -83,7 +85,7 @@ pub(crate) fn simulate_audio_slice_payload(
         } else {
             format!("已写入一条静默切片，并检查空闲触发会话。{processing_summary}")
         },
-        runtime: query_runtime_status(&connection)?,
+        runtime: query_service::query_runtime_status(&connection)?,
         latest_session,
     })
 }
@@ -97,8 +99,8 @@ pub(crate) fn start_recording_payload(state: &AppState) -> Result<RecordingActio
         let connection = open_connection(&state.db_path)?;
         return Ok(RecordingActionResult {
             message: "录音已在进行中".into(),
-            runtime: query_runtime_status(&connection)?,
-            latest_session: latest_session(&connection)?,
+            runtime: query_service::query_runtime_status(&connection)?,
+            latest_session: query_service::latest_session(&connection)?,
         });
     }
 
@@ -109,8 +111,8 @@ pub(crate) fn start_recording_payload(state: &AppState) -> Result<RecordingActio
 
     Ok(RecordingActionResult {
         message: "已启动真实麦克风录音".into(),
-        runtime: query_runtime_status(&connection)?,
-        latest_session: latest_session(&connection)?,
+        runtime: query_service::query_runtime_status(&connection)?,
+        latest_session: query_service::latest_session(&connection)?,
     })
 }
 
@@ -125,8 +127,8 @@ pub(crate) fn stop_recording_payload(state: &AppState) -> Result<RecordingAction
         let connection = open_connection(&state.db_path)?;
         return Ok(RecordingActionResult {
             message: "当前没有进行中的录音".into(),
-            runtime: query_runtime_status(&connection)?,
-            latest_session: latest_session(&connection)?,
+            runtime: query_service::query_runtime_status(&connection)?,
+            latest_session: query_service::latest_session(&connection)?,
         });
     };
 
@@ -160,8 +162,8 @@ pub(crate) fn stop_recording_payload(state: &AppState) -> Result<RecordingAction
             result.file_path.to_string_lossy(),
             processing_summary
         ),
-        runtime: query_runtime_status(&connection)?,
-        latest_session: latest_session(&connection)?,
+        runtime: query_service::query_runtime_status(&connection)?,
+        latest_session: query_service::latest_session(&connection)?,
     })
 }
 

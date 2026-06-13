@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use crate::{
-    domain::processing::ProcessingActionResult, infra::sqlite::open_connection, latest_session,
-    process_pending_jobs_internal, query_runtime_status, query_sessions, query_todos, AppState,
+    app::query_service, domain::processing::ProcessingActionResult, infra::sqlite::open_connection,
+    process_pending_jobs_internal, AppState,
 };
 
 pub(crate) fn process_pending_jobs_payload(
@@ -12,10 +12,10 @@ pub(crate) fn process_pending_jobs_payload(
     let message = process_pending_jobs_internal(&connection)?;
     Ok(ProcessingActionResult {
         message,
-        runtime: query_runtime_status(&connection)?,
-        latest_session: latest_session(&connection)?,
-        todos: query_todos(&connection)?,
-        sessions: query_sessions(&connection)?,
+        runtime: query_service::query_runtime_status(&connection)?,
+        latest_session: query_service::latest_session(&connection)?,
+        todos: query_service::query_todos(&connection)?,
+        sessions: query_service::query_sessions(&connection)?,
     })
 }
 
