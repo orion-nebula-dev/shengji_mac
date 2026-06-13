@@ -33,6 +33,7 @@ description: "shengji_mac Codex project entrypoint. Read this first, then load o
 | 测试、构建、验证、完成前检查 | `quality/testing-verification.instructions.md` |
 | 分支、commit、文档同步、版本归档 | `workflow/git-docs-release.instructions.md` |
 | code review、功能 review、subagent 协作边界 | `workflow/review-subagents.instructions.md` |
+| agent team 编排、并行/串行、上下文压缩控制 | `workflow/agent-team.instructions.md` |
 
 ## 4. 默认工作方式
 

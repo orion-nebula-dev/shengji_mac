@@ -19,6 +19,7 @@
 | 测试与验证 | `quality/testing-verification.instructions.md` |
 | Git、文档、发布归档 | `workflow/git-docs-release.instructions.md` |
 | Code review / 功能 review 协作 | `workflow/review-subagents.instructions.md` |
+| Agent team 编排与上下文控制 | `workflow/agent-team.instructions.md` |
 
 ## 使用原则
 
