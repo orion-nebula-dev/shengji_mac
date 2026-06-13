@@ -1864,6 +1864,41 @@ mod tests {
     }
 
     #[test]
+    fn should_clamp_existing_unsupported_semantic_provider_during_database_init() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-semantic-provider-migration-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        {
+            let connection = open_connection(&db_path).expect("应能打开测试数据库");
+            connection
+                .execute(
+                    "UPDATE app_settings SET semantic_provider_type = 'unsupported_semantic_provider' WHERE id = 'default'",
+                    [],
+                )
+                .expect("应能模拟旧语义 provider 持久化值");
+        }
+
+        initialize_database(&db_path).expect("再次初始化应收敛旧语义 provider");
+        let connection = open_connection(&db_path).expect("应能打开迁移后的数据库");
+        let persisted: String = connection
+            .query_row(
+                "SELECT semantic_provider_type FROM app_settings WHERE id = 'default'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("应能读取迁移后的语义 provider");
+
+        assert_eq!(persisted, DEFAULT_SEMANTIC_PROVIDER_TYPE);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
     fn should_expose_sqlite_infra_database_boundary() {
         let temp_dir = std::env::temp_dir().join(format!(
             "smart-todo-v04-sqlite-infra-test-{}",
@@ -2312,6 +2347,40 @@ mod tests {
         assert_eq!(persisted.language, "en-US");
         assert_eq!(persisted.todo_provider_type, DEFAULT_TODO_PROVIDER_TYPE);
         assert_eq!(persisted.semantic_model_name, "MiniMax-M3-Command-Test");
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_clamp_unsupported_provider_inputs_at_settings_command_boundary() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-settings-provider-clamp-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let mut settings = settings_service::load_settings(&connection).expect("应能读取默认设置");
+        settings.todo_provider_type = "unsupported_todo_provider".into();
+        settings.semantic_provider_type = "unsupported_semantic_provider".into();
+
+        let saved = commands::settings::save_settings_payload(&db_path, settings)
+            .expect("settings command boundary 应收敛不支持的 provider 输入");
+
+        assert_eq!(saved.todo_provider_type, DEFAULT_TODO_PROVIDER_TYPE);
+        assert_eq!(saved.semantic_provider_type, DEFAULT_SEMANTIC_PROVIDER_TYPE);
+
+        let persisted: (String, String) = connection
+            .query_row(
+                "SELECT todo_provider_type, semantic_provider_type FROM app_settings WHERE id = 'default'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("应能读取持久化 provider 设置");
+        assert_eq!(persisted.0, DEFAULT_TODO_PROVIDER_TYPE);
+        assert_eq!(persisted.1, DEFAULT_SEMANTIC_PROVIDER_TYPE);
 
         let _ = fs::remove_dir_all(temp_dir);
     }

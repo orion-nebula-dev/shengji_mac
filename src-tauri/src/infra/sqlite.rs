@@ -134,7 +134,7 @@ fn ensure_app_settings_columns(connection: &Connection) -> Result<(), String> {
               END,
               semantic_provider_type = CASE
                 WHEN TRIM(semantic_provider_type) = '' THEN 'minimax_m3'
-                ELSE semantic_provider_type
+                ELSE 'minimax_m3'
               END,
               embedding_provider_type = CASE
                 WHEN TRIM(embedding_provider_type) = '' THEN 'reserved'
