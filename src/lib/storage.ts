@@ -27,11 +27,21 @@ export function loadState(): PersistedState {
 
   try {
     const parsed = JSON.parse(raw) as Partial<PersistedState>;
+    const mergedSettings = {
+      ...defaultState.settings,
+      ...(parsed.settings ?? {}),
+    };
+    if (
+      mergedSettings.providerMode === "cloud" &&
+      mergedSettings.asrProviderType === "cloud" &&
+      mergedSettings.todoProviderType === "cloud"
+    ) {
+      mergedSettings.providerMode = "local";
+      mergedSettings.asrProviderType = "local";
+      mergedSettings.todoProviderType = "embedded_local";
+    }
     return {
-      settings: {
-        ...defaultState.settings,
-        ...(parsed.settings ?? {}),
-      },
+      settings: mergedSettings,
       todos: parsed.todos ?? defaultState.todos,
       sessions: parsed.sessions ?? defaultState.sessions,
       runtime: {
