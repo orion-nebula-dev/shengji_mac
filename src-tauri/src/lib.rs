@@ -1268,27 +1268,6 @@ fn test_asr_provider(settings: &SettingsDto) -> Result<ModelTestResult, String> 
 }
 
 #[tauri::command]
-fn get_desktop_context(state: tauri::State<'_, AppState>) -> Result<DesktopContext, String> {
-    let recording = is_recording(&state)?;
-    let provider_count = providers::provider_catalog().len();
-
-    Ok(DesktopContext {
-        runtime: "tauri".into(),
-        platform: std::env::consts::OS.into(),
-        recorder_status: if recording {
-            "真实麦克风录音中".into()
-        } else {
-            "录音已停止，可启动真实麦克风录音".into()
-        },
-        storage_status: format!(
-            "SQLite 已接入 settings / audio_segments / sessions / semantic_artifacts / model_invocations / todos；{} 个 provider 边界已注册",
-            provider_count
-        ),
-        models_status: "Todo 语义入口已固定为 MiniMax M3；旧本地 Todo 路径已移除".into(),
-    })
-}
-
-#[tauri::command]
 fn get_bootstrap_data(state: tauri::State<'_, AppState>) -> Result<BootstrapData, String> {
     let connection = open_connection(&state.db_path)?;
     Ok(BootstrapData {
@@ -1605,7 +1584,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            get_desktop_context,
+            commands::desktop_context::get_desktop_context,
             get_bootstrap_data,
             commands::settings::save_settings,
             commands::model_test::test_model_connection,
@@ -2451,6 +2430,25 @@ mod tests {
         assert_eq!(persisted.semantic_model_name, "MiniMax-M3-Command-Test");
 
         let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_expose_desktop_context_command_boundary() {
+        let provider_count = providers::provider_catalog().len();
+        let context = commands::desktop_context::build_desktop_context(false, provider_count);
+
+        assert_eq!(context.runtime, "tauri");
+        assert_eq!(context.platform, std::env::consts::OS);
+        assert!(context.recorder_status.contains("录音已停止"));
+        assert!(context
+            .storage_status
+            .contains(&format!("{provider_count} 个 provider")));
+        assert!(context.models_status.contains("MiniMax M3"));
+        assert!(context.models_status.contains("旧本地 Todo 路径已移除"));
+
+        let recording_context =
+            commands::desktop_context::build_desktop_context(true, provider_count);
+        assert!(recording_context.recorder_status.contains("录音中"));
     }
 
     #[test]
