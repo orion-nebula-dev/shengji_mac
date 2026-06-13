@@ -5,3 +5,20 @@ dist/
 vite.config.js
 vite.config.d.ts
 src-tauri/target/
+
+# Local analysis/cache
+.understand-anything/
+
+# Local runtime data
+*.sqlite
+*.sqlite-*
+*.db
+recordings/
+
+# Model and sidecar binaries
+*.gguf
+*.safetensors
+*.onnx
+argmax-cli
+llama-cli
+llama-completion
