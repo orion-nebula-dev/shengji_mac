@@ -1341,86 +1341,6 @@ fn stop_recording(state: tauri::State<'_, AppState>) -> Result<RecordingActionRe
     })
 }
 
-#[tauri::command]
-fn simulate_audio_slice(
-    has_effective_voice: bool,
-    state: tauri::State<'_, AppState>,
-) -> Result<RecordingActionResult, String> {
-    let connection = open_connection(&state.db_path)?;
-    let settings = settings_service::load_settings(&connection)?;
-    let timestamp = current_timestamp_label();
-    let segment_id = format!("audio_sim_{timestamp}");
-    let trace_id = format!("trace_sim_{timestamp}");
-
-    connection
-        .execute(
-            r#"
-      INSERT INTO audio_segments (
-        id,
-        file_path,
-        started_at,
-        ended_at,
-        duration_ms,
-        sample_rate,
-        channels,
-        has_effective_voice,
-        voice_energy_score,
-        processing_status,
-        trace_id,
-        created_at
-      ) VALUES (
-        ?1,
-        ?2,
-        CURRENT_TIMESTAMP,
-        CURRENT_TIMESTAMP,
-        ?3,
-        16000,
-        1,
-        ?4,
-        ?5,
-        ?6,
-        ?7,
-        CURRENT_TIMESTAMP
-      )
-      "#,
-            params![
-                segment_id.as_str(),
-                format!("/mock/{segment_id}.wav"),
-                settings.chunk_seconds * 1000,
-                if has_effective_voice { 1 } else { 0 },
-                if has_effective_voice { 0.82 } else { 0.05 },
-                if has_effective_voice {
-                    "transcribed"
-                } else {
-                    "skipped"
-                },
-                trace_id.as_str()
-            ],
-        )
-        .map_err(|error| format!("写入模拟切片失败: {error}"))?;
-
-    if has_effective_voice {
-        insert_processing_job(&connection, "transcription", &segment_id, &trace_id)?;
-    }
-
-    let latest_session = if has_effective_voice {
-        None
-    } else {
-        maybe_create_idle_session(&connection)?
-    };
-    let processing_summary = process_pending_jobs_internal(&connection)?;
-
-    Ok(RecordingActionResult {
-        message: if has_effective_voice {
-            format!("已写入一条有效录音切片。{processing_summary}")
-        } else {
-            format!("已写入一条静默切片，并检查空闲触发会话。{processing_summary}")
-        },
-        runtime: query_runtime_status(&connection)?,
-        latest_session,
-    })
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1460,7 +1380,7 @@ pub fn run() {
             commands::jobs::process_pending_jobs,
             start_recording,
             stop_recording,
-            simulate_audio_slice
+            commands::recording::simulate_audio_slice
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -2505,6 +2425,37 @@ mod tests {
             session.merged_text.contains("手动刷新会话"),
             "手动刷新应创建可见的占位会话"
         );
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_expose_simulate_audio_slice_command_boundary() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-recording-command-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+
+        let result = commands::recording::simulate_audio_slice_payload(&db_path, true)
+            .expect("recording command boundary 应能写入模拟有效切片");
+
+        assert!(result.message.contains("有效录音切片"));
+        assert!(result.latest_session.is_none());
+        assert!(!result.runtime.runtime_label.trim().is_empty());
+
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let pending_transcription_jobs: i64 = connection
+            .query_row(
+                "SELECT COUNT(1) FROM processing_jobs WHERE job_type = 'transcription'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("应能读取转写任务数量");
+        assert_eq!(pending_transcription_jobs, 1);
 
         let _ = fs::remove_dir_all(temp_dir);
     }
