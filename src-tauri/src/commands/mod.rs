@@ -6,3 +6,4 @@ pub(crate) mod recording;
 pub(crate) mod session;
 pub(crate) mod settings;
 pub(crate) mod todo;
+pub(crate) mod transcript;

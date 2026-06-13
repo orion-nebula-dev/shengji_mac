@@ -10,20 +10,21 @@
 2. 支持设置录音开关、切片时长、空闲触发时间。
 3. 支持 ASR、Speaker、Semantic、Embedding、Export provider 边界配置。
 4. 支持真实麦克风录音，并将录音文件保存到本地。
-5. 支持云端 ASR 兜底转写；本地 WhisperKit / Argmax 边界已建立，真实接入进入 v0.5。
+5. 支持本地音频导入、离线转写评估时间轴、说话人标签修正与失败转写任务重试。
 6. Todo 入口固定为 MiniMax M3 语义边界，候选产物先进入 `semantic_artifacts(type='todo_extraction')`。
 7. 支持 Todo 完成/未完成切换。
-8. 支持处理任务记录、失败原因记录与基础稳定性保护。
+8. 支持本地模型缓存状态展示、处理任务记录、失败原因记录与基础稳定性保护。
 
-## v0.4 处理链路
+## v0.5 处理链路
 
 ```text
-录音开始
--> 本地生成 wav 文件
+录音开始 / 本地音频导入
+-> 本地生成或读取 wav 文件
 -> 写入 audio_segments
 -> 创建 transcription 任务
--> 调用 ASR 转中文（当前可用云端兜底，本地 ASR v0.5 接入）
--> 写入 transcript_segments
+-> 通过 local_whisperkit / Argmax 边界生成离线转写评估时间轴
+-> 写入 transcript_segments / speakers / speaker_segments
+-> 支持说话人改名、时间轴跳转、错误片段标注与失败任务重试
 -> 创建 conversation_sessions
 -> 创建 todo_extraction 任务
 -> 登记 semantic_artifacts(type='todo_extraction')
@@ -130,6 +131,7 @@ SQLite 数据库：
 7. [发布说明_v0.2.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v0.2.0.md>)
 8. [发布说明_v0.3.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v0.3.0.md>)
 9. [发布说明_v0.4.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v0.4.0.md>)
+10. [发布说明_v0.5.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v0.5.0.md>)
 
 过时的一期文档、旧 v2.0 PRD 和旧设计包已归档到：
 
@@ -139,10 +141,10 @@ AI文档/废纸篓/2026-06-12-旧方案归档/
 
 ## 当前边界
 
-当前为 v0.4 架构地基版本，尚未完成：
+当前为 v0.5 转写评估版本，尚未完成：
 
 1. 自动 30 秒滚动切片录音。
-2. 更完整的失败任务重试管理界面。
+2. 真实 Argmax local server / CLI 推理执行与模型下载器。
 3. 声纹识别与特定用户过滤。
-4. 本地 WhisperKit / Argmax 与 SpeakerKit 真实推理接入。
+4. SpeakerKit 真实说话人分离推理接入。
 5. 多设备同步。

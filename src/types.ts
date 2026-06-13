@@ -66,3 +66,65 @@ export interface RuntimeStatus {
   lastExtractionAt: string;
   lastExtractionSummary: string;
 }
+
+export interface TranscriptAudio {
+  id: string;
+  fileName: string;
+  durationMs: number;
+  status: string;
+  provider: string;
+  modelName: string;
+  offlineAvailable: boolean;
+}
+
+export interface SpeakerItem {
+  id: string;
+  label: string;
+  displayName: string;
+  color: string;
+  segmentCount: number;
+  corrected: boolean;
+}
+
+export interface TranscriptSegment {
+  id: string;
+  audioSegmentId: string;
+  speakerId: string;
+  speakerLabel: string;
+  startMs: number;
+  endMs: number;
+  text: string;
+  confidence: number;
+  provider: string;
+  reviewStatus: "normal" | "flagged" | "corrected";
+  reviewReason: string;
+}
+
+export interface TranscriptJob {
+  id: string;
+  audioSegmentId: string;
+  status: "queued" | "running" | "succeeded" | "failed" | "retrying";
+  retryCount: number;
+  maxRetryCount: number;
+  errorMessage: string;
+  provider: string;
+  modelName: string;
+}
+
+export interface LocalModelStatus {
+  provider: string;
+  modelName: string;
+  cacheDir: string;
+  downloadStatus: "not_started" | "downloading" | "available" | "failed";
+  downloadProgress: number;
+  offlineAvailable: boolean;
+  deviceRecommendation: string;
+}
+
+export interface TranscriptReview {
+  audio: TranscriptAudio;
+  segments: TranscriptSegment[];
+  speakers: SpeakerItem[];
+  jobs: TranscriptJob[];
+  modelStatus: LocalModelStatus;
+}

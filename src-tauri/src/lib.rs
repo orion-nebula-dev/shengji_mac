@@ -997,7 +997,12 @@ pub fn run() {
             commands::jobs::process_pending_jobs,
             commands::recording::start_recording,
             commands::recording::stop_recording,
-            commands::recording::simulate_audio_slice
+            commands::recording::simulate_audio_slice,
+            commands::transcript::import_local_audio,
+            commands::transcript::get_transcript_review,
+            commands::transcript::rename_speaker,
+            commands::transcript::mark_transcript_segment,
+            commands::transcript::retry_transcript_job
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1476,6 +1481,141 @@ mod tests {
         assert!(!todos.is_empty(), "query service 应返回 demo Todo");
         assert!(!sessions.is_empty(), "query service 应返回 demo session");
         assert!(!runtime.runtime_label.trim().is_empty());
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_import_local_audio_and_generate_v05_timeline() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "shengji-v05-transcript-evaluation-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        let audio_path = temp_dir.join("sample-meeting.wav");
+        fs::write(&audio_path, b"fake wav bytes for local evaluation")
+            .expect("应能准备本地音频文件");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let result = commands::transcript::import_local_audio_payload(
+            &db_path,
+            audio_path.to_string_lossy().as_ref(),
+        )
+        .expect("v0.5 应能导入本地音频并生成离线评估时间轴");
+
+        assert_eq!(result.audio.status, "succeeded");
+        assert!(!result.segments.is_empty(), "应生成时间轴转写片段");
+        assert!(
+            result
+                .segments
+                .iter()
+                .all(|segment| segment.end_ms > segment.start_ms),
+            "每个转写片段都应有可跳转时间范围"
+        );
+        assert!(
+            result
+                .speakers
+                .iter()
+                .any(|speaker| speaker.label == "Speaker 1"),
+            "应生成默认 speaker label"
+        );
+        assert!(result.model_status.offline_available);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_rename_speaker_and_mark_transcript_segment() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "shengji-v05-speaker-rename-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        let audio_path = temp_dir.join("sample-standup.wav");
+        fs::write(&audio_path, b"fake wav bytes for speaker evaluation")
+            .expect("应能准备本地音频文件");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let result = commands::transcript::import_local_audio_payload(
+            &db_path,
+            audio_path.to_string_lossy().as_ref(),
+        )
+        .expect("应能准备 speaker 测试数据");
+        let speaker_id = result.speakers[0].id.clone();
+        let segment_id = result.segments[0].id.clone();
+
+        let renamed = commands::transcript::rename_speaker_payload(
+            &db_path,
+            speaker_id.as_str(),
+            "产品负责人",
+        )
+        .expect("speaker label 应可重命名并持久化");
+        assert_eq!(renamed.label, "产品负责人");
+
+        let marked = commands::transcript::mark_transcript_segment_payload(
+            &db_path,
+            segment_id.as_str(),
+            "speaker",
+            "说话人需要人工复核",
+        )
+        .expect("转写片段应支持错误标注");
+        assert_eq!(marked.review_status, "flagged");
+        assert_eq!(marked.review_reason, "说话人需要人工复核");
+
+        let refreshed = commands::transcript::get_transcript_review_payload(&db_path)
+            .expect("应能读取更新后的转写评估状态");
+        assert!(refreshed
+            .speakers
+            .iter()
+            .any(|speaker| speaker.label == "产品负责人"));
+        assert!(refreshed
+            .segments
+            .iter()
+            .any(|segment| segment.id == segment_id && segment.review_status == "flagged"));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_retry_failed_transcript_job() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "shengji-v05-transcript-retry-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        connection
+            .execute(
+                r#"
+                INSERT INTO transcript_jobs (
+                  id,
+                  audio_segment_id,
+                  status,
+                  retry_count,
+                  max_retry_count,
+                  error_message,
+                  provider,
+                  model_name,
+                  created_at
+                ) VALUES ('transcript_job_failed_retry', 'missing_audio_for_retry', 'failed', 1, 3, '本地模型未就绪', 'local_whisperkit', 'large-v3-turbo', CURRENT_TIMESTAMP)
+                "#,
+                [],
+            )
+            .expect("应能准备失败转写任务");
+
+        let retried = commands::transcript::retry_transcript_job_payload(
+            &db_path,
+            "transcript_job_failed_retry",
+        )
+        .expect("失败转写任务应可重试");
+        assert_eq!(retried.status, "queued");
+        assert_eq!(retried.retry_count, 2);
+        assert!(retried.error_message.is_empty());
 
         let _ = fs::remove_dir_all(temp_dir);
     }

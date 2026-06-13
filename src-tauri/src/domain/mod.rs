@@ -7,5 +7,6 @@ pub(crate) mod recording;
 pub(crate) mod runtime;
 pub(crate) mod session;
 pub(crate) mod settings;
+pub(crate) mod speaker;
 pub(crate) mod todo;
 pub(crate) mod transcript;

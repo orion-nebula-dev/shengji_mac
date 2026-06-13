@@ -1,4 +1,10 @@
-import type { RuntimeStatus, SessionItem, SettingsState, TodoItem } from "../types";
+import type {
+  RuntimeStatus,
+  SessionItem,
+  SettingsState,
+  TodoItem,
+  TranscriptReview,
+} from "../types";
 
 export const defaultSettings: SettingsState = {
   recordEnabled: true,
@@ -89,4 +95,106 @@ export const defaultRuntime: RuntimeStatus = {
   lastSliceAt: "2026-04-12 10:20:00",
   lastExtractionAt: "2026-04-12 10:20:23",
   lastExtractionSummary: "最近一次会话提取出 2 条 Todo",
+};
+
+export const defaultTranscriptReview: TranscriptReview = {
+  audio: {
+    id: "audio_import_demo",
+    fileName: "demo-meeting.wav",
+    durationMs: 45000,
+    status: "succeeded",
+    provider: "local_whisperkit",
+    modelName: "large-v3-turbo",
+    offlineAvailable: true,
+  },
+  speakers: [
+    {
+      id: "speaker_1",
+      label: "Speaker 1",
+      displayName: "Speaker 1",
+      color: "#2f7df6",
+      segmentCount: 2,
+      corrected: false,
+    },
+    {
+      id: "speaker_2",
+      label: "Speaker 2",
+      displayName: "Speaker 2",
+      color: "#34a853",
+      segmentCount: 1,
+      corrected: false,
+    },
+  ],
+  segments: [
+    {
+      id: "transcript_demo_001",
+      audioSegmentId: "audio_import_demo",
+      speakerId: "speaker_1",
+      speakerLabel: "Speaker 1",
+      startMs: 0,
+      endMs: 12500,
+      text: "已导入 demo-meeting.wav，本地转写评估开始。",
+      confidence: 0.91,
+      provider: "local_whisperkit",
+      reviewStatus: "normal",
+      reviewReason: "",
+    },
+    {
+      id: "transcript_demo_002",
+      audioSegmentId: "audio_import_demo",
+      speakerId: "speaker_2",
+      speakerLabel: "Speaker 2",
+      startMs: 12500,
+      endMs: 27000,
+      text: "请检查 speaker label、时间跳转和错误片段标注。",
+      confidence: 0.87,
+      provider: "local_whisperkit",
+      reviewStatus: "flagged",
+      reviewReason: "示例：疑似说话人切换点需要复核",
+    },
+    {
+      id: "transcript_demo_003",
+      audioSegmentId: "audio_import_demo",
+      speakerId: "speaker_1",
+      speakerLabel: "Speaker 1",
+      startMs: 27000,
+      endMs: 45000,
+      text: "当前为离线评估样例，真实 Argmax 输出可替换同一 AsrOutput 契约。",
+      confidence: 0.84,
+      provider: "local_whisperkit",
+      reviewStatus: "normal",
+      reviewReason: "",
+    },
+  ],
+  jobs: [
+    {
+      id: "transcript_job_demo",
+      audioSegmentId: "audio_import_demo",
+      status: "succeeded",
+      retryCount: 0,
+      maxRetryCount: 3,
+      errorMessage: "",
+      provider: "local_whisperkit",
+      modelName: "large-v3-turbo",
+    },
+    {
+      id: "transcript_job_failed_demo",
+      audioSegmentId: "audio_failed_demo",
+      status: "failed",
+      retryCount: 1,
+      maxRetryCount: 3,
+      errorMessage: "示例失败任务：本地模型缓存未就绪",
+      provider: "local_whisperkit",
+      modelName: "large-v3-turbo",
+    },
+  ],
+  modelStatus: {
+    provider: "local_whisperkit",
+    modelName: "large-v3-turbo",
+    cacheDir: "~/Library/Application Support/com.smarttodo.desktop/models/argmax",
+    downloadStatus: "available",
+    downloadProgress: 100,
+    offlineAvailable: true,
+    deviceRecommendation: "Apple Silicon 推荐 large-v3-turbo；Intel 机型建议 small/base",
+  },
 };
