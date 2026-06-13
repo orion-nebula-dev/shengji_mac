@@ -1300,21 +1300,6 @@ fn flush_current_session(state: tauri::State<'_, AppState>) -> Result<SessionDto
 }
 
 #[tauri::command]
-fn process_pending_jobs(
-    state: tauri::State<'_, AppState>,
-) -> Result<ProcessingActionResult, String> {
-    let connection = open_connection(&state.db_path)?;
-    let message = process_pending_jobs_internal(&connection)?;
-    Ok(ProcessingActionResult {
-        message,
-        runtime: query_runtime_status(&connection)?,
-        latest_session: latest_session(&connection)?,
-        todos: query_todos(&connection)?,
-        sessions: query_sessions(&connection)?,
-    })
-}
-
-#[tauri::command]
 fn start_recording(state: tauri::State<'_, AppState>) -> Result<RecordingActionResult, String> {
     let mut recorder_guard = state
         .recorder
@@ -1509,7 +1494,7 @@ pub fn run() {
             commands::model_test::test_model_connection,
             commands::todo::toggle_todo_status,
             flush_current_session,
-            process_pending_jobs,
+            commands::jobs::process_pending_jobs,
             start_recording,
             stop_recording,
             simulate_audio_slice
@@ -2427,6 +2412,35 @@ mod tests {
             reopened_completed_at.is_none(),
             "重新打开 Todo 时应清空 completed_at"
         );
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_expose_pending_jobs_command_boundary() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-jobs-command-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+
+        let result = commands::jobs::process_pending_jobs_payload(&db_path)
+            .expect("jobs command boundary 应能返回处理结果");
+
+        assert_eq!(result.message, "暂无待处理任务");
+        assert!(result.latest_session.is_some());
+        assert!(
+            !result.todos.is_empty(),
+            "jobs command 应返回 Todo 列表以刷新前端状态"
+        );
+        assert!(
+            !result.sessions.is_empty(),
+            "jobs command 应返回会话列表以刷新前端状态"
+        );
+        assert!(!result.runtime.runtime_label.trim().is_empty());
 
         let _ = fs::remove_dir_all(temp_dir);
     }
