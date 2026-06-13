@@ -1263,71 +1263,6 @@ fn test_asr_provider(settings: &SettingsDto) -> Result<ModelTestResult, String> 
 }
 
 #[tauri::command]
-fn toggle_todo_status(
-    todo_id: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<TodoDto, String> {
-    let connection = open_connection(&state.db_path)?;
-
-    let current_status: String = connection
-        .query_row(
-            "SELECT status FROM todos WHERE id = ?1",
-            params![todo_id.as_str()],
-            |row| row.get(0),
-        )
-        .map_err(|error| format!("读取 Todo 状态失败: {error}"))?;
-
-    let next_status = if current_status == "pending" {
-        "completed"
-    } else {
-        "pending"
-    };
-
-    connection
-        .execute(
-            r#"
-      UPDATE todos
-      SET
-        status = ?1,
-        completed_at = CASE WHEN ?1 = 'completed' THEN CURRENT_TIMESTAMP ELSE NULL END,
-        updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?2
-      "#,
-            params![next_status, todo_id.as_str()],
-        )
-        .map_err(|error| format!("更新 Todo 状态失败: {error}"))?;
-
-    connection
-        .query_row(
-            r#"
-      SELECT
-        id,
-        title,
-        note,
-        status,
-        created_at,
-        conversation_session_id,
-        IFNULL(source_text, '')
-      FROM todos
-      WHERE id = ?1
-      "#,
-            params![todo_id.as_str()],
-            |row| {
-                Ok(TodoDto {
-                    id: row.get(0)?,
-                    title: row.get(1)?,
-                    note: row.get(2)?,
-                    status: row.get(3)?,
-                    created_at: row.get(4)?,
-                    conversation_session_id: row.get(5)?,
-                    source_text: row.get(6)?,
-                })
-            },
-        )
-        .map_err(|error| format!("读取更新后的 Todo 失败: {error}"))
-}
-
-#[tauri::command]
 fn flush_current_session(state: tauri::State<'_, AppState>) -> Result<SessionDto, String> {
     let connection = open_connection(&state.db_path)?;
     ensure_manual_flush_allowed(&connection)?;
@@ -1572,7 +1507,7 @@ pub fn run() {
             commands::bootstrap::get_bootstrap_data,
             commands::settings::save_settings,
             commands::model_test::test_model_connection,
-            toggle_todo_status,
+            commands::todo::toggle_todo_status,
             flush_current_session,
             process_pending_jobs,
             start_recording,
@@ -2445,6 +2380,52 @@ mod tests {
         assert!(
             bootstrap.runtime.last_extraction_summary.contains("会话")
                 || bootstrap.runtime.last_extraction_summary.contains("暂无")
+        );
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_expose_todo_status_command_boundary() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-todo-command-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+
+        let completed = commands::todo::toggle_todo_status_payload(&db_path, "todo_seed_001")
+            .expect("todo command boundary 应能完成 Todo");
+        assert_eq!(completed.id, "todo_seed_001");
+        assert_eq!(completed.status, "completed");
+
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let completed_at: Option<String> = connection
+            .query_row(
+                "SELECT completed_at FROM todos WHERE id = 'todo_seed_001'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("应能读取完成时间");
+        assert!(completed_at.is_some(), "完成 Todo 时应写入 completed_at");
+
+        let reopened = commands::todo::toggle_todo_status_payload(&db_path, "todo_seed_001")
+            .expect("todo command boundary 应能重新打开 Todo");
+        assert_eq!(reopened.id, "todo_seed_001");
+        assert_eq!(reopened.status, "pending");
+
+        let reopened_completed_at: Option<String> = connection
+            .query_row(
+                "SELECT completed_at FROM todos WHERE id = 'todo_seed_001'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("应能读取重新打开后的完成时间");
+        assert!(
+            reopened_completed_at.is_none(),
+            "重新打开 Todo 时应清空 completed_at"
         );
 
         let _ = fs::remove_dir_all(temp_dir);
