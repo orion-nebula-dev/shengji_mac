@@ -64,16 +64,6 @@ struct RecordingSummary {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct DesktopContext {
-    runtime: String,
-    platform: String,
-    recorder_status: String,
-    storage_status: String,
-    models_status: String,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
 struct BootstrapData {
     settings: SettingsDto,
     todos: Vec<TodoDto>,
@@ -2590,6 +2580,26 @@ mod tests {
         );
         assert_eq!(result_payload["statusCode"], 0);
         assert!(result_payload.get("status_code").is_none());
+    }
+
+    #[test]
+    fn should_expose_desktop_context_domain_dto_contract() {
+        let context = domain::desktop::DesktopContext {
+            runtime: "tauri".into(),
+            platform: "macos".into(),
+            recorder_status: "录音已停止，可启动真实麦克风录音".into(),
+            storage_status: "SQLite 已接入".into(),
+            models_status: "Todo 语义入口已固定为 MiniMax M3".into(),
+        };
+
+        let payload = serde_json::to_value(&context).expect("DesktopContext domain DTO 应可序列化");
+
+        assert_eq!(payload["runtime"], "tauri");
+        assert_eq!(
+            payload["recorderStatus"],
+            "录音已停止，可启动真实麦克风录音"
+        );
+        assert!(payload.get("recorder_status").is_none());
     }
 
     fn table_columns(connection: &Connection, table_name: &str) -> Vec<String> {
