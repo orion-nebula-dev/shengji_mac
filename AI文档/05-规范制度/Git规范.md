@@ -22,7 +22,7 @@
 
 - `main` 必须始终保持可构建、可发布
 - 禁止直接在 `main` 上做日常开发
-- `main` 只接受 `release` 合入，不接受工作分支直接合入
+- `main` 只接受 `test` 合入，不接受工作分支直接合入
 - 每次正式发布后，应在 `main` 上打版本 tag
 
 #### 环境分支
@@ -30,17 +30,15 @@
 用于版本晋升和验收：
 
 ```text
-dev -> test -> uat -> release -> main
+dev -> test -> main
 ```
 
 规则：
 
 - `dev`：集成已完成的工作分支。
 - `test`：测试环境验收分支。
-- `uat`：用户验收或准生产验收分支。
-- `release`：正式发布候选分支。
-- `main`：正式发布分支，只接受 `release` 合入。
-- 不允许在 `dev`、`test`、`uat`、`release`、`main` 上直接开发或直接提交。
+- `main`：正式发布分支，只接受 `test` 合入。
+- 不允许在 `dev`、`test`、`main` 上直接开发或直接提交。
 
 ### 2.2 临时分支
 
@@ -67,7 +65,7 @@ dev -> test -> uat -> release -> main
 示例：
 
 - `hotfix-v0.16.1-asr-timeout`
-- `hotfix-v0.16.1-release-config`
+- `hotfix-v0.16.1-build-config`
 
 #### 历史兼容分支
 
@@ -95,7 +93,7 @@ dev -> test -> uat -> release -> main
 
 ### 4.1 开发前
 
-1. 确认当前不在 `main`、`release`、`dev`、`test`、`uat`
+1. 确认当前不在 `main`、`dev`、`test`
 2. 从最新 `dev` 拉新工作分支
 3. 明确本次目标范围
 4. 明确版本影响和文档影响
@@ -133,7 +131,7 @@ git checkout -b feature-v0.16.0-feature-name
 推荐晋升链路：
 
 ```text
-feature-* / hotfix-* -> dev -> test -> uat -> release -> main
+feature-* / hotfix-* -> dev -> test -> main
 ```
 
 推荐流程：
@@ -149,20 +147,12 @@ git checkout test
 git pull origin test
 git merge --no-ff dev
 
-git checkout uat
-git pull origin uat
-git merge --no-ff test
-
-git checkout release
-git pull origin release
-git merge --no-ff uat
-
 git checkout main
 git pull origin main
-git merge --no-ff release
+git merge --no-ff test
 git tag -a vX.Y.Z -m "Release vX.Y.Z (YYYY.M.D)"
 
-git push origin dev test uat release main
+git push origin dev test main
 git push origin vX.Y.Z
 ```
 
@@ -227,18 +217,18 @@ git push origin vX.Y.Z
 
 ### 6.1 合并到 `main`
 
-正式发布只允许 `release` 合入 `main`。
+正式发布只允许 `test` 合入 `main`。
 
 ```bash
 git checkout main
 git pull origin main
-git merge --no-ff release
+git merge --no-ff test
 ```
 
 规则：
 
 - 保留分支合并痕迹，方便回溯
-- 工作分支必须先进入 `dev`，不得跳过 `dev -> test -> uat -> release`
+- 工作分支必须先进入 `dev`，不得跳过 `dev -> test -> main`
 - 合并后再次确认版本号和关键文档
 - 正式版本必须在 `main` 合并提交上打 tag，不能在临时开发分支上打正式 tag
 
@@ -364,8 +354,6 @@ tag 用于：
 长期保留：
 
 - `main`
-- `release`
-- `uat`
 - `test`
 - `dev`
 
@@ -534,12 +522,8 @@ git checkout dev
 git merge --no-ff feature-v0.16.0-feature-name
 git checkout test
 git merge --no-ff dev
-git checkout uat
-git merge --no-ff test
-git checkout release
-git merge --no-ff uat
 git checkout main
-git merge --no-ff release
+git merge --no-ff test
 ```
 
 ### 推送主分支
@@ -567,12 +551,12 @@ git push origin --delete feature-v0.16.0-feature-name
 针对你这个项目，建议采用以下固定策略：
 
 - 主分支：`main`
-- 环境分支：`dev -> test -> uat -> release -> main`
+- 环境分支：`dev -> test -> main`
 - 开发分支：`feature-*`
 - 紧急修复分支：`hotfix-*`
 - 合并策略：`--no-ff`
 - 版本策略：代码版本 `0.16.0`，tag `v0.16.0`，显示名 `v0.16.0 (2026.6.5)`
-- 正式发布：`release -> main` 后 `tag + GitHub Release`
+- 正式发布：`test -> main` 后 `tag + GitHub Release`
 - 模型资产：Release 附件，不进 Git
 - 合并后：默认删除开发分支
 - 文档：功能改动必须同步 `AI文档`
@@ -582,7 +566,7 @@ git push origin --delete feature-v0.16.0-feature-name
 这套规范的核心只有 6 条：
 
 1. 不在 `main` 上直接开发
-2. 工作分支按 `feature-* / hotfix-* -> dev -> test -> uat -> release -> main` 晋升
+2. 工作分支按 `feature-* / hotfix-* -> dev -> test -> main` 晋升
 3. 正式版本必须在 `main` 发布合并提交上打 tag
 4. 大模型资产不进 Git 仓库
 5. 代码变更必须验证
