@@ -5,13 +5,12 @@ export type SessionStatus =
   | "ready_for_extraction"
   | "extracted"
   | "failed";
-export type ProviderType = "semantic_m3" | "legacy_local_llm" | "cloud";
+export type ProviderType = "semantic_m3";
 export type AsrProviderType = "cloud_volc" | "local_whisperkit";
 export type SpeakerProviderType = "local_speakerkit";
 export type SemanticProviderType = "minimax_m3";
 export type EmbeddingProviderType = "reserved";
 export type ExportProviderType = "local_file";
-export type LocalRuntimeStatus = "not_ready" | "starting" | "ready" | "failed";
 
 export interface SettingsState {
   recordEnabled: boolean;
@@ -33,13 +32,7 @@ export interface SettingsState {
   semanticBaseUrl: string;
   semanticModelName: string;
   semanticApiKeyMasked: string;
-  todoBaseUrl: string;
-  todoModelName: string;
-  todoApiKeyMasked: string;
-  localTodoModelVersion: string;
   allowCloudFallback: boolean;
-  localTodoRuntimeStatus: LocalRuntimeStatus;
-  localTodoLastHealthCheckAt: string;
 }
 
 export interface TodoItem {
@@ -72,13 +65,4 @@ export interface RuntimeStatus {
   lastSliceAt: string;
   lastExtractionAt: string;
   lastExtractionSummary: string;
-}
-
-export interface LocalRuntimeState {
-  providerType: ProviderType;
-  modelVersion: string;
-  runtimeStatus: LocalRuntimeStatus;
-  lastHealthCheckAt: string;
-  fallbackEnabled: boolean;
-  message: string;
 }

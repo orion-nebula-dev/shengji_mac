@@ -4,7 +4,7 @@ use std::{fs, path::PathBuf};
 use crate::{
     DEFAULT_ASR_PROVIDER_TYPE, DEFAULT_EMBEDDING_PROVIDER_TYPE, DEFAULT_EXPORT_PROVIDER_TYPE,
     DEFAULT_SEMANTIC_BASE_URL, DEFAULT_SEMANTIC_MODEL_NAME, DEFAULT_SEMANTIC_PROVIDER_TYPE,
-    DEFAULT_SPEAKER_PROVIDER_TYPE, DEFAULT_TODO_PROVIDER_TYPE, EMBEDDED_TODO_MODEL_VERSION,
+    DEFAULT_SPEAKER_PROVIDER_TYPE, DEFAULT_TODO_PROVIDER_TYPE,
 };
 
 pub(crate) fn open_connection(db_path: &PathBuf) -> Result<Connection, String> {
@@ -74,22 +74,6 @@ fn ensure_app_settings_columns(connection: &Connection) -> Result<(), String> {
             "ALTER TABLE app_settings ADD COLUMN export_provider_type TEXT NOT NULL DEFAULT 'local_file'",
         ),
         (
-            "local_todo_model_version",
-            "ALTER TABLE app_settings ADD COLUMN local_todo_model_version TEXT NOT NULL DEFAULT ''",
-        ),
-        (
-            "todo_base_url",
-            "ALTER TABLE app_settings ADD COLUMN todo_base_url TEXT NOT NULL DEFAULT ''",
-        ),
-        (
-            "todo_model_name",
-            "ALTER TABLE app_settings ADD COLUMN todo_model_name TEXT NOT NULL DEFAULT ''",
-        ),
-        (
-            "todo_api_key_ref",
-            "ALTER TABLE app_settings ADD COLUMN todo_api_key_ref TEXT NOT NULL DEFAULT ''",
-        ),
-        (
             "semantic_base_url",
             "ALTER TABLE app_settings ADD COLUMN semantic_base_url TEXT NOT NULL DEFAULT 'https://api.minimax.io/v1/responses'",
         ),
@@ -104,14 +88,6 @@ fn ensure_app_settings_columns(connection: &Connection) -> Result<(), String> {
         (
             "allow_cloud_fallback",
             "ALTER TABLE app_settings ADD COLUMN allow_cloud_fallback INTEGER NOT NULL DEFAULT 1",
-        ),
-        (
-            "local_todo_runtime_status",
-            "ALTER TABLE app_settings ADD COLUMN local_todo_runtime_status TEXT NOT NULL DEFAULT 'not_ready'",
-        ),
-        (
-            "local_todo_last_health_check_at",
-            "ALTER TABLE app_settings ADD COLUMN local_todo_last_health_check_at TEXT NOT NULL DEFAULT ''",
         ),
     ] {
         if !columns.iter().any(|column| column == name) {
@@ -154,8 +130,7 @@ fn ensure_app_settings_columns(connection: &Connection) -> Result<(), String> {
               END,
               todo_provider_type = CASE
                 WHEN TRIM(todo_provider_type) = '' THEN 'semantic_m3'
-                WHEN todo_provider_type = 'embedded_local' THEN 'legacy_local_llm'
-                ELSE todo_provider_type
+                ELSE 'semantic_m3'
               END,
               semantic_provider_type = CASE
                 WHEN TRIM(semantic_provider_type) = '' THEN 'minimax_m3'
@@ -177,25 +152,13 @@ fn ensure_app_settings_columns(connection: &Connection) -> Result<(), String> {
                 WHEN TRIM(semantic_model_name) = '' THEN 'MiniMax-M3'
                 ELSE semantic_model_name
               END,
-              local_todo_model_version = CASE
-                WHEN TRIM(local_todo_model_version) = '' OR local_todo_model_version = 'todo-embedded-v1' THEN ?
-                ELSE local_todo_model_version
-              END,
               allow_cloud_fallback = CASE
                 WHEN allow_cloud_fallback IS NULL THEN 1
                 ELSE allow_cloud_fallback
-              END,
-              local_todo_runtime_status = CASE
-                WHEN TRIM(local_todo_runtime_status) = '' THEN 'not_ready'
-                ELSE local_todo_runtime_status
-              END,
-              local_todo_last_health_check_at = CASE
-                WHEN local_todo_last_health_check_at IS NULL THEN ''
-                ELSE local_todo_last_health_check_at
               END
             WHERE id = 'default'
             "#,
-            params![EMBEDDED_TODO_MODEL_VERSION],
+            [],
         )
         .map_err(|error| format!("回填 ASR 设置字段失败: {error}"))?;
 
@@ -426,13 +389,7 @@ pub(crate) fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
         semantic_base_url TEXT NOT NULL DEFAULT '',
         semantic_model_name TEXT NOT NULL DEFAULT 'MiniMax-M3',
         semantic_api_key_ref TEXT NOT NULL DEFAULT '',
-        todo_base_url TEXT NOT NULL DEFAULT '',
-        todo_model_name TEXT NOT NULL DEFAULT '',
-        todo_api_key_ref TEXT NOT NULL DEFAULT '',
-        local_todo_model_version TEXT NOT NULL DEFAULT '',
         allow_cloud_fallback INTEGER NOT NULL DEFAULT 1 CHECK (allow_cloud_fallback IN (0, 1)),
-        local_todo_runtime_status TEXT NOT NULL DEFAULT 'not_ready',
-        local_todo_last_health_check_at TEXT NOT NULL DEFAULT '',
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
@@ -617,14 +574,8 @@ pub(crate) fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
         semantic_base_url,
         semantic_model_name,
         semantic_api_key_ref,
-        todo_base_url,
-        todo_model_name,
-        todo_api_key_ref,
-        local_todo_model_version,
-        allow_cloud_fallback,
-        local_todo_runtime_status,
-        local_todo_last_health_check_at
-      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)
+        allow_cloud_fallback
+      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
       "#,
             params![
                 "default",
@@ -648,13 +599,7 @@ pub(crate) fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
                 DEFAULT_SEMANTIC_BASE_URL,
                 DEFAULT_SEMANTIC_MODEL_NAME,
                 "sk-m3-****",
-                "https://api.example.com/todo",
-                "todo-model-v1",
-                "sk-todo-****",
-                EMBEDDED_TODO_MODEL_VERSION,
-                1,
-                "not_ready",
-                ""
+                1
             ],
         )
         .map_err(|error| format!("初始化默认设置失败: {error}"))?;
@@ -725,12 +670,12 @@ fn seed_demo_data(connection: &Connection) -> Result<(), String> {
       ) VALUES (
         'todo_seed_001',
         ?1,
-        '确认双模型配置',
-        '补全语音转写模型和 Todo 提取模型的 API 信息',
+        '确认 MiniMax M3 语义配置',
+        '补全语音转写配置，并确认 Todo 只进入 MiniMax M3 语义产物边界',
         'pending',
         CURRENT_TIMESTAMP,
-        '请把两个模型的地址、模型名和密钥都配置好。',
-        'todo-model-v1',
+        '请确认 ASR 配置和 MiniMax M3 语义入口已就绪。',
+        'minimax-m3',
         'trace_seed_001',
         CURRENT_TIMESTAMP
       )
