@@ -14,6 +14,7 @@ use tauri::Manager;
 mod app;
 mod domain;
 mod infra;
+mod jobs;
 mod providers;
 
 use app::settings_service;
@@ -67,7 +68,7 @@ struct DesktopContext {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-struct SettingsDto {
+pub(crate) struct SettingsDto {
     record_enabled: bool,
     language: String,
     chunk_seconds: i64,
@@ -977,105 +978,6 @@ fn create_session_from_transcript(
     Ok(session_id)
 }
 
-fn register_semantic_todo_artifact_boundary(
-    connection: &Connection,
-    settings: &SettingsDto,
-    session_id: &str,
-    merged_text: &str,
-) -> Result<(), String> {
-    let payload = serde_json::json!({
-        "boundary": "v0.4_semantic_provider",
-        "status": "pending_provider_integration",
-        "todo_candidates": [],
-        "source_preview": clip_text(merged_text, 240),
-    })
-    .to_string();
-    let artifact_id = format!("semantic_todo_{}", current_timestamp_label());
-
-    connection
-        .execute(
-            "DELETE FROM semantic_artifacts WHERE session_id = ?1 AND artifact_type = 'todo_extraction'",
-            params![session_id],
-        )
-        .map_err(|error| format!("清理旧 Todo 语义产物失败: {error}"))?;
-
-    connection
-        .execute(
-            r#"
-            INSERT INTO semantic_artifacts (
-              id,
-              session_id,
-              artifact_type,
-              status,
-              provider,
-              model_name,
-              schema_version,
-              source_span_refs,
-              payload_json,
-              error_message,
-              created_at,
-              updated_at
-            ) VALUES (?1, ?2, 'todo_extraction', 'pending', ?3, ?4, 'v0.4', '[]', ?5, '', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            "#,
-            params![
-                artifact_id,
-                session_id,
-                settings.semantic_provider_type.as_str(),
-                settings.semantic_model_name.as_str(),
-                payload,
-            ],
-        )
-        .map_err(|error| format!("登记 Todo 语义产物边界失败: {error}"))?;
-
-    connection
-        .execute(
-            r#"
-            UPDATE conversation_sessions
-            SET
-              extraction_status = 'success',
-              extraction_provider_used = ?1,
-              extraction_fallback_used = 0,
-              extraction_fallback_reason = 'v0.4 仅登记 MiniMax M3 语义产物边界，实际 Todo 候选生成在后续版本接入'
-            WHERE id = ?2
-            "#,
-            params![settings.semantic_provider_type.as_str(), session_id],
-        )
-        .map_err(|error| format!("更新 Todo 语义边界状态失败: {error}"))?;
-
-    Ok(())
-}
-
-fn generate_todos_for_session(
-    connection: &Connection,
-    settings: &SettingsDto,
-    session_id: &str,
-) -> Result<usize, String> {
-    let (merged_text, trigger_reason, transcript_count): (String, String, i64) = connection
-        .query_row(
-            "SELECT merged_text, trigger_reason, transcript_count FROM conversation_sessions WHERE id = ?1",
-            params![session_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .map_err(|error| format!("读取会话文稿失败: {error}"))?;
-
-    let merged_text = merged_text.trim().to_string();
-    if merged_text.is_empty()
-        || (transcript_count == 0
-            && (trigger_reason == "manual" || is_placeholder_session_text(&merged_text)))
-    {
-        connection
-            .execute(
-                "UPDATE conversation_sessions SET extraction_status = 'success', extraction_provider_used = 'skipped', extraction_fallback_used = 0 WHERE id = ?1",
-                params![session_id],
-            )
-            .map_err(|error| format!("更新空会话状态失败: {error}"))?;
-        return Ok(0);
-    }
-
-    register_semantic_todo_artifact_boundary(connection, settings, session_id, &merged_text)?;
-    Ok(0)
-}
-
 fn process_pending_jobs_internal(connection: &Connection) -> Result<String, String> {
     let settings = settings_service::load_settings(connection)?;
     let mut summary = Vec::new();
@@ -1216,7 +1118,7 @@ fn process_pending_jobs_internal(connection: &Connection) -> Result<String, Stri
             job.map_err(|error| format!("读取 Todo 提取任务失败: {error}"))?;
         update_processing_job(connection, &job_id, "running", None)?;
 
-        match generate_todos_for_session(connection, &settings, &session_id) {
+        match jobs::todo_extraction::generate_for_session(connection, &settings, &session_id) {
             Ok(count) => {
                 update_processing_job(connection, &job_id, "success", None)?;
                 summary.push(format!("已从会话 {session_id} 生成 {count} 条 Todo"));
@@ -2218,8 +2120,9 @@ mod tests {
             )
             .expect("应能准备测试会话");
 
-        let inserted = generate_todos_for_session(&connection, &settings, session_id)
-            .expect("默认 Todo 路径应登记语义产物边界");
+        let inserted =
+            jobs::todo_extraction::generate_for_session(&connection, &settings, session_id)
+                .expect("默认 Todo 路径应登记语义产物边界");
         assert_eq!(inserted, 0);
 
         let artifact: (String, String, String, String) = connection
@@ -2251,6 +2154,177 @@ mod tests {
             )
             .expect("应能读取会话 provider");
         assert_eq!(provider_used, DEFAULT_SEMANTIC_PROVIDER_TYPE);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_expose_todo_extraction_job_boundary() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-jobs-boundary-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let settings = settings_service::load_settings(&connection).expect("应能读取默认设置");
+        let session_id = "session_jobs_boundary_test";
+
+        connection
+            .execute(
+                r#"
+                INSERT INTO conversation_sessions (
+                  id,
+                  merged_text,
+                  started_at,
+                  ended_at,
+                  idle_trigger_seconds,
+                  trigger_reason,
+                  transcript_count,
+                  extraction_status,
+                  extraction_provider_used,
+                  extraction_fallback_used,
+                  extraction_fallback_reason,
+                  trace_id,
+                  created_at
+                ) VALUES (?1, '明天复盘架构拆分计划并同步风险。', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 20, 'forced_flush', 1, 'pending', 'pending', 0, '', 'trace_jobs_boundary_test', CURRENT_TIMESTAMP)
+                "#,
+                params![session_id],
+            )
+            .expect("应能准备测试会话");
+
+        let inserted =
+            jobs::todo_extraction::generate_for_session(&connection, &settings, session_id)
+                .expect("jobs todo_extraction 应能登记语义产物边界");
+        assert_eq!(inserted, 0);
+
+        let artifact_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(1) FROM semantic_artifacts WHERE session_id = ?1 AND artifact_type = 'todo_extraction' AND provider = ?2",
+                params![session_id, DEFAULT_SEMANTIC_PROVIDER_TYPE],
+                |row| row.get(0),
+            )
+            .expect("应能查询 Todo 语义产物");
+        assert_eq!(artifact_count, 1);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_skip_placeholder_manual_session_in_todo_extraction_job() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-jobs-skip-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let settings = settings_service::load_settings(&connection).expect("应能读取默认设置");
+        let session_id = "session_jobs_skip_test";
+
+        connection
+            .execute(
+                r#"
+                INSERT INTO conversation_sessions (
+                  id,
+                  merged_text,
+                  started_at,
+                  ended_at,
+                  idle_trigger_seconds,
+                  trigger_reason,
+                  transcript_count,
+                  extraction_status,
+                  extraction_provider_used,
+                  extraction_fallback_used,
+                  extraction_fallback_reason,
+                  trace_id,
+                  created_at
+                ) VALUES (?1, '手动刷新会话，当前未绑定真实转写文稿。', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 20, 'manual', 0, 'pending', 'pending', 0, '', 'trace_jobs_skip_test', CURRENT_TIMESTAMP)
+                "#,
+                params![session_id],
+            )
+            .expect("应能准备手动占位会话");
+
+        let inserted =
+            jobs::todo_extraction::generate_for_session(&connection, &settings, session_id)
+                .expect("jobs todo_extraction 应跳过占位会话");
+        assert_eq!(inserted, 0);
+
+        let artifact_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(1) FROM semantic_artifacts WHERE session_id = ?1 AND artifact_type = 'todo_extraction'",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .expect("应能查询 Todo 语义产物数量");
+        assert_eq!(artifact_count, 0);
+
+        let provider_used: String = connection
+            .query_row(
+                "SELECT extraction_provider_used FROM conversation_sessions WHERE id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .expect("应能读取会话提取 provider");
+        assert_eq!(provider_used, "skipped");
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_replace_existing_todo_extraction_artifact_for_session() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-jobs-replace-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let settings = settings_service::load_settings(&connection).expect("应能读取默认设置");
+        let session_id = "session_jobs_replace_test";
+
+        connection
+            .execute(
+                r#"
+                INSERT INTO conversation_sessions (
+                  id,
+                  merged_text,
+                  started_at,
+                  ended_at,
+                  idle_trigger_seconds,
+                  trigger_reason,
+                  transcript_count,
+                  extraction_status,
+                  extraction_provider_used,
+                  extraction_fallback_used,
+                  extraction_fallback_reason,
+                  trace_id,
+                  created_at
+                ) VALUES (?1, '请安排复盘会议并同步会议纪要。', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 20, 'forced_flush', 1, 'pending', 'pending', 0, '', 'trace_jobs_replace_test', CURRENT_TIMESTAMP)
+                "#,
+                params![session_id],
+            )
+            .expect("应能准备可提取会话");
+
+        jobs::todo_extraction::generate_for_session(&connection, &settings, session_id)
+            .expect("首次应登记 Todo 语义产物");
+        jobs::todo_extraction::generate_for_session(&connection, &settings, session_id)
+            .expect("再次登记应替换旧 Todo 语义产物");
+
+        let artifact_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(1) FROM semantic_artifacts WHERE session_id = ?1 AND artifact_type = 'todo_extraction'",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .expect("应能查询 Todo 语义产物数量");
+        assert_eq!(artifact_count, 1);
 
         let _ = fs::remove_dir_all(temp_dir);
     }
