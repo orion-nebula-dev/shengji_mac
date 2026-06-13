@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use rusqlite::params;
 
-use crate::{infra::sqlite::open_connection, AppState, TodoDto};
+use crate::{domain::todo::TodoDto, infra::sqlite::open_connection, AppState};
 
 pub(crate) fn toggle_todo_status_payload(
     db_path: &PathBuf,

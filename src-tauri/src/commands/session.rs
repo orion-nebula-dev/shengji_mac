@@ -3,8 +3,9 @@ use std::path::PathBuf;
 use rusqlite::params;
 
 use crate::{
-    current_timestamp_label, ensure_manual_flush_allowed, infra::sqlite::open_connection,
-    insert_processing_job, latest_session, process_pending_jobs_internal, AppState, SessionDto,
+    app::query_service, current_timestamp_label, domain::session::SessionDto,
+    ensure_manual_flush_allowed, infra::sqlite::open_connection, insert_processing_job,
+    process_pending_jobs_internal, AppState,
 };
 
 pub(crate) fn flush_current_session_payload(db_path: &PathBuf) -> Result<SessionDto, String> {
@@ -40,7 +41,7 @@ pub(crate) fn flush_current_session_payload(db_path: &PathBuf) -> Result<Session
     insert_processing_job(&connection, "todo_extraction", &session_id, &trace_id)?;
     let _ = process_pending_jobs_internal(&connection)?;
 
-    latest_session(&connection)?.ok_or_else(|| "未找到刚创建的会话".to_string())
+    query_service::latest_session(&connection)?.ok_or_else(|| "未找到刚创建的会话".to_string())
 }
 
 #[tauri::command]
