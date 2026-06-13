@@ -31,14 +31,32 @@ export function loadState(): PersistedState {
       ...defaultState.settings,
       ...(parsed.settings ?? {}),
     };
+    const legacyAsrProviderType = String(
+      (mergedSettings as SettingsState & { asrProviderType: string }).asrProviderType,
+    );
+    if (legacyAsrProviderType === "local" || legacyAsrProviderType.trim().length === 0) {
+      mergedSettings.asrProviderType = "local_whisperkit";
+    }
+    if (legacyAsrProviderType === "cloud") {
+      mergedSettings.asrProviderType = "cloud_volc";
+    }
+    const legacyTodoProviderType = String(
+      (mergedSettings as SettingsState & { todoProviderType: string }).todoProviderType,
+    );
+    if (legacyTodoProviderType.trim().length === 0) {
+      mergedSettings.todoProviderType = "semantic_m3";
+    }
+    if (legacyTodoProviderType === "embedded_local") {
+      mergedSettings.todoProviderType = "legacy_local_llm";
+    }
     if (
       mergedSettings.providerMode === "cloud" &&
-      mergedSettings.asrProviderType === "cloud" &&
+      mergedSettings.asrProviderType === "cloud_volc" &&
       mergedSettings.todoProviderType === "cloud"
     ) {
       mergedSettings.providerMode = "local";
-      mergedSettings.asrProviderType = "local";
-      mergedSettings.todoProviderType = "embedded_local";
+      mergedSettings.asrProviderType = "local_whisperkit";
+      mergedSettings.todoProviderType = "semantic_m3";
     }
     return {
       settings: mergedSettings,

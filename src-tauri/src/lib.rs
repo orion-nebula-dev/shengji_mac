@@ -14,6 +14,9 @@ use std::{
 };
 use tauri::Manager;
 
+mod domain;
+mod providers;
+
 #[derive(Clone)]
 struct AppState {
     db_path: PathBuf,
@@ -70,12 +73,19 @@ struct SettingsDto {
     idle_trigger_seconds: i64,
     provider_mode: String,
     asr_provider_type: String,
+    speaker_provider_type: String,
     todo_provider_type: String,
+    semantic_provider_type: String,
+    embedding_provider_type: String,
+    export_provider_type: String,
     asr_submit_url: String,
     asr_query_url: String,
     asr_resource_id: String,
     asr_model_name: String,
     asr_api_key_masked: String,
+    semantic_base_url: String,
+    semantic_model_name: String,
+    semantic_api_key_masked: String,
     todo_base_url: String,
     todo_model_name: String,
     todo_api_key_masked: String,
@@ -365,10 +375,7 @@ fn ensure_embedded_todo_runtime_files(models_dir: &PathBuf) -> Result<(), String
     Ok(())
 }
 
-fn verify_embedded_todo_runtime_files(
-    models_dir: &PathBuf,
-    version: &str,
-) -> Result<(), String> {
+fn verify_embedded_todo_runtime_files(models_dir: &PathBuf, version: &str) -> Result<(), String> {
     let model_dir = embedded_todo_model_dir(models_dir, version);
     for asset in embedded_todo_assets() {
         let target_path = model_dir.join(asset.relative_path);
@@ -401,8 +408,8 @@ fn read_embedded_todo_manifest(
     version: &str,
 ) -> Result<EmbeddedTodoManifest, String> {
     let manifest_path = embedded_todo_manifest_path(models_dir, version);
-    let manifest_text = fs::read_to_string(&manifest_path)
-        .map_err(|error| format!("读取模型清单失败: {error}"))?;
+    let manifest_text =
+        fs::read_to_string(&manifest_path).map_err(|error| format!("读取模型清单失败: {error}"))?;
     parse_embedded_todo_manifest_text(&manifest_text)
 }
 
@@ -571,7 +578,9 @@ fn invoke_llama_cli_todo_extraction(
         .arg(prompt);
 
     if config.manifest.gpu_layers >= 0 {
-        command.arg("-ngl").arg(config.manifest.gpu_layers.to_string());
+        command
+            .arg("-ngl")
+            .arg(config.manifest.gpu_layers.to_string());
     }
 
     let output = run_command_with_timeout(command, LLAMA_CLI_GENERATION_TIMEOUT_SECONDS)?;
@@ -602,6 +611,15 @@ const EMBEDDED_TODO_MODEL_VERSION: &str = "qwen3-4b-instruct-2507-q4_k_m";
 const EMBEDDED_TODO_RUNTIME_TIMEOUT_SECONDS: u64 = 60;
 const LLAMA_CLI_HEALTH_CHECK_TIMEOUT_SECONDS: u64 = 60;
 const LLAMA_CLI_GENERATION_TIMEOUT_SECONDS: u64 = 300;
+const DEFAULT_ASR_PROVIDER_TYPE: &str = "local_whisperkit";
+const DEFAULT_SPEAKER_PROVIDER_TYPE: &str = "local_speakerkit";
+const DEFAULT_SEMANTIC_PROVIDER_TYPE: &str = "minimax_m3";
+const DEFAULT_EMBEDDING_PROVIDER_TYPE: &str = "reserved";
+const DEFAULT_EXPORT_PROVIDER_TYPE: &str = "local_file";
+const DEFAULT_TODO_PROVIDER_TYPE: &str = "semantic_m3";
+const LEGACY_TODO_PROVIDER_TYPE: &str = "legacy_local_llm";
+const DEFAULT_SEMANTIC_BASE_URL: &str = "https://api.minimax.io/v1/responses";
+const DEFAULT_SEMANTIC_MODEL_NAME: &str = "MiniMax-M3";
 const EMBEDDED_TODO_MANIFEST_BYTES: &[u8] =
     include_bytes!("../resources/embedded_models/todo/qwen3-4b-instruct-2507-q4_k_m/manifest.json");
 const EMBEDDED_TODO_PROMPT_TEMPLATE_BYTES: &[u8] = include_bytes!(
@@ -628,6 +646,30 @@ fn sleep_before_retry(attempt: usize) {
 
 fn should_retry_http_status(status: u16) -> bool {
     status == 429 || status >= 500
+}
+
+fn normalize_asr_provider_type(provider_type: &str) -> String {
+    match provider_type.trim() {
+        "" | "local" | "local_whisperkit" => DEFAULT_ASR_PROVIDER_TYPE.to_string(),
+        "cloud" | "cloud_volc" => "cloud_volc".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn is_local_asr_provider(provider_type: &str) -> bool {
+    matches!(
+        normalize_asr_provider_type(provider_type).as_str(),
+        DEFAULT_ASR_PROVIDER_TYPE
+    )
+}
+
+fn normalize_todo_provider_type(provider_type: &str) -> String {
+    match provider_type.trim() {
+        "" | "semantic_m3" => DEFAULT_TODO_PROVIDER_TYPE.to_string(),
+        "embedded_local" | "legacy_local_llm" => LEGACY_TODO_PROVIDER_TYPE.to_string(),
+        "cloud" => "cloud".to_string(),
+        other => other.to_string(),
+    }
 }
 
 fn is_placeholder_session_text(text: &str) -> bool {
@@ -679,6 +721,10 @@ fn ensure_app_settings_columns(connection: &Connection) -> Result<(), String> {
 
     for (name, sql) in [
         (
+            "asr_base_url",
+            "ALTER TABLE app_settings ADD COLUMN asr_base_url TEXT NOT NULL DEFAULT ''",
+        ),
+        (
             "asr_submit_url",
             "ALTER TABLE app_settings ADD COLUMN asr_submit_url TEXT NOT NULL DEFAULT ''",
         ),
@@ -691,16 +737,64 @@ fn ensure_app_settings_columns(connection: &Connection) -> Result<(), String> {
             "ALTER TABLE app_settings ADD COLUMN asr_resource_id TEXT NOT NULL DEFAULT ''",
         ),
         (
+            "asr_model_name",
+            "ALTER TABLE app_settings ADD COLUMN asr_model_name TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "asr_api_key_ref",
+            "ALTER TABLE app_settings ADD COLUMN asr_api_key_ref TEXT NOT NULL DEFAULT ''",
+        ),
+        (
             "asr_provider_type",
-            "ALTER TABLE app_settings ADD COLUMN asr_provider_type TEXT NOT NULL DEFAULT 'local'",
+            "ALTER TABLE app_settings ADD COLUMN asr_provider_type TEXT NOT NULL DEFAULT 'local_whisperkit'",
+        ),
+        (
+            "speaker_provider_type",
+            "ALTER TABLE app_settings ADD COLUMN speaker_provider_type TEXT NOT NULL DEFAULT 'local_speakerkit'",
         ),
         (
             "todo_provider_type",
-            "ALTER TABLE app_settings ADD COLUMN todo_provider_type TEXT NOT NULL DEFAULT 'embedded_local'",
+            "ALTER TABLE app_settings ADD COLUMN todo_provider_type TEXT NOT NULL DEFAULT 'semantic_m3'",
+        ),
+        (
+            "semantic_provider_type",
+            "ALTER TABLE app_settings ADD COLUMN semantic_provider_type TEXT NOT NULL DEFAULT 'minimax_m3'",
+        ),
+        (
+            "embedding_provider_type",
+            "ALTER TABLE app_settings ADD COLUMN embedding_provider_type TEXT NOT NULL DEFAULT 'reserved'",
+        ),
+        (
+            "export_provider_type",
+            "ALTER TABLE app_settings ADD COLUMN export_provider_type TEXT NOT NULL DEFAULT 'local_file'",
         ),
         (
             "local_todo_model_version",
             "ALTER TABLE app_settings ADD COLUMN local_todo_model_version TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "todo_base_url",
+            "ALTER TABLE app_settings ADD COLUMN todo_base_url TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "todo_model_name",
+            "ALTER TABLE app_settings ADD COLUMN todo_model_name TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "todo_api_key_ref",
+            "ALTER TABLE app_settings ADD COLUMN todo_api_key_ref TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "semantic_base_url",
+            "ALTER TABLE app_settings ADD COLUMN semantic_base_url TEXT NOT NULL DEFAULT 'https://api.minimax.io/v1/responses'",
+        ),
+        (
+            "semantic_model_name",
+            "ALTER TABLE app_settings ADD COLUMN semantic_model_name TEXT NOT NULL DEFAULT 'MiniMax-M3'",
+        ),
+        (
+            "semantic_api_key_ref",
+            "ALTER TABLE app_settings ADD COLUMN semantic_api_key_ref TEXT NOT NULL DEFAULT ''",
         ),
         (
             "allow_cloud_fallback",
@@ -745,12 +839,38 @@ fn ensure_app_settings_columns(connection: &Connection) -> Result<(), String> {
                 ELSE asr_model_name
               END,
               asr_provider_type = CASE
-                WHEN TRIM(asr_provider_type) = '' OR asr_provider_type = 'cloud' THEN 'local'
+                WHEN TRIM(asr_provider_type) = '' OR asr_provider_type = 'local' THEN 'local_whisperkit'
+                WHEN asr_provider_type = 'cloud' THEN 'cloud_volc'
                 ELSE asr_provider_type
               END,
+              speaker_provider_type = CASE
+                WHEN TRIM(speaker_provider_type) = '' THEN 'local_speakerkit'
+                ELSE speaker_provider_type
+              END,
               todo_provider_type = CASE
-                WHEN TRIM(todo_provider_type) = '' OR todo_provider_type = 'cloud' THEN 'embedded_local'
+                WHEN TRIM(todo_provider_type) = '' THEN 'semantic_m3'
+                WHEN todo_provider_type = 'embedded_local' THEN 'legacy_local_llm'
                 ELSE todo_provider_type
+              END,
+              semantic_provider_type = CASE
+                WHEN TRIM(semantic_provider_type) = '' THEN 'minimax_m3'
+                ELSE semantic_provider_type
+              END,
+              embedding_provider_type = CASE
+                WHEN TRIM(embedding_provider_type) = '' THEN 'reserved'
+                ELSE embedding_provider_type
+              END,
+              export_provider_type = CASE
+                WHEN TRIM(export_provider_type) = '' THEN 'local_file'
+                ELSE export_provider_type
+              END,
+              semantic_base_url = CASE
+                WHEN TRIM(semantic_base_url) = '' THEN 'https://api.minimax.io/v1/responses'
+                ELSE semantic_base_url
+              END,
+              semantic_model_name = CASE
+                WHEN TRIM(semantic_model_name) = '' THEN 'MiniMax-M3'
+                ELSE semantic_model_name
               END,
               local_todo_model_version = CASE
                 WHEN TRIM(local_todo_model_version) = '' OR local_todo_model_version = 'todo-embedded-v1' THEN ?
@@ -836,6 +956,51 @@ fn ensure_conversation_sessions_columns(connection: &Connection) -> Result<(), S
     Ok(())
 }
 
+fn ensure_model_invocations_columns(connection: &Connection) -> Result<(), String> {
+    let mut columns = Vec::new();
+    let mut statement = connection
+        .prepare("PRAGMA table_info(model_invocations)")
+        .map_err(|error| format!("读取模型调用表结构失败: {error}"))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| format!("查询模型调用表字段失败: {error}"))?;
+
+    for column in rows {
+        columns.push(column.map_err(|error| format!("读取模型调用字段失败: {error}"))?);
+    }
+
+    for (name, sql) in [
+        (
+            "input_tokens",
+            "ALTER TABLE model_invocations ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "output_tokens",
+            "ALTER TABLE model_invocations ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "duration_ms",
+            "ALTER TABLE model_invocations ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "estimated_cost_microunits",
+            "ALTER TABLE model_invocations ADD COLUMN estimated_cost_microunits INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "currency",
+            "ALTER TABLE model_invocations ADD COLUMN currency TEXT NOT NULL DEFAULT ''",
+        ),
+    ] {
+        if !columns.iter().any(|column| column == name) {
+            connection
+                .execute(sql, [])
+                .map_err(|error| format!("补充模型调用字段 {name} 失败: {error}"))?;
+        }
+    }
+
+    Ok(())
+}
+
 fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
     let parent_dir = db_path
         .parent()
@@ -855,14 +1020,21 @@ fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
         chunk_seconds INTEGER NOT NULL DEFAULT 30 CHECK (chunk_seconds > 0),
         idle_trigger_seconds INTEGER NOT NULL DEFAULT 20 CHECK (idle_trigger_seconds > 0),
         provider_mode TEXT NOT NULL DEFAULT 'local' CHECK (provider_mode IN ('cloud', 'local')),
-        asr_provider_type TEXT NOT NULL DEFAULT 'local',
-        todo_provider_type TEXT NOT NULL DEFAULT 'embedded_local',
+        asr_provider_type TEXT NOT NULL DEFAULT 'local_whisperkit',
+        speaker_provider_type TEXT NOT NULL DEFAULT 'local_speakerkit',
+        todo_provider_type TEXT NOT NULL DEFAULT 'semantic_m3',
+        semantic_provider_type TEXT NOT NULL DEFAULT 'minimax_m3',
+        embedding_provider_type TEXT NOT NULL DEFAULT 'reserved',
+        export_provider_type TEXT NOT NULL DEFAULT 'local_file',
         asr_base_url TEXT NOT NULL DEFAULT '',
         asr_submit_url TEXT NOT NULL DEFAULT '',
         asr_query_url TEXT NOT NULL DEFAULT '',
         asr_resource_id TEXT NOT NULL DEFAULT '',
         asr_model_name TEXT NOT NULL DEFAULT '',
         asr_api_key_ref TEXT NOT NULL DEFAULT '',
+        semantic_base_url TEXT NOT NULL DEFAULT '',
+        semantic_model_name TEXT NOT NULL DEFAULT 'MiniMax-M3',
+        semantic_api_key_ref TEXT NOT NULL DEFAULT '',
         todo_base_url TEXT NOT NULL DEFAULT '',
         todo_model_name TEXT NOT NULL DEFAULT '',
         todo_api_key_ref TEXT NOT NULL DEFAULT '',
@@ -923,6 +1095,45 @@ fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
         FOREIGN KEY (conversation_session_id) REFERENCES conversation_sessions(id) ON DELETE SET NULL
       );
 
+      CREATE TABLE IF NOT EXISTS semantic_artifacts (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        artifact_type TEXT NOT NULL
+          CHECK (artifact_type IN ('summary', 'todo_extraction', 'mind_map', 'moment', 'deep_research', 'translation')),
+        status TEXT NOT NULL DEFAULT 'pending'
+          CHECK (status IN ('pending', 'running', 'succeeded', 'failed')),
+        provider TEXT NOT NULL,
+        model_name TEXT NOT NULL,
+        schema_version TEXT NOT NULL DEFAULT 'v0.4',
+        source_span_refs TEXT NOT NULL DEFAULT '[]',
+        payload_json TEXT NOT NULL DEFAULT '{}',
+        error_message TEXT NOT NULL DEFAULT '',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (session_id) REFERENCES conversation_sessions(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS model_invocations (
+        id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        model_name TEXT NOT NULL,
+        capability TEXT NOT NULL,
+        status TEXT NOT NULL
+          CHECK (status IN ('pending', 'running', 'succeeded', 'failed')),
+        request_summary TEXT NOT NULL DEFAULT '',
+        response_summary TEXT NOT NULL DEFAULT '',
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        duration_ms INTEGER NOT NULL DEFAULT 0,
+        estimated_cost_microunits INTEGER NOT NULL DEFAULT 0,
+        currency TEXT NOT NULL DEFAULT '',
+        error_message TEXT NOT NULL DEFAULT '',
+        trace_id TEXT,
+        started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        finished_at DATETIME,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
       CREATE TABLE IF NOT EXISTS todos (
         id TEXT PRIMARY KEY,
         conversation_session_id TEXT NOT NULL,
@@ -967,6 +1178,14 @@ fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
         ON transcript_segments(audio_segment_id);
       CREATE INDEX IF NOT EXISTS idx_transcript_segments_session
         ON transcript_segments(conversation_session_id);
+      CREATE INDEX IF NOT EXISTS idx_semantic_artifacts_session_type
+        ON semantic_artifacts(session_id, artifact_type);
+      CREATE INDEX IF NOT EXISTS idx_semantic_artifacts_status
+        ON semantic_artifacts(status);
+      CREATE INDEX IF NOT EXISTS idx_model_invocations_provider
+        ON model_invocations(provider, capability);
+      CREATE INDEX IF NOT EXISTS idx_model_invocations_status
+        ON model_invocations(status);
       CREATE INDEX IF NOT EXISTS idx_todos_status
         ON todos(status);
       CREATE INDEX IF NOT EXISTS idx_todos_created_at
@@ -979,6 +1198,7 @@ fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
 
     ensure_app_settings_columns(&connection)?;
     ensure_conversation_sessions_columns(&connection)?;
+    ensure_model_invocations_columns(&connection)?;
 
     connection
         .execute(
@@ -991,13 +1211,20 @@ fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
         idle_trigger_seconds,
         provider_mode,
         asr_provider_type,
+        speaker_provider_type,
         todo_provider_type,
+        semantic_provider_type,
+        embedding_provider_type,
+        export_provider_type,
         asr_base_url,
         asr_submit_url,
         asr_query_url,
         asr_resource_id,
         asr_model_name,
         asr_api_key_ref,
+        semantic_base_url,
+        semantic_model_name,
+        semantic_api_key_ref,
         todo_base_url,
         todo_model_name,
         todo_api_key_ref,
@@ -1005,7 +1232,7 @@ fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
         allow_cloud_fallback,
         local_todo_runtime_status,
         local_todo_last_health_check_at
-      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)
       "#,
             params![
                 "default",
@@ -1014,14 +1241,21 @@ fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
                 30,
                 20,
                 "local",
-                "local",
-                "embedded_local",
+                DEFAULT_ASR_PROVIDER_TYPE,
+                DEFAULT_SPEAKER_PROVIDER_TYPE,
+                DEFAULT_TODO_PROVIDER_TYPE,
+                DEFAULT_SEMANTIC_PROVIDER_TYPE,
+                DEFAULT_EMBEDDING_PROVIDER_TYPE,
+                DEFAULT_EXPORT_PROVIDER_TYPE,
                 "https://api.example.com/asr/query",
                 "https://api.example.com/asr/submit",
                 "https://api.example.com/asr/query",
                 "volc.seedasr.auc",
                 "bigmodel",
                 "sk-asr-****",
+                DEFAULT_SEMANTIC_BASE_URL,
+                DEFAULT_SEMANTIC_MODEL_NAME,
+                "sk-m3-****",
                 "https://api.example.com/todo",
                 "todo-model-v1",
                 "sk-todo-****",
@@ -1072,7 +1306,7 @@ fn seed_demo_data(connection: &Connection) -> Result<(), String> {
         'manual',
         1,
         'success',
-        'embedded_local',
+        'seed',
         0,
         '',
         'trace_seed_001'
@@ -1127,12 +1361,19 @@ fn query_settings(connection: &Connection) -> Result<SettingsDto, String> {
         idle_trigger_seconds,
         provider_mode,
         asr_provider_type,
+        speaker_provider_type,
         todo_provider_type,
+        semantic_provider_type,
+        embedding_provider_type,
+        export_provider_type,
         asr_submit_url,
         asr_query_url,
         asr_resource_id,
         asr_model_name,
         asr_api_key_ref,
+        semantic_base_url,
+        semantic_model_name,
+        semantic_api_key_ref,
         todo_base_url,
         todo_model_name,
         todo_api_key_ref,
@@ -1145,29 +1386,35 @@ fn query_settings(connection: &Connection) -> Result<SettingsDto, String> {
       "#,
             [],
             |row| {
-                let local_todo_model_version = normalize_local_todo_model_version(
-                    row.get::<_, String>(15)?.as_str(),
-                );
+                let local_todo_model_version =
+                    normalize_local_todo_model_version(row.get::<_, String>(22)?.as_str());
                 Ok(SettingsDto {
                     record_enabled: row.get::<_, i64>(0)? == 1,
                     language: row.get(1)?,
                     chunk_seconds: row.get(2)?,
                     idle_trigger_seconds: row.get(3)?,
                     provider_mode: row.get(4)?,
-                    asr_provider_type: row.get(5)?,
-                    todo_provider_type: row.get(6)?,
-                    asr_submit_url: row.get(7)?,
-                    asr_query_url: row.get(8)?,
-                    asr_resource_id: row.get(9)?,
-                    asr_model_name: row.get(10)?,
-                    asr_api_key_masked: row.get(11)?,
-                    todo_base_url: row.get(12)?,
-                    todo_model_name: row.get(13)?,
-                    todo_api_key_masked: row.get(14)?,
+                    asr_provider_type: normalize_asr_provider_type(&row.get::<_, String>(5)?),
+                    speaker_provider_type: row.get(6)?,
+                    todo_provider_type: normalize_todo_provider_type(&row.get::<_, String>(7)?),
+                    semantic_provider_type: row.get(8)?,
+                    embedding_provider_type: row.get(9)?,
+                    export_provider_type: row.get(10)?,
+                    asr_submit_url: row.get(11)?,
+                    asr_query_url: row.get(12)?,
+                    asr_resource_id: row.get(13)?,
+                    asr_model_name: row.get(14)?,
+                    asr_api_key_masked: row.get(15)?,
+                    semantic_base_url: row.get(16)?,
+                    semantic_model_name: row.get(17)?,
+                    semantic_api_key_masked: row.get(18)?,
+                    todo_base_url: row.get(19)?,
+                    todo_model_name: row.get(20)?,
+                    todo_api_key_masked: row.get(21)?,
                     local_todo_model_version,
-                    allow_cloud_fallback: row.get::<_, i64>(16)? == 1,
-                    local_todo_runtime_status: row.get(17)?,
-                    local_todo_last_health_check_at: row.get(18)?,
+                    allow_cloud_fallback: row.get::<_, i64>(23)? == 1,
+                    local_todo_runtime_status: row.get(24)?,
+                    local_todo_last_health_check_at: row.get(25)?,
                 })
             },
         )
@@ -1204,8 +1451,8 @@ fn spawn_embedded_runtime_request(
 ) -> Result<EmbeddedTodoRuntimeResponse, String> {
     let executable =
         std::env::current_exe().map_err(|error| format!("读取当前应用路径失败: {error}"))?;
-    let request_bytes =
-        serde_json::to_vec(request).map_err(|error| format!("序列化本地运行时请求失败: {error}"))?;
+    let request_bytes = serde_json::to_vec(request)
+        .map_err(|error| format!("序列化本地运行时请求失败: {error}"))?;
 
     let mut child = Command::new(executable)
         .env_remove("SMART_TODO_PROCESS_PENDING_ONCE")
@@ -1261,62 +1508,64 @@ pub fn run_embedded_todo_runtime_once() -> Result<(), String> {
         serde_json::from_str(&input).map_err(|error| format!("解析本地运行时请求失败: {error}"))?;
     let runtime_dir = PathBuf::from(request.runtime_dir.as_str());
     let response = match request.action.as_str() {
-        "health_check" => match load_embedded_todo_runtime_config(&runtime_dir, &request.model_version)
-        {
-            Ok(config) => match health_check_llama_cli(&config) {
-                Ok(message) => EmbeddedTodoRuntimeResponse {
-                    success: true,
-                    runtime_status: "ready".into(),
-                    model_version: request.model_version,
-                    message,
-                    todos: Vec::new(),
-                },
-                Err(error) => EmbeddedTodoRuntimeResponse {
-                    success: false,
-                    runtime_status: "failed".into(),
-                    model_version: request.model_version,
-                    message: error,
-                    todos: Vec::new(),
-                },
-            },
-            Err(error) => EmbeddedTodoRuntimeResponse {
-                success: false,
-                runtime_status: "not_ready".into(),
-                model_version: request.model_version,
-                message: error,
-                todos: Vec::new(),
-            },
-        },
-        "extract_todos" => match load_embedded_todo_runtime_config(&runtime_dir, &request.model_version)
-        {
-            Ok(config) => match invoke_llama_cli_todo_extraction(&config, &request.text) {
-                Ok(todos) => EmbeddedTodoRuntimeResponse {
-                    success: true,
-                    runtime_status: "ready".into(),
-                    model_version: request.model_version,
-                    message: if todos.is_empty() {
-                        "Qwen3-4B Q4_K_M 未识别到明确待办".into()
-                    } else {
-                        format!("Qwen3-4B Q4_K_M 识别出 {} 条待办", todos.len())
+        "health_check" => {
+            match load_embedded_todo_runtime_config(&runtime_dir, &request.model_version) {
+                Ok(config) => match health_check_llama_cli(&config) {
+                    Ok(message) => EmbeddedTodoRuntimeResponse {
+                        success: true,
+                        runtime_status: "ready".into(),
+                        model_version: request.model_version,
+                        message,
+                        todos: Vec::new(),
                     },
-                    todos,
+                    Err(error) => EmbeddedTodoRuntimeResponse {
+                        success: false,
+                        runtime_status: "failed".into(),
+                        model_version: request.model_version,
+                        message: error,
+                        todos: Vec::new(),
+                    },
                 },
                 Err(error) => EmbeddedTodoRuntimeResponse {
                     success: false,
-                    runtime_status: "failed".into(),
+                    runtime_status: "not_ready".into(),
                     model_version: request.model_version,
                     message: error,
                     todos: Vec::new(),
                 },
-            },
-            Err(error) => EmbeddedTodoRuntimeResponse {
-                success: false,
-                runtime_status: "not_ready".into(),
-                model_version: request.model_version,
-                message: error,
-                todos: Vec::new(),
-            },
-        },
+            }
+        }
+        "extract_todos" => {
+            match load_embedded_todo_runtime_config(&runtime_dir, &request.model_version) {
+                Ok(config) => match invoke_llama_cli_todo_extraction(&config, &request.text) {
+                    Ok(todos) => EmbeddedTodoRuntimeResponse {
+                        success: true,
+                        runtime_status: "ready".into(),
+                        model_version: request.model_version,
+                        message: if todos.is_empty() {
+                            "Qwen3-4B Q4_K_M 未识别到明确待办".into()
+                        } else {
+                            format!("Qwen3-4B Q4_K_M 识别出 {} 条待办", todos.len())
+                        },
+                        todos,
+                    },
+                    Err(error) => EmbeddedTodoRuntimeResponse {
+                        success: false,
+                        runtime_status: "failed".into(),
+                        model_version: request.model_version,
+                        message: error,
+                        todos: Vec::new(),
+                    },
+                },
+                Err(error) => EmbeddedTodoRuntimeResponse {
+                    success: false,
+                    runtime_status: "not_ready".into(),
+                    model_version: request.model_version,
+                    message: error,
+                    todos: Vec::new(),
+                },
+            }
+        }
         _ => return Err(format!("不支持的本地运行时动作: {}", request.action)),
     };
 
@@ -1331,6 +1580,17 @@ fn query_local_todo_runtime_status(
     models_dir: &PathBuf,
 ) -> Result<LocalTodoRuntimeStatusDto, String> {
     let settings = query_settings(connection)?;
+    if normalize_todo_provider_type(&settings.todo_provider_type) != LEGACY_TODO_PROVIDER_TYPE {
+        return Ok(LocalTodoRuntimeStatusDto {
+            provider_type: settings.todo_provider_type,
+            model_version: normalize_local_todo_model_version(&settings.local_todo_model_version),
+            runtime_status: "not_ready".into(),
+            last_health_check_at: settings.local_todo_last_health_check_at,
+            fallback_enabled: settings.allow_cloud_fallback,
+            message: "旧本地 Todo 运行时已降级为 legacy，默认语义链路不启动该运行时".into(),
+        });
+    }
+
     let version = normalize_local_todo_model_version(&settings.local_todo_model_version);
     let manifest_path = embedded_todo_manifest_path(models_dir, &version);
 
@@ -2026,8 +2286,14 @@ fn extract_json_array(input: &str) -> Result<Vec<serde_json::Value>, String> {
         return Ok(value);
     }
 
-    let starts = input.match_indices('[').map(|(idx, _)| idx).collect::<Vec<_>>();
-    let ends = input.match_indices(']').map(|(idx, _)| idx).collect::<Vec<_>>();
+    let starts = input
+        .match_indices('[')
+        .map(|(idx, _)| idx)
+        .collect::<Vec<_>>();
+    let ends = input
+        .match_indices(']')
+        .map(|(idx, _)| idx)
+        .collect::<Vec<_>>();
 
     for start in starts.iter().rev() {
         for end in ends.iter().rev() {
@@ -2046,7 +2312,7 @@ fn extract_json_array(input: &str) -> Result<Vec<serde_json::Value>, String> {
 }
 
 fn transcribe_audio_file(settings: &SettingsDto, file_path: &str) -> Result<String, String> {
-    if settings.asr_provider_type == "local" {
+    if is_local_asr_provider(&settings.asr_provider_type) {
         let message = "本地 ASR 尚未接入，无法执行纯本地语音转写";
         if !settings.allow_cloud_fallback {
             return Err(message.to_string());
@@ -2290,6 +2556,74 @@ fn request_embedded_todo_extraction(
         .collect::<Vec<_>>())
 }
 
+fn register_semantic_todo_artifact_boundary(
+    connection: &Connection,
+    settings: &SettingsDto,
+    session_id: &str,
+    merged_text: &str,
+) -> Result<(), String> {
+    let payload = serde_json::json!({
+        "boundary": "v0.4_semantic_provider",
+        "status": "pending_provider_integration",
+        "todo_candidates": [],
+        "source_preview": clip_text(merged_text, 240),
+    })
+    .to_string();
+    let artifact_id = format!("semantic_todo_{}", current_timestamp_label());
+
+    connection
+        .execute(
+            "DELETE FROM semantic_artifacts WHERE session_id = ?1 AND artifact_type = 'todo_extraction'",
+            params![session_id],
+        )
+        .map_err(|error| format!("清理旧 Todo 语义产物失败: {error}"))?;
+
+    connection
+        .execute(
+            r#"
+            INSERT INTO semantic_artifacts (
+              id,
+              session_id,
+              artifact_type,
+              status,
+              provider,
+              model_name,
+              schema_version,
+              source_span_refs,
+              payload_json,
+              error_message,
+              created_at,
+              updated_at
+            ) VALUES (?1, ?2, 'todo_extraction', 'pending', ?3, ?4, 'v0.4', '[]', ?5, '', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            "#,
+            params![
+                artifact_id,
+                session_id,
+                settings.semantic_provider_type.as_str(),
+                settings.semantic_model_name.as_str(),
+                payload,
+            ],
+        )
+        .map_err(|error| format!("登记 Todo 语义产物边界失败: {error}"))?;
+
+    connection
+        .execute(
+            r#"
+            UPDATE conversation_sessions
+            SET
+              extraction_status = 'success',
+              extraction_provider_used = ?1,
+              extraction_fallback_used = 0,
+              extraction_fallback_reason = 'v0.4 仅登记 MiniMax M3 语义产物边界，实际 Todo 候选生成在后续版本接入'
+            WHERE id = ?2
+            "#,
+            params![settings.semantic_provider_type.as_str(), session_id],
+        )
+        .map_err(|error| format!("更新 Todo 语义边界状态失败: {error}"))?;
+
+    Ok(())
+}
+
 fn generate_todos_for_session(
     connection: &Connection,
     settings: &SettingsDto,
@@ -2318,18 +2652,26 @@ fn generate_todos_for_session(
         return Ok(0);
     }
 
-    let (todos, extraction_model_name, extraction_provider_used, extraction_fallback_used, extraction_fallback_reason) =
-        if settings.todo_provider_type == "embedded_local" {
+    if normalize_todo_provider_type(&settings.todo_provider_type) == DEFAULT_TODO_PROVIDER_TYPE {
+        register_semantic_todo_artifact_boundary(connection, settings, session_id, &merged_text)?;
+        return Ok(0);
+    }
+
+    let (
+        todos,
+        extraction_model_name,
+        extraction_provider_used,
+        extraction_fallback_used,
+        extraction_fallback_reason,
+    ) = if normalize_todo_provider_type(&settings.todo_provider_type) == LEGACY_TODO_PROVIDER_TYPE {
         match request_embedded_todo_extraction(settings, models_dir, &merged_text) {
-            Ok(local_items) if !local_items.is_empty() => {
-                (
-                    local_items,
-                    normalize_local_todo_model_version(&settings.local_todo_model_version),
-                    "embedded_local".to_string(),
-                    false,
-                    "".to_string(),
-                )
-            }
+            Ok(local_items) if !local_items.is_empty() => (
+                local_items,
+                normalize_local_todo_model_version(&settings.local_todo_model_version),
+                LEGACY_TODO_PROVIDER_TYPE.to_string(),
+                false,
+                "".to_string(),
+            ),
             Ok(local_items) => {
                 if !settings.allow_cloud_fallback
                     || settings.todo_base_url.trim().is_empty()
@@ -2339,7 +2681,7 @@ fn generate_todos_for_session(
                     (
                         local_items,
                         normalize_local_todo_model_version(&settings.local_todo_model_version),
-                        "embedded_local".to_string(),
+                        LEGACY_TODO_PROVIDER_TYPE.to_string(),
                         false,
                         "".to_string(),
                     )
@@ -2453,7 +2795,10 @@ fn generate_todos_for_session(
     Ok(inserted)
 }
 
-fn process_pending_jobs_internal(connection: &Connection, models_dir: &PathBuf) -> Result<String, String> {
+fn process_pending_jobs_internal(
+    connection: &Connection,
+    models_dir: &PathBuf,
+) -> Result<String, String> {
     let settings = query_settings(connection)?;
     let mut summary = Vec::new();
 
@@ -2603,7 +2948,7 @@ fn process_pending_jobs_internal(connection: &Connection, models_dir: &PathBuf) 
                     .execute(
                         "UPDATE conversation_sessions SET extraction_status = 'failed', extraction_provider_used = ?1, extraction_fallback_used = ?2, extraction_fallback_reason = ?3 WHERE id = ?4",
                         params![
-                            settings.todo_provider_type.as_str(),
+                            normalize_todo_provider_type(&settings.todo_provider_type).as_str(),
                             0,
                             clip_text(&error, 200),
                             session_id.as_str()
@@ -2636,7 +2981,7 @@ pub fn process_pending_jobs_once_for_cli(db_path: &str) -> Result<String, String
 }
 
 fn test_asr_provider(settings: &SettingsDto) -> Result<ModelTestResult, String> {
-    let local_asr_unavailable = settings.asr_provider_type == "local";
+    let local_asr_unavailable = is_local_asr_provider(&settings.asr_provider_type);
     if local_asr_unavailable && !settings.allow_cloud_fallback {
         return Ok(ModelTestResult {
             provider: "asr".into(),
@@ -2753,7 +3098,18 @@ fn test_model_connection(
 ) -> Result<ModelTestResult, String> {
     match payload.provider.as_str() {
         "todo" => {
-            if payload.settings.todo_provider_type == "embedded_local" {
+            let todo_provider_type =
+                normalize_todo_provider_type(&payload.settings.todo_provider_type);
+            if todo_provider_type == DEFAULT_TODO_PROVIDER_TYPE {
+                Ok(ModelTestResult {
+                    provider: "todo".into(),
+                    success: true,
+                    status_code: 0,
+                    message: "MiniMax M3 语义 Todo 边界已登记；v0.4 不发起实际 Todo 生成调用"
+                        .into(),
+                    response_excerpt: "semantic_artifacts(type='todo_extraction')".into(),
+                })
+            } else if todo_provider_type == LEGACY_TODO_PROVIDER_TYPE {
                 test_todo_embedded_provider(&payload.settings, &state)
             } else {
                 test_todo_cloud_provider(&payload.settings)
@@ -2777,6 +3133,7 @@ fn get_desktop_context(state: tauri::State<'_, AppState>) -> Result<DesktopConte
     let recording = is_recording(&state)?;
     let connection = open_connection(&state.db_path)?;
     let runtime = query_local_todo_runtime_status(&connection, &state.models_dir)?;
+    let provider_count = providers::provider_catalog().len();
 
     Ok(DesktopContext {
         runtime: "tauri".into(),
@@ -2786,7 +3143,10 @@ fn get_desktop_context(state: tauri::State<'_, AppState>) -> Result<DesktopConte
         } else {
             "录音已停止，可启动真实麦克风录音".into()
         },
-        storage_status: "SQLite 已接入 settings / audio_segments / sessions / todos".into(),
+        storage_status: format!(
+            "SQLite 已接入 settings / audio_segments / sessions / semantic_artifacts / model_invocations / todos；{} 个 provider 边界已注册",
+            provider_count
+        ),
         models_status: runtime.message,
     })
 }
@@ -2802,12 +3162,7 @@ fn get_bootstrap_data(state: tauri::State<'_, AppState>) -> Result<BootstrapData
     })
 }
 
-#[tauri::command]
-fn save_settings(
-    payload: SettingsDto,
-    state: tauri::State<'_, AppState>,
-) -> Result<SettingsDto, String> {
-    let connection = open_connection(&state.db_path)?;
+fn persist_settings(connection: &Connection, payload: &SettingsDto) -> Result<(), String> {
     connection
         .execute(
             r#"
@@ -2819,48 +3174,71 @@ fn save_settings(
         idle_trigger_seconds = ?4,
         provider_mode = ?5,
         asr_provider_type = ?6,
-        todo_provider_type = ?7,
-        asr_base_url = ?8,
-        asr_submit_url = ?9,
-        asr_query_url = ?10,
-        asr_resource_id = ?11,
-        asr_model_name = ?12,
-        asr_api_key_ref = ?13,
-        todo_base_url = ?14,
-        todo_model_name = ?15,
-        todo_api_key_ref = ?16,
-        local_todo_model_version = ?17,
-        allow_cloud_fallback = ?18,
-        local_todo_runtime_status = ?19,
-        local_todo_last_health_check_at = ?20,
+        speaker_provider_type = ?7,
+        todo_provider_type = ?8,
+        semantic_provider_type = ?9,
+        embedding_provider_type = ?10,
+        export_provider_type = ?11,
+        asr_base_url = ?12,
+        asr_submit_url = ?13,
+        asr_query_url = ?14,
+        asr_resource_id = ?15,
+        asr_model_name = ?16,
+        asr_api_key_ref = ?17,
+        semantic_base_url = ?18,
+        semantic_model_name = ?19,
+        semantic_api_key_ref = ?20,
+        todo_base_url = ?21,
+        todo_model_name = ?22,
+        todo_api_key_ref = ?23,
+        local_todo_model_version = ?24,
+        allow_cloud_fallback = ?25,
+        local_todo_runtime_status = ?26,
+        local_todo_last_health_check_at = ?27,
         updated_at = CURRENT_TIMESTAMP
       WHERE id = 'default'
       "#,
             params![
                 if payload.record_enabled { 1 } else { 0 },
-                payload.language,
+                payload.language.as_str(),
                 payload.chunk_seconds,
                 payload.idle_trigger_seconds,
-                payload.provider_mode,
-                payload.asr_provider_type,
-                payload.todo_provider_type,
-                payload.asr_submit_url,
-                payload.asr_submit_url,
-                payload.asr_query_url,
-                payload.asr_resource_id,
-                payload.asr_model_name,
-                payload.asr_api_key_masked,
-                payload.todo_base_url,
-                payload.todo_model_name,
-                payload.todo_api_key_masked,
-                payload.local_todo_model_version,
+                payload.provider_mode.as_str(),
+                normalize_asr_provider_type(&payload.asr_provider_type),
+                payload.speaker_provider_type.as_str(),
+                normalize_todo_provider_type(&payload.todo_provider_type),
+                payload.semantic_provider_type.as_str(),
+                payload.embedding_provider_type.as_str(),
+                payload.export_provider_type.as_str(),
+                payload.asr_submit_url.as_str(),
+                payload.asr_submit_url.as_str(),
+                payload.asr_query_url.as_str(),
+                payload.asr_resource_id.as_str(),
+                payload.asr_model_name.as_str(),
+                payload.asr_api_key_masked.as_str(),
+                payload.semantic_base_url.as_str(),
+                payload.semantic_model_name.as_str(),
+                payload.semantic_api_key_masked.as_str(),
+                payload.todo_base_url.as_str(),
+                payload.todo_model_name.as_str(),
+                payload.todo_api_key_masked.as_str(),
+                payload.local_todo_model_version.as_str(),
                 if payload.allow_cloud_fallback { 1 } else { 0 },
-                payload.local_todo_runtime_status,
-                payload.local_todo_last_health_check_at,
+                payload.local_todo_runtime_status.as_str(),
+                payload.local_todo_last_health_check_at.as_str(),
             ],
         )
         .map_err(|error| format!("保存设置失败: {error}"))?;
+    Ok(())
+}
 
+#[tauri::command]
+fn save_settings(
+    payload: SettingsDto,
+    state: tauri::State<'_, AppState>,
+) -> Result<SettingsDto, String> {
+    let connection = open_connection(&state.db_path)?;
+    persist_settings(&connection, &payload)?;
     query_settings(&connection)
 }
 
@@ -3246,5 +3624,288 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_initialize_v04_provider_and_semantic_schema() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-schema-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let settings = query_settings(&connection).expect("应能读取默认设置");
+
+        assert_eq!(settings.asr_provider_type, "local_whisperkit");
+        assert_eq!(settings.speaker_provider_type, "local_speakerkit");
+        assert_eq!(settings.todo_provider_type, DEFAULT_TODO_PROVIDER_TYPE);
+        assert_eq!(settings.semantic_provider_type, "minimax_m3");
+        assert_eq!(settings.embedding_provider_type, "reserved");
+        assert_eq!(settings.export_provider_type, "local_file");
+        assert_eq!(settings.semantic_base_url, DEFAULT_SEMANTIC_BASE_URL);
+        assert_eq!(settings.semantic_model_name, "MiniMax-M3");
+
+        for (table, required_columns) in [
+            (
+                "semantic_artifacts",
+                vec![
+                    "id",
+                    "session_id",
+                    "artifact_type",
+                    "status",
+                    "provider",
+                    "model_name",
+                    "schema_version",
+                    "source_span_refs",
+                    "payload_json",
+                    "error_message",
+                ],
+            ),
+            (
+                "model_invocations",
+                vec![
+                    "id",
+                    "provider",
+                    "model_name",
+                    "capability",
+                    "status",
+                    "request_summary",
+                    "response_summary",
+                    "input_tokens",
+                    "output_tokens",
+                    "duration_ms",
+                    "estimated_cost_microunits",
+                    "currency",
+                    "error_message",
+                    "started_at",
+                    "finished_at",
+                ],
+            ),
+        ] {
+            let columns = table_columns(&connection, table);
+            for required_column in required_columns {
+                assert!(
+                    columns.iter().any(|column| column == required_column),
+                    "{table} 应包含字段 {required_column}，实际字段为 {columns:?}"
+                );
+            }
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_migrate_legacy_settings_to_v04_provider_defaults() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-migration-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        {
+            let connection = open_connection(&db_path).expect("应能打开旧库测试数据库");
+            connection
+                .execute_batch(
+                    r#"
+                    CREATE TABLE app_settings (
+                        id TEXT PRIMARY KEY,
+                        record_enabled INTEGER NOT NULL DEFAULT 0,
+                        language TEXT NOT NULL DEFAULT 'zh-CN',
+                        chunk_seconds INTEGER NOT NULL DEFAULT 30,
+                        idle_trigger_seconds INTEGER NOT NULL DEFAULT 20,
+                        provider_mode TEXT NOT NULL DEFAULT 'local',
+                        asr_provider_type TEXT NOT NULL DEFAULT 'local',
+                        todo_provider_type TEXT NOT NULL DEFAULT 'embedded_local'
+                    );
+
+                    INSERT INTO app_settings (
+                        id,
+                        record_enabled,
+                        language,
+                        chunk_seconds,
+                        idle_trigger_seconds,
+                        provider_mode,
+                        asr_provider_type,
+                        todo_provider_type
+                    ) VALUES (
+                        'default',
+                        0,
+                        'zh-CN',
+                        30,
+                        20,
+                        'local',
+                        'local',
+                        'embedded_local'
+                    );
+                    "#,
+                )
+                .expect("应能准备旧版本设置表");
+        }
+
+        initialize_database(&db_path).expect("应能迁移旧版本数据库");
+        let connection = open_connection(&db_path).expect("应能打开迁移后的数据库");
+        let settings = query_settings(&connection).expect("应能读取迁移后的设置");
+
+        assert_eq!(settings.asr_provider_type, "local_whisperkit");
+        assert_eq!(settings.speaker_provider_type, "local_speakerkit");
+        assert_eq!(settings.todo_provider_type, LEGACY_TODO_PROVIDER_TYPE);
+        assert_eq!(settings.semantic_provider_type, "minimax_m3");
+        assert_eq!(settings.semantic_base_url, DEFAULT_SEMANTIC_BASE_URL);
+        assert_eq!(settings.semantic_model_name, DEFAULT_SEMANTIC_MODEL_NAME);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_register_semantic_todo_artifact_by_default() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-semantic-todo-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let settings = query_settings(&connection).expect("应能读取默认设置");
+        let session_id = "session_semantic_todo_test";
+
+        connection
+            .execute(
+                r#"
+                INSERT INTO conversation_sessions (
+                  id,
+                  merged_text,
+                  started_at,
+                  ended_at,
+                  idle_trigger_seconds,
+                  trigger_reason,
+                  transcript_count,
+                  extraction_status,
+                  extraction_provider_used,
+                  extraction_fallback_used,
+                  extraction_fallback_reason,
+                  trace_id,
+                  created_at
+                ) VALUES (?1, '下午联系客户并同步合同状态。', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 20, 'manual', 1, 'pending', 'pending', 0, '', 'trace_semantic_todo_test', CURRENT_TIMESTAMP)
+                "#,
+                params![session_id],
+            )
+            .expect("应能准备测试会话");
+
+        let inserted = generate_todos_for_session(&connection, &settings, &temp_dir, session_id)
+            .expect("默认 Todo 路径应登记语义产物边界");
+        assert_eq!(inserted, 0);
+
+        let artifact: (String, String, String, String) = connection
+            .query_row(
+                "SELECT provider, model_name, status, payload_json FROM semantic_artifacts WHERE session_id = ?1 AND artifact_type = 'todo_extraction'",
+                params![session_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("应登记 Todo 语义产物");
+        assert_eq!(artifact.0, DEFAULT_SEMANTIC_PROVIDER_TYPE);
+        assert_eq!(artifact.1, DEFAULT_SEMANTIC_MODEL_NAME);
+        assert_eq!(artifact.2, "pending");
+        assert!(artifact.3.contains("v0.4_semantic_provider"));
+
+        let todo_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(1) FROM todos WHERE conversation_session_id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .expect("应能查询 Todo 数量");
+        assert_eq!(todo_count, 0);
+
+        let provider_used: String = connection
+            .query_row(
+                "SELECT extraction_provider_used FROM conversation_sessions WHERE id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .expect("应能读取会话 provider");
+        assert_eq!(provider_used, DEFAULT_SEMANTIC_PROVIDER_TYPE);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_persist_v04_provider_settings_round_trip() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-settings-roundtrip-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let mut settings = query_settings(&connection).expect("应能读取默认设置");
+
+        settings.asr_provider_type = "cloud_volc".into();
+        settings.todo_provider_type = "legacy_local_llm".into();
+        settings.semantic_base_url = "https://m3.example.test/v1/responses".into();
+        settings.semantic_model_name = "MiniMax-M3-Test".into();
+        settings.semantic_api_key_masked = "sk-test-****".into();
+        settings.export_provider_type = "local_file".into();
+
+        persist_settings(&connection, &settings).expect("应能保存 v0.4 设置");
+        let persisted = query_settings(&connection).expect("应能读取保存后的设置");
+
+        assert_eq!(persisted.asr_provider_type, "cloud_volc");
+        assert_eq!(persisted.todo_provider_type, LEGACY_TODO_PROVIDER_TYPE);
+        assert_eq!(
+            persisted.semantic_base_url,
+            "https://m3.example.test/v1/responses"
+        );
+        assert_eq!(persisted.semantic_model_name, "MiniMax-M3-Test");
+        assert_eq!(persisted.semantic_api_key_masked, "sk-test-****");
+        assert_eq!(persisted.export_provider_type, "local_file");
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_expose_v04_provider_catalog() {
+        let catalog = providers::provider_catalog();
+
+        for expected_provider in [
+            "local_whisperkit",
+            "local_speakerkit",
+            "minimax_m3",
+            "reserved",
+            "local_file",
+        ] {
+            assert!(
+                catalog
+                    .iter()
+                    .any(|provider| provider.id == expected_provider),
+                "provider catalog 应包含 {expected_provider}，实际为 {catalog:?}"
+            );
+        }
+
+        assert!(
+            catalog.iter().any(|provider| provider.capability
+                == domain::provider::ProviderCapability::Semantic
+                && provider.privacy_boundary.contains("云端语义理解")),
+            "MiniMax M3 语义 provider 必须声明云端隐私边界"
+        );
+    }
+
+    fn table_columns(connection: &Connection, table_name: &str) -> Vec<String> {
+        let mut statement = connection
+            .prepare(&format!("PRAGMA table_info({table_name})"))
+            .expect("应能读取表结构");
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("应能查询表字段");
+
+        rows.collect::<Result<Vec<_>, _>>()
+            .expect("应能读取字段列表")
     }
 }
