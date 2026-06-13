@@ -19,6 +19,7 @@ mod jobs;
 mod providers;
 
 use app::settings_service;
+use domain::todo::TodoDto;
 use infra::sqlite::{initialize_database, open_connection};
 
 #[derive(Clone)]
@@ -90,18 +91,6 @@ pub(crate) struct SettingsDto {
     semantic_model_name: String,
     semantic_api_key_masked: String,
     allow_cloud_fallback: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct TodoDto {
-    id: String,
-    title: String,
-    note: String,
-    status: String,
-    created_at: String,
-    conversation_session_id: String,
-    source_text: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -2518,6 +2507,25 @@ mod tests {
                 && provider.privacy_boundary.contains("云端语义理解")),
             "MiniMax M3 语义 provider 必须声明云端隐私边界"
         );
+    }
+
+    #[test]
+    fn should_expose_todo_domain_dto_contract() {
+        let todo = domain::todo::TodoDto {
+            id: "todo_domain_contract".into(),
+            title: "同步 v0.4 domain 边界".into(),
+            note: "Todo DTO 应从 lib.rs 迁入 domain::todo".into(),
+            status: "pending".into(),
+            created_at: "2026-06-13 12:00:00".into(),
+            conversation_session_id: "session_domain_contract".into(),
+            source_text: "请同步 v0.4 domain 边界".into(),
+        };
+
+        let payload = serde_json::to_value(&todo).expect("Todo domain DTO 应可序列化");
+
+        assert_eq!(payload["id"], "todo_domain_contract");
+        assert_eq!(payload["conversationSessionId"], "session_domain_contract");
+        assert!(payload.get("conversation_session_id").is_none());
     }
 
     fn table_columns(connection: &Connection, table_name: &str) -> Vec<String> {
