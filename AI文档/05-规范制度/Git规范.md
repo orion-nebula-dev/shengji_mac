@@ -22,53 +22,62 @@
 
 - `main` 必须始终保持可构建、可发布
 - 禁止直接在 `main` 上做日常开发
-- 所有功能、修复、文档更新都应先在特性分支完成，再合并到 `main`
+- `main` 只接受 `release` 合入，不接受工作分支直接合入
 - 每次正式发布后，应在 `main` 上打版本 tag
+
+#### 环境分支
+
+用于版本晋升和验收：
+
+```text
+dev -> test -> uat -> release -> main
+```
+
+规则：
+
+- `dev`：集成已完成的工作分支。
+- `test`：测试环境验收分支。
+- `uat`：用户验收或准生产验收分支。
+- `release`：正式发布候选分支。
+- `main`：正式发布分支，只接受 `release` 合入。
+- 不允许在 `dev`、`test`、`uat`、`release`、`main` 上直接开发或直接提交。
 
 ### 2.2 临时分支
 
-#### `codex/*`
+#### `feature-*`
 
-用于 AI 或开发者执行单个需求、单个特性、单个修复任务。
+用于功能开发。
 
 命名建议：
 
-- `codex/qwen3-4b-v0.2.0`
-- `codex/fix-fallback-copy`
-- `codex/release-notes-v0.2.0`
+- `feature-v0.16.0-local-asr`
+- `feature-v0.16.0-summary-workbench`
+- `feature-v0.16.0-mind-map`
 
 规则：
 
 - 一个分支只处理一类目标
-- 合并到 `main` 后应删除
+- 合并到 `dev` 后应删除
 - 不作为长期保留分支
 
-#### `feature/*`
+#### `hotfix-*`
 
-可作为人工开发特性分支命名方案。
-
-示例：
-
-- `feature/local-qwen-runtime`
-- `feature/todo-fallback-ui`
-
-#### `fix/*`
-
-用于缺陷修复。
+用于线上或发布候选紧急修复。
 
 示例：
 
-- `fix/session-fallback-copy`
-- `fix/runtime-timeout`
+- `hotfix-v0.16.1-asr-timeout`
+- `hotfix-v0.16.1-release-config`
 
-#### `docs/*`
+#### 历史兼容分支
 
-用于纯文档任务。
+以下命名只兼容历史，不再作为推荐命名：
 
-示例：
-
-- `docs/git-guideline`
-- `docs/release-v0.2.0`
+- `feat/*`
+- `fix/*`
+- `chore/*`
+- `docs/*`
+- `codex/*`
 
 ## 3. 禁止事项
 
@@ -86,17 +95,17 @@
 
 ### 4.1 开发前
 
-1. 确认当前不在 `main`
-2. 从最新 `main` 拉新分支
+1. 确认当前不在 `main`、`release`、`dev`、`test`、`uat`
+2. 从最新 `dev` 拉新工作分支
 3. 明确本次目标范围
 4. 明确版本影响和文档影响
 
 示例：
 
 ```bash
-git checkout main
-git pull origin main
-git checkout -b codex/feature-name
+git checkout dev
+git pull origin dev
+git checkout -b feature-v0.16.0-feature-name
 ```
 
 ### 4.2 开发中
@@ -119,18 +128,41 @@ git checkout -b codex/feature-name
 
 ### 4.4 合版本流程
 
-每个版本都应在独立分支开发，完成后必须执行合版本操作。合版本不是简单 push 分支，而是把版本分支验收后合并回 `main`，并在 `main` 上形成可追踪的发布点。
+每个版本都应在独立工作分支开发，完成后必须执行合版本操作。合版本不是简单 push 分支，而是按环境晋升链逐级合入，并在 `main` 上形成可追踪的发布点。
+
+推荐晋升链路：
+
+```text
+feature-* / hotfix-* -> dev -> test -> uat -> release -> main
+```
 
 推荐流程：
 
 ```bash
-git checkout main
-git pull origin main
-git merge --no-ff codex/shengji-vX.Y.Z-主题
+git checkout dev
+git pull origin dev
+git merge --no-ff feature-vX.Y.Z-主题
 npm run build
 cargo check --manifest-path src-tauri/Cargo.toml
-git tag -a vX.Y.Z -m "Release vX.Y.Z"
-git push origin main
+
+git checkout test
+git pull origin test
+git merge --no-ff dev
+
+git checkout uat
+git pull origin uat
+git merge --no-ff test
+
+git checkout release
+git pull origin release
+git merge --no-ff uat
+
+git checkout main
+git pull origin main
+git merge --no-ff release
+git tag -a vX.Y.Z -m "Release vX.Y.Z (YYYY.M.D)"
+
+git push origin dev test uat release main
 git push origin vX.Y.Z
 ```
 
@@ -146,7 +178,7 @@ git push origin vX.Y.Z
 
 1. `main` 构建仍通过。
 2. tag 打在 `main` 的发布合并提交上。
-3. GitHub Release 与 tag 版本一致。
+3. GitHub Release 标题使用 `vX.Y.Z (YYYY.M.D)`。
 4. 已合并的临时分支可以删除。
 
 ## 5. 提交规范
@@ -195,22 +227,32 @@ git push origin vX.Y.Z
 
 ### 6.1 合并到 `main`
 
-推荐使用：
+正式发布只允许 `release` 合入 `main`。
 
 ```bash
 git checkout main
 git pull origin main
-git merge --no-ff <branch>
+git merge --no-ff release
 ```
 
 规则：
 
 - 保留分支合并痕迹，方便回溯
-- 合并前确认目标分支已经自测通过
+- 工作分支必须先进入 `dev`，不得跳过 `dev -> test -> uat -> release`
 - 合并后再次确认版本号和关键文档
 - 正式版本必须在 `main` 合并提交上打 tag，不能在临时开发分支上打正式 tag
 
-### 6.2 何时可用 cherry-pick
+### 6.2 PR / MR 门禁
+
+合入前至少满足：
+
+1. 目标分支符合晋升链路。
+2. 有人评审或明确记录免评审原因。
+3. CI 或最小验证通过。
+4. 无未解决评审意见。
+5. 分支、版本号、发布说明、归档记录一致。
+
+### 6.3 何时可用 cherry-pick
 
 适用场景：
 
@@ -227,7 +269,7 @@ git merge --no-ff <branch>
 
 ### 7.1 版本 tag 格式
 
-统一采用：
+Git tag 统一采用：
 
 ```text
 v<major>.<minor>.<patch>
@@ -239,6 +281,24 @@ v<major>.<minor>.<patch>
 - `v0.2.0`
 - `v0.2.1`
 
+版本显示名统一采用：
+
+```text
+v<major>.<minor>.<patch> (YYYY.M.D)
+```
+
+示例：
+
+- `v0.16.0 (2026.6.5)`
+- `v0.16.1 (2026.6.12)`
+
+规则：
+
+- Git tag 只写版本号，例如 `v0.16.0`。
+- GitHub Release 标题写完整显示名，例如 `v0.16.0 (2026.6.5)`。
+- 发布说明标题写完整显示名，例如 `# v0.16.0 (2026.6.5)`。
+- 日期使用 `YYYY.M.D`，不强制补零。
+
 ### 7.2 tag 使用原则
 
 - 每个正式发布版本必须打 tag
@@ -248,8 +308,8 @@ v<major>.<minor>.<patch>
 推荐命令：
 
 ```bash
-git tag -a v0.2.0 -m "Release 0.2.0"
-git push origin v0.2.0
+git tag -a v0.16.0 -m "Release v0.16.0 (2026.6.5)"
+git push origin v0.16.0
 ```
 
 ### 7.3 为什么 tag 很重要
@@ -304,13 +364,23 @@ tag 用于：
 长期保留：
 
 - `main`
+- `release`
+- `uat`
+- `test`
+- `dev`
 
 短期保留：
 
-- `codex/*`
-- `feature/*`
+- `feature-*`
+- `hotfix-*`
+
+历史兼容：
+
+- `feat/*`
 - `fix/*`
+- `chore/*`
 - `docs/*`
+- `codex/*`
 
 ### 9.2 何时删除分支
 
@@ -331,13 +401,13 @@ tag 用于：
 本地删除：
 
 ```bash
-git branch -d codex/qwen3-4b-v0.2.0
+git branch -d feature-v0.16.0-local-asr
 ```
 
 远端删除：
 
 ```bash
-git push origin --delete codex/qwen3-4b-v0.2.0
+git push origin --delete feature-v0.16.0-local-asr
 ```
 
 ## 10. 版本号管理规范
@@ -355,7 +425,10 @@ git push origin --delete codex/qwen3-4b-v0.2.0
 
 - 版本变更必须统一修改
 - 发版前必须核对一致性
-- 不允许出现代码 `0.2.0`，Release 写 `0.2.1` 这种情况
+- 代码版本使用纯版本号，例如 `0.16.0`
+- Git tag 使用 `v0.16.0`
+- Release 和发布说明标题使用 `v0.16.0 (2026.6.5)`
+- 不允许出现代码 `0.16.0`，Release 写 `v0.16.1 (2026.6.5)` 这种情况
 
 ## 11. 文档同步规范
 
@@ -434,9 +507,9 @@ git push origin --delete codex/qwen3-4b-v0.2.0
 ### 新建功能分支
 
 ```bash
-git checkout main
-git pull origin main
-git checkout -b codex/feature-name
+git checkout dev
+git pull origin dev
+git checkout -b feature-v0.16.0-feature-name
 ```
 
 ### 查看状态
@@ -457,8 +530,16 @@ git commit -m "feat(scope): summary"
 ### 合并到 main
 
 ```bash
+git checkout dev
+git merge --no-ff feature-v0.16.0-feature-name
+git checkout test
+git merge --no-ff dev
+git checkout uat
+git merge --no-ff test
+git checkout release
+git merge --no-ff uat
 git checkout main
-git merge --no-ff codex/feature-name
+git merge --no-ff release
 ```
 
 ### 推送主分支
@@ -470,15 +551,15 @@ git push origin main
 ### 打 tag
 
 ```bash
-git tag -a v0.2.0 -m "Release 0.2.0"
-git push origin v0.2.0
+git tag -a v0.16.0 -m "Release v0.16.0 (2026.6.5)"
+git push origin v0.16.0
 ```
 
 ### 删除已合并分支
 
 ```bash
-git branch -d codex/feature-name
-git push origin --delete codex/feature-name
+git branch -d feature-v0.16.0-feature-name
+git push origin --delete feature-v0.16.0-feature-name
 ```
 
 ## 15. 本项目建议落地策略
@@ -486,10 +567,12 @@ git push origin --delete codex/feature-name
 针对你这个项目，建议采用以下固定策略：
 
 - 主分支：`main`
-- 开发分支：`codex/*`
+- 环境分支：`dev -> test -> uat -> release -> main`
+- 开发分支：`feature-*`
+- 紧急修复分支：`hotfix-*`
 - 合并策略：`--no-ff`
-- 版本策略：语义化版本 `vX.Y.Z`
-- 正式发布：`tag + GitHub Release`
+- 版本策略：代码版本 `0.16.0`，tag `v0.16.0`，显示名 `v0.16.0 (2026.6.5)`
+- 正式发布：`release -> main` 后 `tag + GitHub Release`
 - 模型资产：Release 附件，不进 Git
 - 合并后：默认删除开发分支
 - 文档：功能改动必须同步 `AI文档`
@@ -499,8 +582,8 @@ git push origin --delete codex/feature-name
 这套规范的核心只有 6 条：
 
 1. 不在 `main` 上直接开发
-2. 功能完成后合并到 `main`
-3. 正式版本必须打 tag
+2. 工作分支按 `feature-* / hotfix-* -> dev -> test -> uat -> release -> main` 晋升
+3. 正式版本必须在 `main` 发布合并提交上打 tag
 4. 大模型资产不进 Git 仓库
 5. 代码变更必须验证
 6. 功能改动必须同步文档
