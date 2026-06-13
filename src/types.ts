@@ -5,8 +5,12 @@ export type SessionStatus =
   | "ready_for_extraction"
   | "extracted"
   | "failed";
-export type ProviderType = "cloud" | "embedded_local";
-export type AsrProviderType = "cloud" | "local";
+export type ProviderType = "semantic_m3" | "legacy_local_llm" | "cloud";
+export type AsrProviderType = "cloud_volc" | "local_whisperkit";
+export type SpeakerProviderType = "local_speakerkit";
+export type SemanticProviderType = "minimax_m3";
+export type EmbeddingProviderType = "reserved";
+export type ExportProviderType = "local_file";
 export type LocalRuntimeStatus = "not_ready" | "starting" | "ready" | "failed";
 
 export interface SettingsState {
@@ -16,12 +20,19 @@ export interface SettingsState {
   idleTriggerSeconds: number;
   providerMode: "cloud" | "local";
   asrProviderType: AsrProviderType;
+  speakerProviderType: SpeakerProviderType;
   todoProviderType: ProviderType;
+  semanticProviderType: SemanticProviderType;
+  embeddingProviderType: EmbeddingProviderType;
+  exportProviderType: ExportProviderType;
   asrSubmitUrl: string;
   asrQueryUrl: string;
   asrResourceId: string;
   asrModelName: string;
   asrApiKeyMasked: string;
+  semanticBaseUrl: string;
+  semanticModelName: string;
+  semanticApiKeyMasked: string;
   todoBaseUrl: string;
   todoModelName: string;
   todoApiKeyMasked: string;

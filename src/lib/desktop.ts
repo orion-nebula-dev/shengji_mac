@@ -12,13 +12,20 @@ export interface SettingsPayload {
   chunkSeconds: number;
   idleTriggerSeconds: number;
   providerMode: "cloud" | "local";
-  asrProviderType: "cloud" | "local";
-  todoProviderType: "cloud" | "embedded_local";
+  asrProviderType: "cloud_volc" | "local_whisperkit";
+  speakerProviderType: "local_speakerkit";
+  todoProviderType: "semantic_m3" | "legacy_local_llm" | "cloud";
+  semanticProviderType: "minimax_m3";
+  embeddingProviderType: "reserved";
+  exportProviderType: "local_file";
   asrSubmitUrl: string;
   asrQueryUrl: string;
   asrResourceId: string;
   asrModelName: string;
   asrApiKeyMasked: string;
+  semanticBaseUrl: string;
+  semanticModelName: string;
+  semanticApiKeyMasked: string;
   todoBaseUrl: string;
   todoModelName: string;
   todoApiKeyMasked: string;
@@ -88,7 +95,7 @@ export interface ModelTestPayload {
 }
 
 export interface LocalRuntimePayload {
-  providerType: "cloud" | "embedded_local";
+  providerType: "semantic_m3" | "legacy_local_llm" | "cloud";
   modelVersion: string;
   runtimeStatus: "not_ready" | "starting" | "ready" | "failed";
   lastHealthCheckAt: string;

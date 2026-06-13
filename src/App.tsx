@@ -122,7 +122,7 @@ function App() {
           setLocalRuntime(payload);
           setSettings((current) => ({
             ...current,
-            todoProviderType: payload.providerType === "embedded_local" ? "embedded_local" : current.todoProviderType,
+            todoProviderType: payload.providerType,
             localTodoModelVersion: payload.modelVersion,
             localTodoRuntimeStatus: payload.runtimeStatus,
             localTodoLastHealthCheckAt: payload.lastHealthCheckAt,
@@ -399,7 +399,7 @@ function App() {
           </div>
           <div className="window-title">
             <strong>声记</strong>
-            <span>本地录音与智能 Todo</span>
+            <span>语音知识与行动工作台</span>
           </div>
           <div className="titlebar-actions">
             <button className="icon-button" type="button" onClick={() => setActiveTab("history")}>
@@ -812,8 +812,8 @@ function App() {
                       <label className="field">
                         <span>转写模式</span>
                         <select value={settings.asrProviderType} onChange={(event) => handleSettingsChange("asrProviderType", event.target.value as SettingsState["asrProviderType"])}>
-                          <option value="local">本地优先</option>
-                          <option value="cloud">云端模型</option>
+                          <option value="local_whisperkit">本地 WhisperKit / Argmax</option>
+                          <option value="cloud_volc">火山云端 ASR</option>
                         </select>
                       </label>
                       <label className="field"><span>提交地址</span><input type="url" value={settings.asrSubmitUrl} onChange={(event) => handleSettingsChange("asrSubmitUrl", event.target.value)} /></label>
@@ -825,7 +825,7 @@ function App() {
                     <div className="runtime-hint">
                       <p className="section-kicker">本地优先策略</p>
                       <p>
-                        当前本地 ASR 尚未正式接入。开启云端兜底时会在本地 ASR 不可用后使用云端；关闭兜底时将保持纯本地并返回明确失败。
+                        当前本地 WhisperKit / Argmax 接口已进入 v0.4 边界设计，正式转写执行在 v0.5 接入。关闭兜底时不会上传音频。
                       </p>
                     </div>
                   </section>
@@ -833,8 +833,61 @@ function App() {
                   <section className="panel-lite settings-wide">
                     <div className="panel-head">
                       <div>
-                        <p className="section-kicker">Todo 提取模型</p>
-                        <h3>本地模型与云端兜底</h3>
+                        <p className="section-kicker">语义理解与隐私边界</p>
+                        <h3>MiniMax M3 工作台基座</h3>
+                      </div>
+                      <span className="status-chip">v0.4 架构边界</span>
+                    </div>
+                    <div className="settings-grid settings-grid-three">
+                      <label className="field">
+                        <span>说话人 Provider</span>
+                        <select value={settings.speakerProviderType} onChange={(event) => handleSettingsChange("speakerProviderType", event.target.value as SettingsState["speakerProviderType"])}>
+                          <option value="local_speakerkit">本地 SpeakerKit</option>
+                        </select>
+                      </label>
+                      <label className="field">
+                        <span>语义 Provider</span>
+                        <select value={settings.semanticProviderType} onChange={(event) => handleSettingsChange("semanticProviderType", event.target.value as SettingsState["semanticProviderType"])}>
+                          <option value="minimax_m3">MiniMax M3</option>
+                        </select>
+                      </label>
+                      <label className="field">
+                        <span>导出 Provider</span>
+                        <select value={settings.exportProviderType} onChange={(event) => handleSettingsChange("exportProviderType", event.target.value as SettingsState["exportProviderType"])}>
+                          <option value="local_file">本地文件导出</option>
+                        </select>
+                      </label>
+                      <label className="field"><span>M3 调用地址</span><input type="url" value={settings.semanticBaseUrl} onChange={(event) => handleSettingsChange("semanticBaseUrl", event.target.value)} /></label>
+                      <label className="field"><span>M3 模型</span><input type="text" value={settings.semanticModelName} onChange={(event) => handleSettingsChange("semanticModelName", event.target.value)} /></label>
+                      <label className="field"><span>M3 API Key</span><input type="password" value={settings.semanticApiKeyMasked} onChange={(event) => handleSettingsChange("semanticApiKeyMasked", event.target.value)} /></label>
+                      <label className="field">
+                        <span>Embedding Provider</span>
+                        <select value={settings.embeddingProviderType} onChange={(event) => handleSettingsChange("embeddingProviderType", event.target.value as SettingsState["embeddingProviderType"])}>
+                          <option value="reserved">预留，不启用</option>
+                        </select>
+                      </label>
+                    </div>
+                    <div className="privacy-boundary-grid">
+                      <div>
+                        <strong>本地</strong>
+                        <p>音频转写与说话人分离默认留在本机，v0.5 才接入实际 Argmax local server。</p>
+                      </div>
+                      <div>
+                        <strong>云端</strong>
+                        <p>MiniMax M3 只接收转写后的文本上下文，用于摘要、Todo、脑图和研究。</p>
+                      </div>
+                      <div>
+                        <strong>预留</strong>
+                        <p>Embedding 与导出已登记 provider 边界，但 v0.4 不启用向量检索默认路径。</p>
+                      </div>
+                    </div>
+                  </section>
+
+                  <section className="panel-lite settings-wide">
+                    <div className="panel-head">
+                      <div>
+                        <p className="section-kicker">Todo 语义产物</p>
+                        <h3>MiniMax M3 候选入口</h3>
                       </div>
                       <button className="secondary-button" type="button" onClick={() => handleModelTest("todo")} disabled={testingProvider === "todo"}>
                         {testingProvider === "todo" ? "测试中..." : "测试连接"}
@@ -844,22 +897,23 @@ function App() {
                       <label className="field">
                         <span>提取模式</span>
                         <select value={settings.todoProviderType} onChange={(event) => handleSettingsChange("todoProviderType", event.target.value as SettingsState["todoProviderType"])}>
-                          <option value="cloud">云端模型</option>
-                          <option value="embedded_local">本地优先</option>
+                          <option value="semantic_m3">MiniMax M3 语义边界</option>
+                          <option value="legacy_local_llm">Legacy 本地 Qwen/llama.cpp</option>
+                          <option value="cloud">Legacy 直接云端 Todo</option>
                         </select>
                       </label>
                       <label className="field"><span>调用地址</span><input type="url" value={settings.todoBaseUrl} onChange={(event) => handleSettingsChange("todoBaseUrl", event.target.value)} /></label>
                       <label className="field"><span>模型类型</span><input type="text" value={settings.todoModelName} onChange={(event) => handleSettingsChange("todoModelName", event.target.value)} /></label>
                       <label className="field"><span>API Key</span><input type="password" value={settings.todoApiKeyMasked} onChange={(event) => handleSettingsChange("todoApiKeyMasked", event.target.value)} /></label>
                       <label className="field"><span>内嵌模型版本</span><input type="text" value={settings.localTodoModelVersion} onChange={(event) => handleSettingsChange("localTodoModelVersion", event.target.value)} /></label>
-                      <label className="field checkbox-field"><span>允许 ASR/Todo 失败后云端兜底</span><input type="checkbox" checked={settings.allowCloudFallback} onChange={(event) => handleSettingsChange("allowCloudFallback", event.target.checked)} /></label>
+                      <label className="field checkbox-field"><span>允许 legacy 路径失败后云端兜底</span><input type="checkbox" checked={settings.allowCloudFallback} onChange={(event) => handleSettingsChange("allowCloudFallback", event.target.checked)} /></label>
                       <label className="field"><span>运行时状态</span><input type="text" value={localRuntimeLabelMap[settings.localTodoRuntimeStatus]} readOnly /></label>
                       <label className="field field-wide"><span>最近健康检查</span><input type="text" value={settings.localTodoLastHealthCheckAt || "暂无"} readOnly /></label>
                     </div>
                     <div className="runtime-hint">
                       <p className="section-kicker">本地运行时</p>
-                      <p>{localRuntime.message}</p>
-                      <p>当前实现使用 Qwen3-4B Q4_K_M 与 llama.cpp 子进程；缺少 llama-cli 或 GGUF 时会显示未就绪。</p>
+                      <p>v0.4 默认只登记 Todo 语义产物边界，实际 Todo 候选确认在 v0.7 接入。</p>
+                      <p>旧 Qwen3-4B Q4_K_M 与 llama.cpp 子进程仅作为 legacy 回滚路径，默认不启动。</p>
                     </div>
                   </section>
                 </section>
