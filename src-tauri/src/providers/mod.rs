@@ -1,5 +1,7 @@
 use crate::domain::provider::{ProviderCapability, ProviderDescriptor, ProviderLocality};
 
+pub mod semantic;
+
 #[allow(dead_code)]
 pub trait AsrProvider {
     fn provider_id(&self) -> &'static str;
