@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use crate::{
-    infra::sqlite::open_connection, latest_session, process_pending_jobs_internal,
-    query_runtime_status, query_sessions, query_todos, AppState, ProcessingActionResult,
+    domain::processing::ProcessingActionResult, infra::sqlite::open_connection, latest_session,
+    process_pending_jobs_internal, query_runtime_status, query_sessions, query_todos, AppState,
 };
 
 pub(crate) fn process_pending_jobs_payload(
