@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   flushDesktopSession,
-  getLocalTodoRuntimeStatus,
   loadBootstrapData,
   loadDesktopContext,
   processDesktopPendingJobs,
@@ -13,7 +12,7 @@ import {
   toggleDesktopTodoStatus,
 } from "./lib/desktop";
 import { getDefaultState, loadState, saveState } from "./lib/storage";
-import type { LocalRuntimeState, SessionItem, SettingsState, TodoItem } from "./types";
+import type { SessionItem, SettingsState, TodoItem } from "./types";
 
 type TabKey = "overview" | "actions" | "history" | "system" | "settings";
 
@@ -27,13 +26,6 @@ const sessionStatusLabelMap = {
   idle_waiting: "等待会话结束",
   ready_for_extraction: "待提取",
   extracted: "已提取",
-  failed: "失败",
-} as const;
-
-const localRuntimeLabelMap = {
-  not_ready: "未就绪",
-  starting: "启动中",
-  ready: "已就绪",
   failed: "失败",
 } as const;
 
@@ -70,17 +62,6 @@ function App() {
   const [saveBanner, setSaveBanner] = useState("");
   const [testingProvider, setTestingProvider] = useState<"" | "asr" | "todo">("");
   const [lastManualFlushAt, setLastManualFlushAt] = useState(0);
-  const [localRuntime, setLocalRuntime] = useState<LocalRuntimeState>({
-    providerType: initialState.settings.todoProviderType,
-    modelVersion: initialState.settings.localTodoModelVersion,
-    runtimeStatus: initialState.settings.localTodoRuntimeStatus,
-    lastHealthCheckAt: initialState.settings.localTodoLastHealthCheckAt,
-    fallbackEnabled: initialState.settings.allowCloudFallback,
-    message:
-      initialState.settings.localTodoRuntimeStatus === "ready"
-        ? "本地 Todo 运行时已就绪"
-        : "本地 Todo 运行时未就绪",
-  });
   const [desktopContext, setDesktopContext] = useState<{
     runtime: string;
     platform: string;
@@ -116,36 +97,6 @@ function App() {
   useEffect(() => {
     let cancelled = false;
 
-    getLocalTodoRuntimeStatus()
-      .then((payload) => {
-        if (!cancelled && payload) {
-          setLocalRuntime(payload);
-          setSettings((current) => ({
-            ...current,
-            todoProviderType: payload.providerType,
-            localTodoModelVersion: payload.modelVersion,
-            localTodoRuntimeStatus: payload.runtimeStatus,
-            localTodoLastHealthCheckAt: payload.lastHealthCheckAt,
-          }));
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setLocalRuntime((current) => ({
-            ...current,
-            message: "当前浏览器原型模式不支持本地运行时状态查询",
-          }));
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-
     loadBootstrapData()
       .then((payload) => {
         if (!payload || cancelled) {
@@ -153,17 +104,6 @@ function App() {
         }
 
         setSettings(payload.settings);
-        setLocalRuntime({
-          providerType: payload.settings.todoProviderType,
-          modelVersion: payload.settings.localTodoModelVersion,
-          runtimeStatus: payload.settings.localTodoRuntimeStatus,
-          lastHealthCheckAt: payload.settings.localTodoLastHealthCheckAt,
-          fallbackEnabled: payload.settings.allowCloudFallback,
-          message:
-            payload.settings.localTodoRuntimeStatus === "ready"
-              ? "本地 Todo 运行时已就绪"
-              : "本地 Todo 运行时未就绪",
-        });
         setTodos(payload.todos);
         setSessions(payload.sessions);
         setRuntime(payload.runtime);
@@ -172,14 +112,6 @@ function App() {
       .catch(() => {
         if (!cancelled) {
           setSettings(fallbackState.settings);
-          setLocalRuntime({
-            providerType: fallbackState.settings.todoProviderType,
-            modelVersion: fallbackState.settings.localTodoModelVersion,
-            runtimeStatus: fallbackState.settings.localTodoRuntimeStatus,
-            lastHealthCheckAt: fallbackState.settings.localTodoLastHealthCheckAt,
-            fallbackEnabled: fallbackState.settings.allowCloudFallback,
-            message: "当前为浏览器原型，本地运行时状态使用默认值",
-          });
           setTodos(fallbackState.todos);
           setSessions(fallbackState.sessions);
           setRuntime(fallbackState.runtime);
@@ -218,29 +150,12 @@ function App() {
     }));
   }
 
-  async function refreshLocalRuntime() {
-    const payload = await getLocalTodoRuntimeStatus().catch(() => null);
-    if (!payload) {
-      return;
-    }
-
-    setLocalRuntime(payload);
-    setSettings((current) => ({
-      ...current,
-      localTodoModelVersion: payload.modelVersion,
-      localTodoRuntimeStatus: payload.runtimeStatus,
-      localTodoLastHealthCheckAt: payload.lastHealthCheckAt,
-    }));
-  }
-
   async function saveSettings() {
     const persisted = await saveDesktopSettings(settings).catch(() => null);
 
     if (persisted) {
       setSettings(persisted);
     }
-
-    await refreshLocalRuntime();
 
     setSaveBanner("设置已保存，下一轮切片与提取将使用新配置。");
     window.setTimeout(() => setSaveBanner(""), 2400);
@@ -259,9 +174,6 @@ function App() {
 
     const label = provider === "asr" ? "ASR" : "Todo";
     const excerpt = result.responseExcerpt ? ` ${result.responseExcerpt}` : "";
-    if (provider === "todo") {
-      await refreshLocalRuntime();
-    }
     setSaveBanner(`${label} 测试结果：${result.message}${excerpt}`);
     window.setTimeout(() => setSaveBanner(""), 6000);
   }
@@ -443,8 +355,8 @@ function App() {
                   <strong>{sessionStatusLabelMap[runtime.currentSessionStatus]}</strong>
                 </li>
                 <li>
-                  <span>本地模型</span>
-                  <strong>{localRuntimeLabelMap[localRuntime.runtimeStatus]}</strong>
+                  <span>语义入口</span>
+                  <strong>MiniMax M3</strong>
                 </li>
                 <li>
                   <span>失败任务</span>
@@ -726,14 +638,13 @@ function App() {
                     </ul>
                   </article>
                   <article className="panel-lite">
-                    <p className="section-kicker">本地 Todo 运行时</p>
+                    <p className="section-kicker">Todo 语义入口</p>
                     <ul className="compact-list">
-                      <li><span>状态</span><strong>{localRuntimeLabelMap[localRuntime.runtimeStatus]}</strong></li>
-                      <li><span>模型版本</span><strong>{localRuntime.modelVersion}</strong></li>
-                      <li><span>健康检查</span><strong>{localRuntime.lastHealthCheckAt || "暂无"}</strong></li>
-                      <li><span>云端兜底</span><strong>{localRuntime.fallbackEnabled ? "允许" : "关闭"}</strong></li>
+                      <li><span>Provider</span><strong>MiniMax M3</strong></li>
+                      <li><span>产物类型</span><strong>todo_extraction</strong></li>
+                      <li><span>状态</span><strong>语义边界已登记</strong></li>
                     </ul>
-                    <p className="runtime-message">{localRuntime.message}</p>
+                    <p className="runtime-message">{desktopContext?.modelsStatus ?? "旧本地 Todo 运行时已移除"}</p>
                   </article>
                   <article className="panel-lite system-wide">
                     <p className="section-kicker">失败与回退</p>
@@ -821,6 +732,7 @@ function App() {
                       <label className="field"><span>资源 ID</span><input type="text" value={settings.asrResourceId} onChange={(event) => handleSettingsChange("asrResourceId", event.target.value)} /></label>
                       <label className="field"><span>模型类型</span><input type="text" value={settings.asrModelName} onChange={(event) => handleSettingsChange("asrModelName", event.target.value)} /></label>
                       <label className="field field-wide"><span>API Key</span><input type="password" value={settings.asrApiKeyMasked} onChange={(event) => handleSettingsChange("asrApiKeyMasked", event.target.value)} /></label>
+                      <label className="field checkbox-field"><span>本地 ASR 不可用时允许云端兜底</span><input type="checkbox" checked={settings.allowCloudFallback} onChange={(event) => handleSettingsChange("allowCloudFallback", event.target.checked)} /></label>
                     </div>
                     <div className="runtime-hint">
                       <p className="section-kicker">本地优先策略</p>
@@ -898,22 +810,15 @@ function App() {
                         <span>提取模式</span>
                         <select value={settings.todoProviderType} onChange={(event) => handleSettingsChange("todoProviderType", event.target.value as SettingsState["todoProviderType"])}>
                           <option value="semantic_m3">MiniMax M3 语义边界</option>
-                          <option value="legacy_local_llm">Legacy 本地 Qwen/llama.cpp</option>
-                          <option value="cloud">Legacy 直接云端 Todo</option>
                         </select>
                       </label>
-                      <label className="field"><span>调用地址</span><input type="url" value={settings.todoBaseUrl} onChange={(event) => handleSettingsChange("todoBaseUrl", event.target.value)} /></label>
-                      <label className="field"><span>模型类型</span><input type="text" value={settings.todoModelName} onChange={(event) => handleSettingsChange("todoModelName", event.target.value)} /></label>
-                      <label className="field"><span>API Key</span><input type="password" value={settings.todoApiKeyMasked} onChange={(event) => handleSettingsChange("todoApiKeyMasked", event.target.value)} /></label>
-                      <label className="field"><span>内嵌模型版本</span><input type="text" value={settings.localTodoModelVersion} onChange={(event) => handleSettingsChange("localTodoModelVersion", event.target.value)} /></label>
-                      <label className="field checkbox-field"><span>允许 legacy 路径失败后云端兜底</span><input type="checkbox" checked={settings.allowCloudFallback} onChange={(event) => handleSettingsChange("allowCloudFallback", event.target.checked)} /></label>
-                      <label className="field"><span>运行时状态</span><input type="text" value={localRuntimeLabelMap[settings.localTodoRuntimeStatus]} readOnly /></label>
-                      <label className="field field-wide"><span>最近健康检查</span><input type="text" value={settings.localTodoLastHealthCheckAt || "暂无"} readOnly /></label>
+                      <label className="field"><span>语义模型</span><input type="text" value={settings.semanticModelName} readOnly /></label>
+                      <label className="field field-wide"><span>产物落库</span><input type="text" value="semantic_artifacts(type='todo_extraction')" readOnly /></label>
                     </div>
                     <div className="runtime-hint">
-                      <p className="section-kicker">本地运行时</p>
+                      <p className="section-kicker">语义入口</p>
                       <p>v0.4 默认只登记 Todo 语义产物边界，实际 Todo 候选确认在 v0.7 接入。</p>
-                      <p>旧 Qwen3-4B Q4_K_M 与 llama.cpp 子进程仅作为 legacy 回滚路径，默认不启动。</p>
+                      <p>Todo 不再提供本地小模型或直连旧 Todo 云接口入口，统一通过 MiniMax M3 语义链路承载。</p>
                     </div>
                   </section>
                 </section>

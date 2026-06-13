@@ -14,7 +14,7 @@ export interface SettingsPayload {
   providerMode: "cloud" | "local";
   asrProviderType: "cloud_volc" | "local_whisperkit";
   speakerProviderType: "local_speakerkit";
-  todoProviderType: "semantic_m3" | "legacy_local_llm" | "cloud";
+  todoProviderType: "semantic_m3";
   semanticProviderType: "minimax_m3";
   embeddingProviderType: "reserved";
   exportProviderType: "local_file";
@@ -26,13 +26,7 @@ export interface SettingsPayload {
   semanticBaseUrl: string;
   semanticModelName: string;
   semanticApiKeyMasked: string;
-  todoBaseUrl: string;
-  todoModelName: string;
-  todoApiKeyMasked: string;
-  localTodoModelVersion: string;
   allowCloudFallback: boolean;
-  localTodoRuntimeStatus: "not_ready" | "starting" | "ready" | "failed";
-  localTodoLastHealthCheckAt: string;
 }
 
 export interface TodoPayload {
@@ -92,15 +86,6 @@ export interface ModelTestPayload {
   statusCode: number;
   message: string;
   responseExcerpt: string;
-}
-
-export interface LocalRuntimePayload {
-  providerType: "semantic_m3" | "legacy_local_llm" | "cloud";
-  modelVersion: string;
-  runtimeStatus: "not_ready" | "starting" | "ready" | "failed";
-  lastHealthCheckAt: string;
-  fallbackEnabled: boolean;
-  message: string;
 }
 
 export interface BootstrapDataPayload {
@@ -214,13 +199,4 @@ export async function processDesktopPendingJobs(): Promise<ProcessingActionPaylo
 
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<ProcessingActionPayload>("process_pending_jobs");
-}
-
-export async function getLocalTodoRuntimeStatus(): Promise<LocalRuntimePayload | null> {
-  if (!isTauriEnvironment()) {
-    return null;
-  }
-
-  const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<LocalRuntimePayload>("get_local_todo_runtime_status");
 }

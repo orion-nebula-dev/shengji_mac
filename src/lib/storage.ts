@@ -40,26 +40,43 @@ export function loadState(): PersistedState {
     if (legacyAsrProviderType === "cloud") {
       mergedSettings.asrProviderType = "cloud_volc";
     }
-    const legacyTodoProviderType = String(
+    const persistedTodoProviderType = String(
       (mergedSettings as SettingsState & { todoProviderType: string }).todoProviderType,
     );
-    if (legacyTodoProviderType.trim().length === 0) {
-      mergedSettings.todoProviderType = "semantic_m3";
-    }
-    if (legacyTodoProviderType === "embedded_local") {
-      mergedSettings.todoProviderType = "legacy_local_llm";
-    }
+    mergedSettings.todoProviderType = "semantic_m3";
     if (
       mergedSettings.providerMode === "cloud" &&
       mergedSettings.asrProviderType === "cloud_volc" &&
-      mergedSettings.todoProviderType === "cloud"
+      persistedTodoProviderType === "cloud"
     ) {
       mergedSettings.providerMode = "local";
       mergedSettings.asrProviderType = "local_whisperkit";
       mergedSettings.todoProviderType = "semantic_m3";
     }
+    const sanitizedSettings: SettingsState = {
+      recordEnabled: mergedSettings.recordEnabled,
+      language: mergedSettings.language,
+      chunkSeconds: mergedSettings.chunkSeconds,
+      idleTriggerSeconds: mergedSettings.idleTriggerSeconds,
+      providerMode: mergedSettings.providerMode,
+      asrProviderType: mergedSettings.asrProviderType,
+      speakerProviderType: mergedSettings.speakerProviderType,
+      todoProviderType: "semantic_m3",
+      semanticProviderType: mergedSettings.semanticProviderType,
+      embeddingProviderType: mergedSettings.embeddingProviderType,
+      exportProviderType: mergedSettings.exportProviderType,
+      asrSubmitUrl: mergedSettings.asrSubmitUrl,
+      asrQueryUrl: mergedSettings.asrQueryUrl,
+      asrResourceId: mergedSettings.asrResourceId,
+      asrModelName: mergedSettings.asrModelName,
+      asrApiKeyMasked: mergedSettings.asrApiKeyMasked,
+      semanticBaseUrl: mergedSettings.semanticBaseUrl,
+      semanticModelName: mergedSettings.semanticModelName,
+      semanticApiKeyMasked: mergedSettings.semanticApiKeyMasked,
+      allowCloudFallback: mergedSettings.allowCloudFallback,
+    };
     return {
-      settings: mergedSettings,
+      settings: sanitizedSettings,
       todos: parsed.todos ?? defaultState.todos,
       sessions: parsed.sessions ?? defaultState.sessions,
       runtime: {
