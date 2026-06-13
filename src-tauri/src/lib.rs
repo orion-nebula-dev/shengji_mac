@@ -64,15 +64,6 @@ struct RecordingSummary {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct BootstrapData {
-    settings: SettingsDto,
-    todos: Vec<TodoDto>,
-    sessions: Vec<SessionDto>,
-    runtime: RuntimeStatusDto,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
 struct RecordingActionResult {
     message: String,
     runtime: RuntimeStatusDto,
@@ -2600,6 +2591,53 @@ mod tests {
             "录音已停止，可启动真实麦克风录音"
         );
         assert!(payload.get("recorder_status").is_none());
+    }
+
+    #[test]
+    fn should_expose_bootstrap_domain_dto_contract() {
+        let bootstrap = domain::bootstrap::BootstrapData {
+            settings: domain::settings::SettingsDto {
+                record_enabled: false,
+                language: "zh-CN".into(),
+                chunk_seconds: 30,
+                idle_trigger_seconds: 20,
+                provider_mode: "local".into(),
+                asr_provider_type: "local_whisperkit".into(),
+                speaker_provider_type: "local_speakerkit".into(),
+                todo_provider_type: "semantic_m3".into(),
+                semantic_provider_type: "minimax_m3".into(),
+                embedding_provider_type: "reserved".into(),
+                export_provider_type: "local_file".into(),
+                asr_submit_url: "".into(),
+                asr_query_url: "".into(),
+                asr_resource_id: "".into(),
+                asr_model_name: "".into(),
+                asr_api_key_masked: "".into(),
+                semantic_base_url: "https://api.minimax.io/v1/responses".into(),
+                semantic_model_name: "MiniMax-M3".into(),
+                semantic_api_key_masked: "".into(),
+                allow_cloud_fallback: false,
+            },
+            todos: Vec::new(),
+            sessions: Vec::new(),
+            runtime: domain::runtime::RuntimeStatusDto {
+                runtime_label: "已暂停".into(),
+                current_session_status: "idle_waiting".into(),
+                last_slice_at: "暂无切片".into(),
+                last_extraction_at: "暂无".into(),
+                last_extraction_summary: "暂无会话提取记录".into(),
+            },
+        };
+
+        let payload = serde_json::to_value(&bootstrap).expect("Bootstrap domain DTO 应可序列化");
+
+        assert_eq!(payload["settings"]["semanticProviderType"], "minimax_m3");
+        assert!(payload["todos"]
+            .as_array()
+            .expect("todos 应为数组")
+            .is_empty());
+        assert_eq!(payload["runtime"]["runtimeLabel"], "已暂停");
+        assert!(payload.get("runtime_label").is_none());
     }
 
     fn table_columns(connection: &Connection, table_name: &str) -> Vec<String> {

@@ -1,3 +1,4 @@
+pub(crate) mod bootstrap;
 pub(crate) mod desktop;
 pub(crate) mod model_test;
 pub mod provider;
