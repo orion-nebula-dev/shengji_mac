@@ -5,8 +5,8 @@ use rusqlite::params;
 use crate::{
     app::settings_service, current_timestamp_label, infra::sqlite::open_connection,
     insert_audio_segment, insert_processing_job, latest_session, maybe_create_idle_session,
-    process_pending_jobs_internal, query_runtime_status, AppState, RecorderControl,
-    RecordingActionResult,
+    process_pending_jobs_internal, query_runtime_status, spawn_recording_controller, AppState,
+    RecorderControl, RecordingActionResult,
 };
 
 pub(crate) fn simulate_audio_slice_payload(
@@ -88,6 +88,32 @@ pub(crate) fn simulate_audio_slice_payload(
     })
 }
 
+pub(crate) fn start_recording_payload(state: &AppState) -> Result<RecordingActionResult, String> {
+    let mut recorder_guard = state
+        .recorder
+        .lock()
+        .map_err(|_| "录音状态锁定失败".to_string())?;
+    if recorder_guard.is_some() {
+        let connection = open_connection(&state.db_path)?;
+        return Ok(RecordingActionResult {
+            message: "录音已在进行中".into(),
+            runtime: query_runtime_status(&connection)?,
+            latest_session: latest_session(&connection)?,
+        });
+    }
+
+    let controller = spawn_recording_controller(state.recordings_dir.clone())?;
+    let connection = open_connection(&state.db_path)?;
+    settings_service::set_record_enabled(&connection, true)?;
+    *recorder_guard = Some(controller);
+
+    Ok(RecordingActionResult {
+        message: "已启动真实麦克风录音".into(),
+        runtime: query_runtime_status(&connection)?,
+        latest_session: latest_session(&connection)?,
+    })
+}
+
 pub(crate) fn stop_recording_payload(state: &AppState) -> Result<RecordingActionResult, String> {
     let controller = state
         .recorder
@@ -145,6 +171,13 @@ pub(crate) fn simulate_audio_slice(
     state: tauri::State<'_, AppState>,
 ) -> Result<RecordingActionResult, String> {
     simulate_audio_slice_payload(&state.db_path, has_effective_voice)
+}
+
+#[tauri::command]
+pub(crate) fn start_recording(
+    state: tauri::State<'_, AppState>,
+) -> Result<RecordingActionResult, String> {
+    start_recording_payload(&state)
 }
 
 #[tauri::command]

@@ -1262,33 +1262,6 @@ fn test_asr_provider(settings: &SettingsDto) -> Result<ModelTestResult, String> 
     })
 }
 
-#[tauri::command]
-fn start_recording(state: tauri::State<'_, AppState>) -> Result<RecordingActionResult, String> {
-    let mut recorder_guard = state
-        .recorder
-        .lock()
-        .map_err(|_| "录音状态锁定失败".to_string())?;
-    if recorder_guard.is_some() {
-        let connection = open_connection(&state.db_path)?;
-        return Ok(RecordingActionResult {
-            message: "录音已在进行中".into(),
-            runtime: query_runtime_status(&connection)?,
-            latest_session: latest_session(&connection)?,
-        });
-    }
-
-    let controller = spawn_recording_controller(state.recordings_dir.clone())?;
-    let connection = open_connection(&state.db_path)?;
-    settings_service::set_record_enabled(&connection, true)?;
-    *recorder_guard = Some(controller);
-
-    Ok(RecordingActionResult {
-        message: "已启动真实麦克风录音".into(),
-        runtime: query_runtime_status(&connection)?,
-        latest_session: latest_session(&connection)?,
-    })
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1326,7 +1299,7 @@ pub fn run() {
             commands::todo::toggle_todo_status,
             commands::session::flush_current_session,
             commands::jobs::process_pending_jobs,
-            start_recording,
+            commands::recording::start_recording,
             commands::recording::stop_recording,
             commands::recording::simulate_audio_slice
         ])
@@ -2432,6 +2405,42 @@ mod tests {
         assert_eq!(result.message, "当前没有进行中的录音");
         assert!(result.latest_session.is_some());
         assert!(!result.runtime.runtime_label.trim().is_empty());
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_expose_start_recording_command_boundary_when_already_recording() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-start-recording-command-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        let recordings_dir = temp_dir.join("recordings");
+        let (stop_tx, _stop_rx) = mpsc::channel::<RecorderControl>();
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        fs::create_dir_all(&recordings_dir).expect("应能创建测试录音目录");
+        let state = AppState {
+            db_path,
+            recordings_dir,
+            recorder: Arc::new(Mutex::new(Some(RecordingController {
+                stop_tx,
+                join_handle: thread::spawn(|| Err("测试占位录音线程不应被 join".into())),
+            }))),
+        };
+
+        let result = commands::recording::start_recording_payload(&state)
+            .expect("recording command boundary 应能处理重复开始录音");
+
+        assert_eq!(result.message, "录音已在进行中");
+        assert!(result.latest_session.is_some());
+        assert!(!result.runtime.runtime_label.trim().is_empty());
+        assert!(
+            state.recorder.lock().expect("应能读取录音状态").is_some(),
+            "重复开始录音不应清空已有 recorder"
+        );
 
         let _ = fs::remove_dir_all(temp_dir);
     }
