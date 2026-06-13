@@ -21,6 +21,7 @@ mod providers;
 use app::settings_service;
 use domain::runtime::RuntimeStatusDto;
 use domain::session::SessionDto;
+use domain::settings::SettingsDto;
 use domain::todo::TodoDto;
 use infra::sqlite::{initialize_database, open_connection};
 
@@ -68,31 +69,6 @@ struct DesktopContext {
     recorder_status: String,
     storage_status: String,
     models_status: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SettingsDto {
-    record_enabled: bool,
-    language: String,
-    chunk_seconds: i64,
-    idle_trigger_seconds: i64,
-    provider_mode: String,
-    asr_provider_type: String,
-    speaker_provider_type: String,
-    todo_provider_type: String,
-    semantic_provider_type: String,
-    embedding_provider_type: String,
-    export_provider_type: String,
-    asr_submit_url: String,
-    asr_query_url: String,
-    asr_resource_id: String,
-    asr_model_name: String,
-    asr_api_key_masked: String,
-    semantic_base_url: String,
-    semantic_model_name: String,
-    semantic_api_key_masked: String,
-    allow_cloud_fallback: bool,
 }
 
 #[derive(Serialize)]
@@ -2542,6 +2518,39 @@ mod tests {
         assert_eq!(payload["runtimeLabel"], "Tauri + SQLite");
         assert_eq!(payload["currentSessionStatus"], "collecting");
         assert!(payload.get("runtime_label").is_none());
+    }
+
+    #[test]
+    fn should_expose_settings_domain_dto_contract() {
+        let settings = domain::settings::SettingsDto {
+            record_enabled: true,
+            language: "zh-CN".into(),
+            chunk_seconds: 30,
+            idle_trigger_seconds: 20,
+            provider_mode: "local".into(),
+            asr_provider_type: "local_whisperkit".into(),
+            speaker_provider_type: "local_speakerkit".into(),
+            todo_provider_type: "semantic_m3".into(),
+            semantic_provider_type: "minimax_m3".into(),
+            embedding_provider_type: "reserved".into(),
+            export_provider_type: "local_file".into(),
+            asr_submit_url: "https://asr.example.test/submit".into(),
+            asr_query_url: "https://asr.example.test/query".into(),
+            asr_resource_id: "resource-test".into(),
+            asr_model_name: "asr-test".into(),
+            asr_api_key_masked: "asr-key-****".into(),
+            semantic_base_url: "https://api.minimax.io/v1/responses".into(),
+            semantic_model_name: "MiniMax-M3".into(),
+            semantic_api_key_masked: "semantic-key-****".into(),
+            allow_cloud_fallback: false,
+        };
+
+        let payload = serde_json::to_value(&settings).expect("Settings domain DTO 应可序列化");
+
+        assert_eq!(payload["recordEnabled"], true);
+        assert_eq!(payload["semanticProviderType"], "minimax_m3");
+        assert_eq!(payload["semanticModelName"], "MiniMax-M3");
+        assert!(payload.get("record_enabled").is_none());
     }
 
     fn table_columns(connection: &Connection, table_name: &str) -> Vec<String> {
