@@ -12,6 +12,7 @@ use std::{
 use tauri::Manager;
 
 mod app;
+mod commands;
 mod domain;
 mod infra;
 mod jobs;
@@ -158,14 +159,14 @@ struct ProcessingActionResult {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ModelTestRequest {
+pub(crate) struct ModelTestRequest {
     provider: String,
     settings: SettingsDto,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ModelTestResult {
+pub(crate) struct ModelTestResult {
     provider: String,
     success: bool,
     status_code: u16,
@@ -1267,24 +1268,6 @@ fn test_asr_provider(settings: &SettingsDto) -> Result<ModelTestResult, String> 
 }
 
 #[tauri::command]
-fn test_model_connection(
-    payload: ModelTestRequest,
-    _state: tauri::State<'_, AppState>,
-) -> Result<ModelTestResult, String> {
-    match payload.provider.as_str() {
-        "todo" => Ok(ModelTestResult {
-            provider: "todo".into(),
-            success: true,
-            status_code: 0,
-            message: "MiniMax M3 语义 Todo 边界已登记；v0.4 不发起实际 Todo 生成调用".into(),
-            response_excerpt: "semantic_artifacts(type='todo_extraction')".into(),
-        }),
-        "asr" => test_asr_provider(&payload.settings),
-        other => Err(format!("不支持的模型测试类型: {other}")),
-    }
-}
-
-#[tauri::command]
 fn get_desktop_context(state: tauri::State<'_, AppState>) -> Result<DesktopContext, String> {
     let recording = is_recording(&state)?;
     let provider_count = providers::provider_catalog().len();
@@ -1635,7 +1618,7 @@ pub fn run() {
             get_desktop_context,
             get_bootstrap_data,
             save_settings,
-            test_model_connection,
+            commands::model_test::test_model_connection,
             toggle_todo_status,
             flush_current_session,
             process_pending_jobs,
@@ -2361,6 +2344,90 @@ mod tests {
         assert_eq!(persisted.semantic_model_name, "MiniMax-M3-Test");
         assert_eq!(persisted.semantic_api_key_masked, "sk-test-****");
         assert_eq!(persisted.export_provider_type, "local_file");
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_expose_model_test_command_boundary() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-model-command-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let settings = settings_service::load_settings(&connection).expect("应能读取默认设置");
+
+        let result = commands::model_test::test_model_connection_payload(ModelTestRequest {
+            provider: "todo".into(),
+            settings,
+        })
+        .expect("model_test command boundary 应能处理 Todo 语义入口测试");
+
+        assert!(result.success);
+        assert_eq!(result.provider, "todo");
+        assert!(result.message.contains("MiniMax M3"));
+        assert_eq!(
+            result.response_excerpt,
+            "semantic_artifacts(type='todo_extraction')"
+        );
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_guard_local_asr_model_test_without_cloud_fallback() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-model-command-asr-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let mut settings = settings_service::load_settings(&connection).expect("应能读取默认设置");
+        settings.asr_provider_type = DEFAULT_ASR_PROVIDER_TYPE.into();
+        settings.allow_cloud_fallback = false;
+
+        let result = commands::model_test::test_model_connection_payload(ModelTestRequest {
+            provider: "asr".into(),
+            settings,
+        })
+        .expect("model_test command boundary 应能处理本地 ASR guard");
+
+        assert!(!result.success);
+        assert_eq!(result.provider, "asr");
+        assert_eq!(result.status_code, 503);
+        assert!(result.message.contains("纯本地 ASR"));
+        assert!(result.response_excerpt.contains("不会调用云端服务"));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_reject_unknown_model_test_provider_at_command_boundary() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-model-command-unknown-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let settings = settings_service::load_settings(&connection).expect("应能读取默认设置");
+
+        let error = commands::model_test::test_model_connection_payload(ModelTestRequest {
+            provider: "embedding".into(),
+            settings,
+        })
+        .expect_err("未知模型测试类型应返回错误");
+
+        assert!(error.contains("不支持的模型测试类型: embedding"));
 
         let _ = fs::remove_dir_all(temp_dir);
     }
