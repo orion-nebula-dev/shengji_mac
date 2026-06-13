@@ -599,6 +599,92 @@ fn ensure_model_invocations_columns(connection: &Connection) -> Result<(), Strin
     Ok(())
 }
 
+fn ensure_semantic_artifact_type_constraint(connection: &Connection) -> Result<(), String> {
+    let table_sql = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'semantic_artifacts'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(|error| format!("读取 semantic_artifacts 表结构失败: {error}"))?;
+
+    if table_sql.contains("'transcript_revision'")
+        && table_sql.contains("'recording_type'")
+        && table_sql.contains("'meeting_minutes'")
+    {
+        return Ok(());
+    }
+
+    connection
+        .execute_batch(
+            r#"
+      PRAGMA foreign_keys = OFF;
+      DROP INDEX IF EXISTS idx_semantic_artifacts_session_type;
+      DROP INDEX IF EXISTS idx_semantic_artifacts_status;
+      DROP TABLE IF EXISTS semantic_artifacts_legacy_type_constraint;
+      ALTER TABLE semantic_artifacts RENAME TO semantic_artifacts_legacy_type_constraint;
+
+      CREATE TABLE semantic_artifacts (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        artifact_type TEXT NOT NULL
+          CHECK (artifact_type IN ('transcript_revision', 'recording_type', 'summary', 'meeting_minutes', 'todo_extraction', 'mind_map', 'moment', 'deep_research', 'translation')),
+        status TEXT NOT NULL DEFAULT 'pending'
+          CHECK (status IN ('pending', 'running', 'succeeded', 'failed')),
+        provider TEXT NOT NULL,
+        model_name TEXT NOT NULL,
+        schema_version TEXT NOT NULL DEFAULT 'v0.4',
+        source_span_refs TEXT NOT NULL DEFAULT '[]',
+        payload_json TEXT NOT NULL DEFAULT '{}',
+        error_message TEXT NOT NULL DEFAULT '',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (session_id) REFERENCES conversation_sessions(id) ON DELETE CASCADE
+      );
+
+      INSERT INTO semantic_artifacts (
+        id,
+        session_id,
+        artifact_type,
+        status,
+        provider,
+        model_name,
+        schema_version,
+        source_span_refs,
+        payload_json,
+        error_message,
+        created_at,
+        updated_at
+      )
+      SELECT
+        id,
+        session_id,
+        artifact_type,
+        status,
+        provider,
+        model_name,
+        schema_version,
+        source_span_refs,
+        payload_json,
+        error_message,
+        created_at,
+        updated_at
+      FROM semantic_artifacts_legacy_type_constraint
+      WHERE artifact_type IN ('summary', 'todo_extraction', 'mind_map', 'moment', 'deep_research', 'translation');
+
+      DROP TABLE semantic_artifacts_legacy_type_constraint;
+      CREATE INDEX IF NOT EXISTS idx_semantic_artifacts_session_type
+        ON semantic_artifacts(session_id, artifact_type);
+      CREATE INDEX IF NOT EXISTS idx_semantic_artifacts_status
+        ON semantic_artifacts(status);
+      PRAGMA foreign_keys = ON;
+      "#,
+        )
+        .map_err(|error| format!("迁移 semantic_artifacts 类型约束失败: {error}"))?;
+
+    Ok(())
+}
+
 fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
     let parent_dir = db_path
         .parent()
@@ -697,7 +783,7 @@ fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
         id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL,
         artifact_type TEXT NOT NULL
-          CHECK (artifact_type IN ('summary', 'todo_extraction', 'mind_map', 'moment', 'deep_research', 'translation')),
+          CHECK (artifact_type IN ('transcript_revision', 'recording_type', 'summary', 'meeting_minutes', 'todo_extraction', 'mind_map', 'moment', 'deep_research', 'translation')),
         status TEXT NOT NULL DEFAULT 'pending'
           CHECK (status IN ('pending', 'running', 'succeeded', 'failed')),
         provider TEXT NOT NULL,
@@ -796,6 +882,7 @@ fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
 
     ensure_app_settings_columns(&connection)?;
     ensure_conversation_sessions_columns(&connection)?;
+    ensure_semantic_artifact_type_constraint(&connection)?;
     ensure_model_invocations_columns(&connection)?;
 
     connection
@@ -3183,6 +3270,197 @@ mod tests {
     }
 
     #[test]
+    fn should_allow_all_minimax_m3_artifact_types_in_semantic_artifacts() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-artifact-type-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let session_id = "session_minimax_artifact_types";
+        connection
+            .execute(
+                r#"
+                INSERT INTO conversation_sessions (
+                  id,
+                  merged_text,
+                  started_at,
+                  ended_at,
+                  idle_trigger_seconds,
+                  trigger_reason,
+                  transcript_count,
+                  extraction_status,
+                  extraction_provider_used,
+                  extraction_fallback_used,
+                  extraction_fallback_reason,
+                  trace_id,
+                  created_at
+                ) VALUES (?1, '测试 MiniMax M3 artifact 类型落库。', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 20, 'manual', 1, 'pending', 'pending', 0, '', 'trace_minimax_artifact_types', CURRENT_TIMESTAMP)
+                "#,
+                params![session_id],
+            )
+            .expect("应能准备测试会话");
+
+        for artifact_type in providers::semantic::minimax_m3::SUPPORTED_ARTIFACT_TYPES {
+            connection
+                .execute(
+                    r#"
+                    INSERT INTO semantic_artifacts (
+                      id,
+                      session_id,
+                      artifact_type,
+                      status,
+                      provider,
+                      model_name,
+                      schema_version,
+                      source_span_refs,
+                      payload_json
+                    ) VALUES (?1, ?2, ?3, 'pending', ?4, ?5, 'v0.4', '[]', '{}')
+                    "#,
+                    params![
+                        format!("artifact_{artifact_type}"),
+                        session_id,
+                        artifact_type,
+                        providers::semantic::minimax_m3::PROVIDER_ID,
+                        providers::semantic::minimax_m3::DEFAULT_MODEL_NAME,
+                    ],
+                )
+                .unwrap_or_else(|error| {
+                    panic!("semantic_artifacts 应允许 MiniMax M3 artifact_type={artifact_type}: {error}")
+                });
+        }
+
+        let inserted_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(1) FROM semantic_artifacts WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .expect("应能统计 artifact 数量");
+        assert_eq!(
+            inserted_count as usize,
+            providers::semantic::minimax_m3::SUPPORTED_ARTIFACT_TYPES.len()
+        );
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_migrate_semantic_artifact_type_constraint_to_minimax_contract() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-artifact-migration-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        {
+            let connection = open_connection(&db_path).expect("应能打开旧库测试数据库");
+            connection
+                .execute_batch(
+                    r#"
+                    CREATE TABLE semantic_artifacts (
+                      id TEXT PRIMARY KEY,
+                      session_id TEXT NOT NULL,
+                      artifact_type TEXT NOT NULL
+                        CHECK (artifact_type IN ('summary', 'todo_extraction', 'mind_map', 'moment', 'deep_research', 'translation')),
+                      status TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending', 'running', 'succeeded', 'failed')),
+                      provider TEXT NOT NULL,
+                      model_name TEXT NOT NULL,
+                      schema_version TEXT NOT NULL DEFAULT 'v0.4',
+                      source_span_refs TEXT NOT NULL DEFAULT '[]',
+                      payload_json TEXT NOT NULL DEFAULT '{}',
+                      error_message TEXT NOT NULL DEFAULT '',
+                      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    );
+
+                    INSERT INTO semantic_artifacts (
+                      id,
+                      session_id,
+                      artifact_type,
+                      status,
+                      provider,
+                      model_name,
+                      schema_version,
+                      source_span_refs,
+                      payload_json
+                    ) VALUES (
+                      'legacy_summary_artifact',
+                      'legacy_session',
+                      'summary',
+                      'pending',
+                      'minimax_m3',
+                      'MiniMax-M3',
+                      'v0.4',
+                      '[]',
+                      '{}'
+                    );
+                    "#,
+                )
+                .expect("应能创建旧 semantic_artifacts 表");
+        }
+
+        initialize_database(&db_path).expect("应能迁移旧 semantic_artifacts 类型约束");
+        let connection = open_connection(&db_path).expect("应能打开迁移后的数据库");
+        connection
+            .execute(
+                r#"
+                INSERT OR IGNORE INTO conversation_sessions (
+                  id,
+                  merged_text,
+                  started_at,
+                  ended_at,
+                  idle_trigger_seconds,
+                  trigger_reason,
+                  transcript_count,
+                  extraction_status,
+                  extraction_provider_used,
+                  extraction_fallback_used,
+                  extraction_fallback_reason,
+                  trace_id,
+                  created_at
+                ) VALUES ('legacy_session', '旧会话', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 20, 'manual', 1, 'pending', 'pending', 0, '', 'trace_legacy_session', CURRENT_TIMESTAMP)
+                "#,
+                [],
+            )
+            .expect("应能准备迁移后父会话");
+        connection
+            .execute(
+                r#"
+                INSERT INTO semantic_artifacts (
+                  id,
+                  session_id,
+                  artifact_type,
+                  status,
+                  provider,
+                  model_name,
+                  schema_version,
+                  source_span_refs,
+                  payload_json
+                ) VALUES ('new_transcript_revision_artifact', 'legacy_session', 'transcript_revision', 'pending', 'minimax_m3', 'MiniMax-M3', 'v0.4', '[]', '{}')
+                "#,
+                [],
+            )
+            .expect("迁移后应允许 transcript_revision");
+
+        let legacy_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(1) FROM semantic_artifacts WHERE id = 'legacy_summary_artifact'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("应能查询迁移前 artifact");
+        assert_eq!(legacy_count, 1);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
     fn should_migrate_legacy_settings_to_v04_provider_defaults() {
         let temp_dir = std::env::temp_dir().join(format!(
             "smart-todo-v04-migration-test-{}",
@@ -3400,6 +3678,54 @@ mod tests {
             legacy_local_llm::MODEL_VERSION
         )
         .ends_with("todo/qwen3-4b-instruct-2507-q4_k_m/manifest.json"));
+    }
+
+    #[test]
+    fn should_expose_v04_provider_module_boundaries() {
+        let asr_descriptor = providers::asr::local_whisperkit::descriptor();
+        assert_eq!(asr_descriptor.id, "local_whisperkit");
+        assert_eq!(
+            asr_descriptor.capability,
+            domain::provider::ProviderCapability::Asr
+        );
+        assert_eq!(
+            asr_descriptor.locality,
+            domain::provider::ProviderLocality::Local
+        );
+        assert!(
+            asr_descriptor.privacy_boundary.contains("音频默认留在本机"),
+            "本地 ASR provider 必须声明本地隐私边界"
+        );
+        assert_eq!(
+            providers::asr::local_whisperkit::LocalWhisperKitProvider::default().provider_id(),
+            "local_whisperkit"
+        );
+
+        let speaker_descriptor = providers::speaker::local_speakerkit::descriptor();
+        assert_eq!(speaker_descriptor.id, "local_speakerkit");
+        assert_eq!(
+            speaker_descriptor.capability,
+            domain::provider::ProviderCapability::Speaker
+        );
+        assert_eq!(
+            providers::speaker::local_speakerkit::LocalSpeakerKitProvider::default().provider_id(),
+            "local_speakerkit"
+        );
+
+        let semantic_descriptor = providers::semantic::minimax_m3::descriptor();
+        assert_eq!(semantic_descriptor.id, "minimax_m3");
+        assert_eq!(
+            semantic_descriptor.capability,
+            domain::provider::ProviderCapability::Semantic
+        );
+        assert_eq!(
+            providers::semantic::minimax_m3::DEFAULT_MODEL_NAME,
+            DEFAULT_SEMANTIC_MODEL_NAME
+        );
+        assert_eq!(
+            providers::semantic::minimax_m3::MAX_CONTEXT_TOKENS,
+            1_000_000
+        );
     }
 
     #[test]

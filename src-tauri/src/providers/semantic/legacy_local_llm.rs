@@ -1,3 +1,5 @@
+// LEGACY(v0.4): 保留旧本地 LLM Todo 提取路径用于回滚；默认主线不再依赖此模块。
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
