@@ -1300,16 +1300,6 @@ fn get_bootstrap_data(state: tauri::State<'_, AppState>) -> Result<BootstrapData
 }
 
 #[tauri::command]
-fn save_settings(
-    payload: SettingsDto,
-    state: tauri::State<'_, AppState>,
-) -> Result<SettingsDto, String> {
-    let connection = open_connection(&state.db_path)?;
-    settings_service::save_settings(&connection, &payload)?;
-    settings_service::load_settings(&connection)
-}
-
-#[tauri::command]
 fn toggle_todo_status(
     todo_id: String,
     state: tauri::State<'_, AppState>,
@@ -1617,7 +1607,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_desktop_context,
             get_bootstrap_data,
-            save_settings,
+            commands::settings::save_settings,
             commands::model_test::test_model_connection,
             toggle_todo_status,
             flush_current_session,
@@ -2428,6 +2418,37 @@ mod tests {
         .expect_err("未知模型测试类型应返回错误");
 
         assert!(error.contains("不支持的模型测试类型: embedding"));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_expose_save_settings_command_boundary() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-save-settings-command-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let mut settings = settings_service::load_settings(&connection).expect("应能读取默认设置");
+        settings.language = "en-US".into();
+        settings.todo_provider_type = "cloud".into();
+        settings.semantic_model_name = "MiniMax-M3-Command-Test".into();
+
+        let saved = commands::settings::save_settings_payload(&db_path, settings)
+            .expect("settings command boundary 应能保存并回读设置");
+
+        assert_eq!(saved.language, "en-US");
+        assert_eq!(saved.todo_provider_type, DEFAULT_TODO_PROVIDER_TYPE);
+        assert_eq!(saved.semantic_model_name, "MiniMax-M3-Command-Test");
+
+        let persisted = settings_service::load_settings(&connection).expect("应能读取保存后的设置");
+        assert_eq!(persisted.language, "en-US");
+        assert_eq!(persisted.todo_provider_type, DEFAULT_TODO_PROVIDER_TYPE);
+        assert_eq!(persisted.semantic_model_name, "MiniMax-M3-Command-Test");
 
         let _ = fs::remove_dir_all(temp_dir);
     }
