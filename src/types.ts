@@ -6,6 +6,7 @@ export type SessionStatus =
   | "extracted"
   | "failed";
 export type ProviderType = "cloud" | "embedded_local";
+export type AsrProviderType = "cloud" | "local";
 export type LocalRuntimeStatus = "not_ready" | "starting" | "ready" | "failed";
 
 export interface SettingsState {
@@ -14,7 +15,7 @@ export interface SettingsState {
   chunkSeconds: number;
   idleTriggerSeconds: number;
   providerMode: "cloud" | "local";
-  asrProviderType: "cloud";
+  asrProviderType: AsrProviderType;
   todoProviderType: ProviderType;
   asrSubmitUrl: string;
   asrQueryUrl: string;

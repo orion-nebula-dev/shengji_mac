@@ -12,7 +12,7 @@ export interface SettingsPayload {
   chunkSeconds: number;
   idleTriggerSeconds: number;
   providerMode: "cloud" | "local";
-  asrProviderType: "cloud";
+  asrProviderType: "cloud" | "local";
   todoProviderType: "cloud" | "embedded_local";
   asrSubmitUrl: string;
   asrQueryUrl: string;

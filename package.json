@@ -1,12 +1,14 @@
 {
   "name": "smart-todo-desktop-ui",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
+    "probe:minimax": "node tools/minimax-capability-probe.mjs",
+    "test:tools": "node --test tools/*.test.mjs",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"
   },
