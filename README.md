@@ -1,4 +1,4 @@
-# 智能 Todo
+# 声记
 
 一个运行在 macOS 桌面端的声记工作台，目标是把“录音 / 音频导入 -> 本地转写 -> 说话人分离 -> 转写修正 -> MiniMax M3 类型化语义理解 -> Todo / 摘要 / 脑图 / Moment / 深度研究 / 翻译 / 多语言导出”串成可追溯的桌面工作流。
 
@@ -88,13 +88,13 @@ npm run tauri:build
 录音文件目录：
 
 ```text
-~/Library/Application Support/com.smarttodo.desktop/recordings
+~/Library/Application Support/com.shengji.desktop/recordings
 ```
 
 SQLite 数据库：
 
 ```text
-~/Library/Application Support/com.smarttodo.desktop/smart-todo.sqlite
+~/Library/Application Support/com.shengji.desktop/shengji.sqlite
 ```
 
 ## 配置说明
