@@ -1390,6 +1390,65 @@ mod tests {
     }
 
     #[test]
+    fn should_backfill_asr_urls_when_migrating_legacy_base_url_settings() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-asr-url-legacy-migration-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        {
+            let connection = open_connection(&db_path).expect("应能打开旧版设置测试数据库");
+            connection
+                .execute_batch(
+                    r#"
+                    CREATE TABLE app_settings (
+                        id TEXT PRIMARY KEY,
+                        record_enabled INTEGER NOT NULL DEFAULT 0,
+                        language TEXT NOT NULL DEFAULT 'zh-CN',
+                        chunk_seconds INTEGER NOT NULL DEFAULT 30,
+                        idle_trigger_seconds INTEGER NOT NULL DEFAULT 20,
+                        provider_mode TEXT NOT NULL DEFAULT 'cloud',
+                        asr_provider_type TEXT NOT NULL DEFAULT 'cloud',
+                        asr_base_url TEXT NOT NULL DEFAULT ''
+                    );
+
+                    INSERT INTO app_settings (
+                        id,
+                        record_enabled,
+                        language,
+                        chunk_seconds,
+                        idle_trigger_seconds,
+                        provider_mode,
+                        asr_provider_type,
+                        asr_base_url
+                    ) VALUES (
+                        'default',
+                        0,
+                        'zh-CN',
+                        30,
+                        20,
+                        'cloud',
+                        'cloud',
+                        'https://asr.example.test/query'
+                    );
+                    "#,
+                )
+                .expect("应能准备只有旧版 base URL 的设置表");
+        }
+
+        initialize_database(&db_path).expect("应能迁移旧版 ASR URL 设置");
+        let connection = open_connection(&db_path).expect("应能打开迁移后的数据库");
+        let settings = settings_service::load_settings(&connection).expect("应能读取迁移后的设置");
+
+        assert_eq!(settings.asr_query_url, "https://asr.example.test/query");
+        assert_eq!(settings.asr_submit_url, "https://asr.example.test/submit");
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
     fn should_clamp_existing_unsupported_semantic_provider_during_database_init() {
         let temp_dir = std::env::temp_dir().join(format!(
             "smart-todo-v04-semantic-provider-migration-test-{}",
@@ -2725,6 +2784,93 @@ mod tests {
         assert_eq!(persisted.semantic_model_name, "MiniMax-M3-Test");
         assert_eq!(persisted.semantic_api_key_masked, "sk-test-****");
         assert_eq!(persisted.export_provider_type, "local_file");
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_preserve_asr_base_url_when_saving_settings() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-asr-base-url-preserve-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        connection
+            .execute(
+                "UPDATE app_settings SET asr_base_url = ?1 WHERE id = 'default'",
+                params!["https://asr.example.test/base"],
+            )
+            .expect("应能准备独立 ASR base URL");
+
+        let mut settings = settings_service::load_settings(&connection).expect("应能读取默认设置");
+        settings.asr_submit_url = "https://asr.example.test/submit-v2".into();
+        settings.asr_query_url = "https://asr.example.test/query-v2".into();
+
+        settings_service::save_settings(&connection, &settings).expect("应能保存设置");
+
+        let persisted_base_url: String = connection
+            .query_row(
+                "SELECT asr_base_url FROM app_settings WHERE id = 'default'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("应能查询 ASR base URL");
+        assert_eq!(persisted_base_url, "https://asr.example.test/base");
+        let persisted = settings_service::load_settings(&connection).expect("应能回读保存后的设置");
+        assert_eq!(
+            persisted.asr_submit_url,
+            "https://asr.example.test/submit-v2"
+        );
+        assert_eq!(
+            persisted.asr_query_url,
+            "https://asr.example.test/query-v2"
+        );
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_not_restore_cleared_asr_urls_from_legacy_base_url_on_restart() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-asr-url-clear-restart-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        connection
+            .execute(
+                "UPDATE app_settings SET asr_base_url = ?1 WHERE id = 'default'",
+                params!["https://asr.example.test/base"],
+            )
+            .expect("应能准备旧版 ASR base URL");
+
+        let mut settings = settings_service::load_settings(&connection).expect("应能读取默认设置");
+        settings.asr_submit_url = String::new();
+        settings.asr_query_url = String::new();
+        settings_service::save_settings(&connection, &settings).expect("应能保存清空后的 ASR URL");
+        drop(connection);
+
+        initialize_database(&db_path).expect("再次启动不应回填已清空 ASR URL");
+        let connection = open_connection(&db_path).expect("应能重新打开测试数据库");
+        let persisted = settings_service::load_settings(&connection).expect("应能回读重启后的设置");
+        assert_eq!(persisted.asr_submit_url, "");
+        assert_eq!(persisted.asr_query_url, "");
+
+        let persisted_base_url: String = connection
+            .query_row(
+                "SELECT asr_base_url FROM app_settings WHERE id = 'default'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("应能查询旧版 ASR base URL");
+        assert_eq!(persisted_base_url, "https://asr.example.test/base");
 
         let _ = fs::remove_dir_all(temp_dir);
     }
