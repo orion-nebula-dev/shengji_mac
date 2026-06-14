@@ -24,6 +24,9 @@ fn ensure_app_settings_columns(connection: &Connection) -> Result<(), String> {
         columns.push(column.map_err(|error| format!("读取设置字段失败: {error}"))?);
     }
 
+    let had_asr_submit_url = columns.iter().any(|column| column == "asr_submit_url");
+    let had_asr_query_url = columns.iter().any(|column| column == "asr_query_url");
+
     for (name, sql) in [
         (
             "asr_base_url",
@@ -97,20 +100,36 @@ fn ensure_app_settings_columns(connection: &Connection) -> Result<(), String> {
         }
     }
 
+    if !had_asr_query_url || !had_asr_submit_url {
+        connection
+            .execute(
+                r#"
+                UPDATE app_settings
+                SET
+                  asr_query_url = CASE
+                    WHEN ?1 = 1 AND asr_query_url = '' THEN asr_base_url
+                    ELSE asr_query_url
+                  END,
+                  asr_submit_url = CASE
+                    WHEN ?2 = 1 AND asr_submit_url = '' AND asr_base_url LIKE '%/query' THEN REPLACE(asr_base_url, '/query', '/submit')
+                    WHEN ?2 = 1 AND asr_submit_url = '' THEN asr_base_url
+                    ELSE asr_submit_url
+                  END
+                WHERE id = 'default'
+                "#,
+                params![
+                    if had_asr_query_url { 0 } else { 1 },
+                    if had_asr_submit_url { 0 } else { 1 },
+                ],
+            )
+            .map_err(|error| format!("迁移旧版 ASR URL 设置失败: {error}"))?;
+    }
+
     connection
         .execute(
             r#"
             UPDATE app_settings
             SET
-              asr_query_url = CASE
-                WHEN asr_query_url = '' THEN asr_base_url
-                ELSE asr_query_url
-              END,
-              asr_submit_url = CASE
-                WHEN asr_submit_url = '' AND asr_base_url LIKE '%/query' THEN REPLACE(asr_base_url, '/query', '/submit')
-                WHEN asr_submit_url = '' THEN asr_base_url
-                ELSE asr_submit_url
-              END,
               asr_resource_id = CASE
                 WHEN asr_resource_id = '' THEN asr_model_name
                 ELSE asr_resource_id
