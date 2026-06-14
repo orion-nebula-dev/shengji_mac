@@ -1017,7 +1017,11 @@ pub fn run() {
             commands::semantic::generate_mind_map,
             commands::semantic::update_mind_map_node,
             commands::semantic::toggle_mind_map_node,
-            commands::semantic::export_mind_map
+            commands::semantic::export_mind_map,
+            commands::semantic::generate_value_discovery,
+            commands::semantic::start_research_from_segment,
+            commands::semantic::convert_research_to_todo,
+            commands::semantic::add_research_to_mind_map
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1946,6 +1950,122 @@ mod tests {
                 .expect("应能导出 JSON 脑图");
         assert_eq!(json.format, "json");
         assert!(json.content.contains("\"nodes\""));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_generate_v09_moments_and_research_with_action_conversion() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "shengji-v09-value-discovery-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        let audio_path = temp_dir.join("sample-value-discovery.wav");
+        fs::write(&audio_path, b"fake wav bytes for value discovery")
+            .expect("应能准备本地音频文件");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        commands::transcript::import_local_audio_payload(
+            &db_path,
+            audio_path.to_string_lossy().as_ref(),
+        )
+        .expect("应能准备 v0.9 价值发现输入");
+        commands::semantic::generate_semantic_workbench_payload(&db_path)
+            .expect("应能先生成修正文稿和摘要");
+        commands::semantic::generate_mind_map_payload(&db_path)
+            .expect("应能先生成可追加节点的脑图");
+
+        let moment_artifact = commands::semantic::generate_value_discovery_payload(&db_path)
+            .expect("v0.9 应能生成 Moment artifact");
+        assert_eq!(moment_artifact.artifact_type, "moment");
+        assert_eq!(moment_artifact.schema_version, "v0.9");
+        let moments =
+            serde_json::from_str::<Vec<domain::artifact::MomentDto>>(
+                moment_artifact.payload_json.as_str(),
+            )
+            .expect("moment payload 应符合契约");
+        assert!(
+            (3..=10).contains(&moments.len()),
+            "Moment 数量应在 3-10 个之间，实际为 {}",
+            moments.len()
+        );
+        assert!(moments.iter().all(|moment| moment.start_ms <= moment.end_ms));
+        assert!(moments.iter().all(|moment| !moment.source_span_refs.is_empty()));
+        assert!(moments.iter().any(|moment| moment.moment_type == "decision"));
+        assert!(moments.iter().any(|moment| moment.moment_type == "risk"));
+
+        let workbench = commands::semantic::get_semantic_workbench_payload(&db_path)
+            .expect("v0.9 工作台应能读取 Moment 和研究草稿");
+        assert_eq!(workbench.moments.len(), moments.len());
+        assert!(!workbench.deep_research.is_empty(), "应生成研究草稿");
+        let auto_research = workbench
+            .deep_research
+            .first()
+            .expect("应存在自动研究草稿");
+        assert!(!auto_research.question.trim().is_empty());
+        assert!(!auto_research.background.trim().is_empty());
+        assert!(!auto_research.hypotheses.is_empty());
+        assert!(!auto_research.search_directions.is_empty());
+        assert!(!auto_research.next_steps.is_empty());
+
+        let source_revision = workbench
+            .revisions
+            .first()
+            .expect("应存在可发起研究的来源片段");
+        let research_artifact = commands::semantic::start_research_from_segment_payload(
+            &db_path,
+            domain::artifact::StartResearchFromSegmentCommand {
+                segment_id: source_revision.source_segment_id.clone(),
+                question: "这个风险是否会影响离线转写验收？".into(),
+            },
+        )
+        .expect("应能从转写片段发起研究");
+        assert_eq!(research_artifact.artifact_type, "deep_research");
+        let research =
+            serde_json::from_str::<domain::artifact::DeepResearchDraftDto>(
+                research_artifact.payload_json.as_str(),
+            )
+            .expect("deep_research payload 应符合契约");
+        assert!(research
+            .source_span_refs
+            .contains(&source_revision.source_segment_id));
+        assert!(research.question.contains("离线转写验收"));
+
+        let converted = commands::semantic::convert_research_to_todo_payload(
+            &db_path,
+            domain::artifact::ConvertResearchToTodoCommand {
+                artifact_id: research_artifact.id.clone(),
+                research_id: research.id.clone(),
+            },
+        )
+        .expect("研究草稿应能转为正式 Todo");
+        assert_eq!(converted.status, "open");
+        assert!(converted.title.contains("研究"));
+        assert!(converted
+            .source_span_refs
+            .contains(&source_revision.source_segment_id));
+
+        let mind_map_artifact = commands::semantic::add_research_to_mind_map_payload(
+            &db_path,
+            domain::artifact::AddResearchToMindMapCommand {
+                artifact_id: research_artifact.id.clone(),
+                research_id: research.id.clone(),
+            },
+        )
+        .expect("研究草稿应能转成脑图节点");
+        assert_eq!(mind_map_artifact.artifact_type, "mind_map");
+        let mind_map =
+            serde_json::from_str::<domain::artifact::MindMapDto>(
+                mind_map_artifact.payload_json.as_str(),
+            )
+            .expect("追加研究节点后的 mind_map payload 应符合契约");
+        assert!(mind_map.edited, "追加研究节点应生成编辑版脑图");
+        assert!(mind_map
+            .nodes
+            .iter()
+            .any(|node| node.kind == "research" && node.label.contains("研究")));
 
         let _ = fs::remove_dir_all(temp_dir);
     }
