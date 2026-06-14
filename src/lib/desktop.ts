@@ -12,20 +12,21 @@ export interface SettingsPayload {
   chunkSeconds: number;
   idleTriggerSeconds: number;
   providerMode: "cloud" | "local";
-  asrProviderType: "cloud" | "local";
-  todoProviderType: "cloud" | "embedded_local";
+  asrProviderType: "cloud_volc" | "local_whisperkit";
+  speakerProviderType: "local_speakerkit";
+  todoProviderType: "semantic_m3";
+  semanticProviderType: "minimax_m3";
+  embeddingProviderType: "reserved";
+  exportProviderType: "local_file";
   asrSubmitUrl: string;
   asrQueryUrl: string;
   asrResourceId: string;
   asrModelName: string;
   asrApiKeyMasked: string;
-  todoBaseUrl: string;
-  todoModelName: string;
-  todoApiKeyMasked: string;
-  localTodoModelVersion: string;
+  semanticBaseUrl: string;
+  semanticModelName: string;
+  semanticApiKeyMasked: string;
   allowCloudFallback: boolean;
-  localTodoRuntimeStatus: "not_ready" | "starting" | "ready" | "failed";
-  localTodoLastHealthCheckAt: string;
 }
 
 export interface TodoPayload {
@@ -65,6 +66,68 @@ export interface RuntimeStatusPayload {
   lastExtractionSummary: string;
 }
 
+export interface TranscriptAudioPayload {
+  id: string;
+  fileName: string;
+  durationMs: number;
+  status: string;
+  provider: string;
+  modelName: string;
+  offlineAvailable: boolean;
+}
+
+export interface SpeakerPayload {
+  id: string;
+  label: string;
+  displayName: string;
+  color: string;
+  segmentCount: number;
+  corrected: boolean;
+}
+
+export interface TranscriptSegmentPayload {
+  id: string;
+  audioSegmentId: string;
+  speakerId: string;
+  speakerLabel: string;
+  startMs: number;
+  endMs: number;
+  text: string;
+  confidence: number;
+  provider: string;
+  reviewStatus: "normal" | "flagged" | "corrected";
+  reviewReason: string;
+}
+
+export interface TranscriptJobPayload {
+  id: string;
+  audioSegmentId: string;
+  status: "queued" | "running" | "succeeded" | "failed" | "retrying";
+  retryCount: number;
+  maxRetryCount: number;
+  errorMessage: string;
+  provider: string;
+  modelName: string;
+}
+
+export interface LocalModelStatusPayload {
+  provider: string;
+  modelName: string;
+  cacheDir: string;
+  downloadStatus: "not_started" | "downloading" | "available" | "failed";
+  downloadProgress: number;
+  offlineAvailable: boolean;
+  deviceRecommendation: string;
+}
+
+export interface TranscriptReviewPayload {
+  audio: TranscriptAudioPayload;
+  segments: TranscriptSegmentPayload[];
+  speakers: SpeakerPayload[];
+  jobs: TranscriptJobPayload[];
+  modelStatus: LocalModelStatusPayload;
+}
+
 export interface RecordingActionPayload {
   message: string;
   runtime: RuntimeStatusPayload;
@@ -85,15 +148,6 @@ export interface ModelTestPayload {
   statusCode: number;
   message: string;
   responseExcerpt: string;
-}
-
-export interface LocalRuntimePayload {
-  providerType: "cloud" | "embedded_local";
-  modelVersion: string;
-  runtimeStatus: "not_ready" | "starting" | "ready" | "failed";
-  lastHealthCheckAt: string;
-  fallbackEnabled: boolean;
-  message: string;
 }
 
 export interface BootstrapDataPayload {
@@ -209,11 +263,62 @@ export async function processDesktopPendingJobs(): Promise<ProcessingActionPaylo
   return invoke<ProcessingActionPayload>("process_pending_jobs");
 }
 
-export async function getLocalTodoRuntimeStatus(): Promise<LocalRuntimePayload | null> {
+export async function loadTranscriptReview(): Promise<TranscriptReviewPayload | null> {
   if (!isTauriEnvironment()) {
     return null;
   }
 
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<LocalRuntimePayload>("get_local_todo_runtime_status");
+  return invoke<TranscriptReviewPayload>("get_transcript_review");
+}
+
+export async function importDesktopLocalAudio(
+  filePath: string,
+): Promise<TranscriptReviewPayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<TranscriptReviewPayload>("import_local_audio", { filePath });
+}
+
+export async function renameDesktopSpeaker(
+  speakerId: string,
+  label: string,
+): Promise<SpeakerPayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<SpeakerPayload>("rename_speaker", { speakerId, label });
+}
+
+export async function markDesktopTranscriptSegment(
+  segmentId: string,
+  issueType: string,
+  reason: string,
+): Promise<TranscriptSegmentPayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<TranscriptSegmentPayload>("mark_transcript_segment", {
+    segmentId,
+    issueType,
+    reason,
+  });
+}
+
+export async function retryDesktopTranscriptJob(
+  jobId: string,
+): Promise<TranscriptJobPayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<TranscriptJobPayload>("retry_transcript_job", { jobId });
 }
