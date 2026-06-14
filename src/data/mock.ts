@@ -6,6 +6,7 @@ import type {
   SettingsState,
   TodoCandidateItem,
   TodoItem,
+  TranslationArtifact,
   TranscriptReview,
 } from "../types";
 
@@ -250,6 +251,31 @@ export const defaultTranscriptReview: TranscriptReview = {
   },
 };
 
+export const defaultTranslationArtifact: TranslationArtifact = {
+  targetLanguage: "en-US",
+  transcriptTranslations: defaultTranscriptReview.segments.map((segment) => ({
+    sourceSegmentId: segment.id,
+    speakerLabel: segment.speakerLabel,
+    startMs: segment.startMs,
+    endMs: segment.endMs,
+    originalText: segment.text,
+    translatedText: `[en-US] ${segment.text}`,
+  })),
+  summaryTranslation: {
+    sourceArtifactType: "summary",
+    originalTitle: "转写修正后的会议摘要",
+    translatedTitle: "[en-US] 转写修正后的会议摘要",
+    originalBasis: "基于修正文稿生成，不直接消费原始 ASR 文本。",
+    translatedBasis: "[en-US] 基于修正文稿生成，不直接消费原始 ASR 文本。",
+    translatedBullets: [
+      "[en-US] 已完成本地转写评估，并将英文标签修正为中文表达。",
+      "[en-US] 说话人标签、时间跳转和错误片段复核是当前会议的重点。",
+      "[en-US] 后续语义处理可复用同一来源索引追溯到转写片段。",
+    ],
+  },
+  sourceSpanRefs: ["transcript_demo_001", "transcript_demo_002", "transcript_demo_003"],
+};
+
 export const defaultSemanticWorkbench: SemanticWorkbench = {
   sessionId: "semantic_session_audio_import_demo",
   recordingType: {
@@ -335,6 +361,7 @@ export const defaultSemanticWorkbench: SemanticWorkbench = {
       sourceSegmentIds: ["transcript_demo_002"],
     },
   ],
+  translations: [defaultTranslationArtifact],
   moments: [
     {
       id: "moment_1",
@@ -468,6 +495,18 @@ export const defaultSemanticWorkbench: SemanticWorkbench = {
     parentArtifactId: "",
   },
   artifacts: [
+    {
+      id: "semantic_demo_translation_en_us",
+      sessionId: "semantic_session_audio_import_demo",
+      artifactType: "translation",
+      status: "succeeded",
+      provider: "minimax_m3",
+      modelName: "MiniMax-M3",
+      schemaVersion: "v1.1",
+      sourceSpanRefs: defaultTranslationArtifact.sourceSpanRefs,
+      payloadJson: JSON.stringify(defaultTranslationArtifact),
+      errorMessage: "",
+    },
     {
       id: "semantic_demo_summary",
       sessionId: "semantic_session_audio_import_demo",

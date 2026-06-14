@@ -71,6 +71,43 @@ pub(crate) struct TodoCandidateDto {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct GenerateTranslationCommand {
+    pub(crate) target_language: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TranscriptTranslationDto {
+    pub(crate) source_segment_id: String,
+    pub(crate) speaker_label: String,
+    pub(crate) start_ms: i64,
+    pub(crate) end_ms: i64,
+    pub(crate) original_text: String,
+    pub(crate) translated_text: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SummaryTranslationDto {
+    pub(crate) source_artifact_type: String,
+    pub(crate) original_title: String,
+    pub(crate) translated_title: String,
+    pub(crate) original_basis: String,
+    pub(crate) translated_basis: String,
+    pub(crate) translated_bullets: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TranslationArtifactDto {
+    pub(crate) target_language: String,
+    pub(crate) transcript_translations: Vec<TranscriptTranslationDto>,
+    pub(crate) summary_translation: SummaryTranslationDto,
+    pub(crate) source_span_refs: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct MomentDto {
     pub(crate) id: String,
     pub(crate) title: String,
@@ -186,6 +223,7 @@ pub(crate) struct SemanticWorkbenchDto {
     pub(crate) summary: SummaryDto,
     pub(crate) meeting_minutes: MeetingMinutesDto,
     pub(crate) todo_candidates: Vec<TodoCandidateDto>,
+    pub(crate) translations: Vec<TranslationArtifactDto>,
     pub(crate) mind_map: Option<MindMapDto>,
     pub(crate) moments: Vec<MomentDto>,
     pub(crate) deep_research: Vec<DeepResearchDraftDto>,
