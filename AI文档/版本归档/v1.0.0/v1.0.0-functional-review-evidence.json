@@ -1,0 +1,26 @@
+{
+  "exportAssertions": {
+    "heading": true,
+    "markdown": true,
+    "srt": true,
+    "json": true,
+    "snapshot": true,
+    "privacy": true,
+    "artifactStatus": true
+  },
+  "archiveAssertions": {
+    "historyHeading": true,
+    "searchVisible": true
+  },
+  "settingsAssertions": {
+    "cost": true,
+    "localExportCost": true,
+    "keyStatus": true,
+    "privacyNote": true
+  },
+  "screenshots": {
+    "exportShot": "/Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/版本归档/v1.0.0/v1.0.0-functional-review-export.png",
+    "archiveShot": "/Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/版本归档/v1.0.0/v1.0.0-functional-review-archive.png",
+    "settingsShot": "/Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/版本归档/v1.0.0/v1.0.0-functional-review-settings.png"
+  }
+}
