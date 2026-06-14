@@ -5,17 +5,21 @@ use crate::{
     current_timestamp_label,
     domain::{
         artifact::{
+            AddResearchToMindMapCommand, ConvertResearchToTodoCommand, DeepResearchDraftDto,
             MeetingMinutesDto, MindMapDto, MindMapEdgeDto, MindMapExportDto, MindMapNodeDto,
-            ModelInvocationDto, RecordingTypeDto, SemanticArtifactDto, SemanticWorkbenchDto,
-            SummaryDto, TodoCandidateDto, ToggleMindMapNodeCommand, UpdateMindMapNodeCommand,
+            ModelInvocationDto, MomentDto, RecordingTypeDto, SemanticArtifactDto,
+            SemanticWorkbenchDto, StartResearchFromSegmentCommand, SummaryDto, TodoCandidateDto,
+            ToggleMindMapNodeCommand, UpdateMindMapNodeCommand,
         },
         correction::{CorrectionPatternDto, DeletedCorrectionPatternDto, TranscriptRevisionDto},
+        todo::TodoDto,
     },
     providers::semantic::minimax_m3,
 };
 
 const SEMANTIC_SCHEMA_VERSION: &str = "v0.6";
 const MIND_MAP_SCHEMA_VERSION: &str = "v0.8";
+const VALUE_DISCOVERY_SCHEMA_VERSION: &str = "v0.9";
 
 pub(crate) fn generate_semantic_workbench(
     connection: &Connection,
@@ -181,6 +185,12 @@ pub(crate) fn get_semantic_workbench(
         )
         .unwrap_or_default(),
         mind_map: latest_mind_map_payload(connection, &session_id)?,
+        moments: parse_artifact_payload::<Vec<MomentDto>>(artifacts.as_slice(), "moment")
+            .unwrap_or_default(),
+        deep_research: parse_all_artifact_payload::<DeepResearchDraftDto>(
+            artifacts.as_slice(),
+            "deep_research",
+        ),
         artifacts,
         model_invocations: query_model_invocations(connection)?,
     })
@@ -449,6 +459,266 @@ pub(crate) fn export_mind_map(
     }
 }
 
+pub(crate) fn generate_value_discovery(
+    connection: &Connection,
+) -> Result<SemanticArtifactDto, String> {
+    let session_id = latest_semantic_session_id(connection)
+        .filter(|candidate| !candidate.is_empty())
+        .ok_or_else(|| "暂无可生成价值发现的语义会话".to_string())?;
+    let artifacts = query_artifacts(connection, &session_id)?;
+    let revisions = parse_artifact_payload::<Vec<TranscriptRevisionDto>>(
+        artifacts.as_slice(),
+        "transcript_revision",
+    )
+    .unwrap_or_default();
+    if revisions.is_empty() {
+        return Err("暂无可用于价值发现的修正文稿".to_string());
+    }
+
+    let summary = parse_artifact_payload::<SummaryDto>(artifacts.as_slice(), "summary")
+        .unwrap_or_else(|| build_summary(&revisions));
+    let meeting_minutes = parse_artifact_payload::<MeetingMinutesDto>(
+        artifacts.as_slice(),
+        "meeting_minutes",
+    )
+    .unwrap_or_else(|| {
+        let source_segment_ids = revisions
+            .iter()
+            .map(|revision| revision.source_segment_id.clone())
+            .collect::<Vec<_>>();
+        build_meeting_minutes(&revisions, &source_segment_ids)
+    });
+    let moments = build_moments(&revisions, &meeting_minutes);
+    let moment_source_refs = moments
+        .iter()
+        .flat_map(|moment| moment.source_span_refs.clone())
+        .fold(Vec::<String>::new(), |mut refs, source| {
+            if !refs.iter().any(|candidate| candidate == &source) {
+                refs.push(source);
+            }
+            refs
+        });
+    let moment_payload = serde_json::to_string(&moments)
+        .map_err(|error| format!("序列化 Moment 产物失败: {error}"))?;
+    upsert_artifact_with_schema(
+        connection,
+        &session_id,
+        "moment",
+        "succeeded",
+        moment_source_refs.as_slice(),
+        moment_payload.as_str(),
+        "",
+        VALUE_DISCOVERY_SCHEMA_VERSION,
+    )?;
+
+    let research = build_deep_research_draft(
+        &session_id,
+        "auto",
+        "哪些风险和决策值得继续深入研究？",
+        &summary,
+        &meeting_minutes,
+        &revisions,
+    );
+    let research_payload = serde_json::to_string(&research)
+        .map_err(|error| format!("序列化研究草稿失败: {error}"))?;
+    upsert_artifact_with_schema(
+        connection,
+        &session_id,
+        "deep_research",
+        "succeeded",
+        research.source_span_refs.as_slice(),
+        research_payload.as_str(),
+        "",
+        VALUE_DISCOVERY_SCHEMA_VERSION,
+    )?;
+
+    insert_model_invocation(
+        connection,
+        &session_id,
+        "succeeded",
+        "基于修正文稿、纪要和来源索引生成 v0.9 Moment 与 Deep Research 草稿",
+        "生成 semantic_artifacts(type='moment' | 'deep_research')",
+        "",
+    )?;
+
+    query_artifact(connection, &session_id, "moment")
+}
+
+pub(crate) fn start_research_from_segment(
+    connection: &Connection,
+    command: StartResearchFromSegmentCommand,
+) -> Result<SemanticArtifactDto, String> {
+    let segment_id = command.segment_id.trim();
+    if segment_id.is_empty() {
+        return Err("请选择要研究的转写片段".to_string());
+    }
+    let session_id = latest_semantic_session_id(connection)
+        .filter(|candidate| !candidate.is_empty())
+        .ok_or_else(|| "暂无可发起研究的语义会话".to_string())?;
+    let artifacts = query_artifacts(connection, &session_id)?;
+    let revisions = parse_artifact_payload::<Vec<TranscriptRevisionDto>>(
+        artifacts.as_slice(),
+        "transcript_revision",
+    )
+    .unwrap_or_default();
+    let source_revision = revisions
+        .iter()
+        .find(|revision| revision.source_segment_id == segment_id)
+        .ok_or_else(|| "未找到对应转写片段".to_string())?;
+    let summary = parse_artifact_payload::<SummaryDto>(artifacts.as_slice(), "summary")
+        .unwrap_or_else(|| build_summary(&revisions));
+    let source_segment_ids = revisions
+        .iter()
+        .map(|revision| revision.source_segment_id.clone())
+        .collect::<Vec<_>>();
+    let meeting_minutes = parse_artifact_payload::<MeetingMinutesDto>(
+        artifacts.as_slice(),
+        "meeting_minutes",
+    )
+    .unwrap_or_else(|| build_meeting_minutes(&revisions, &source_segment_ids));
+    let question = if command.question.trim().is_empty() {
+        format!("片段“{}”是否需要继续研究？", source_revision.revised_text)
+    } else {
+        command.question.trim().to_string()
+    };
+    let mut research = build_deep_research_draft(
+        &session_id,
+        segment_id,
+        question.as_str(),
+        &summary,
+        &meeting_minutes,
+        std::slice::from_ref(source_revision),
+    );
+    research.source_span_refs = vec![source_revision.source_segment_id.clone()];
+    research.background = format!(
+        "来自 {} {}-{}ms：{}",
+        source_revision.speaker_label,
+        source_revision.start_ms,
+        source_revision.end_ms,
+        source_revision.revised_text
+    );
+    let payload_json = serde_json::to_string(&research)
+        .map_err(|error| format!("序列化片段研究草稿失败: {error}"))?;
+    let artifact_id = next_research_artifact_id(connection, &session_id)?;
+    insert_artifact_with_id(
+        connection,
+        &artifact_id,
+        &session_id,
+        "deep_research",
+        "succeeded",
+        research.source_span_refs.as_slice(),
+        payload_json.as_str(),
+        "",
+        VALUE_DISCOVERY_SCHEMA_VERSION,
+    )?;
+    insert_model_invocation(
+        connection,
+        &session_id,
+        "succeeded",
+        "从单个转写片段发起 v0.9 Deep Research 草稿",
+        "生成 semantic_artifacts(type='deep_research')",
+        "",
+    )?;
+    query_artifact_by_id(connection, &artifact_id)
+}
+
+pub(crate) fn convert_research_to_todo(
+    connection: &Connection,
+    command: ConvertResearchToTodoCommand,
+) -> Result<TodoDto, String> {
+    let artifact = query_artifact_by_id(connection, command.artifact_id.as_str())?;
+    let research = parse_research_from_artifact(&artifact, command.research_id.as_str())?;
+    let dedup_key = format!("research_todo_{}_{}", artifact.session_id, research.id);
+    if let Some(existing) = existing_todo_by_dedup_key(connection, dedup_key.as_str())? {
+        return Ok(existing);
+    }
+
+    let todo_id = format!("todo_v09_{}", current_timestamp_label());
+    let source_refs_json =
+        serde_json::to_string(&research.source_span_refs).unwrap_or_else(|_| "[]".to_string());
+    connection
+        .execute(
+            r#"
+            INSERT INTO todos (
+              id,
+              conversation_session_id,
+              title,
+              note,
+              status,
+              created_at,
+              source_text,
+              extraction_model_name,
+              trace_id,
+              updated_at,
+              owner,
+              due_at,
+              priority,
+              source_span_refs,
+              candidate_id,
+              dedup_key
+            ) VALUES (?1, ?2, ?3, ?4, 'open', CURRENT_TIMESTAMP, ?5, ?6, ?7, CURRENT_TIMESTAMP, '', '', 'medium', ?8, ?9, ?10)
+            "#,
+            params![
+                todo_id,
+                artifact.session_id,
+                format!("研究：{}", research.question),
+                research.next_steps.join("；"),
+                research.background,
+                minimax_m3::DEFAULT_MODEL_NAME,
+                format!("trace_{}_research_todo", research.id),
+                source_refs_json,
+                research.id,
+                dedup_key,
+            ],
+        )
+        .map_err(|error| format!("研究草稿转 Todo 失败: {error}"))?;
+
+    let mut updated_research = research;
+    updated_research.converted_todo_id = todo_id.clone();
+    update_research_artifact_payload(connection, &artifact, &updated_research)?;
+    query_todo_by_id(connection, todo_id.as_str())
+}
+
+pub(crate) fn add_research_to_mind_map(
+    connection: &Connection,
+    command: AddResearchToMindMapCommand,
+) -> Result<SemanticArtifactDto, String> {
+    let research_artifact = query_artifact_by_id(connection, command.artifact_id.as_str())?;
+    let mut research =
+        parse_research_from_artifact(&research_artifact, command.research_id.as_str())?;
+    let latest_mind_map = latest_mind_map_artifact(connection, &research_artifact.session_id)?
+        .ok_or_else(|| "暂无可追加研究节点的脑图".to_string())?;
+    let mut mind_map = parse_mind_map_artifact(&latest_mind_map)?;
+    let node_id = format!("research_{}", sanitize_identifier(research.id.as_str()));
+    if !mind_map.nodes.iter().any(|node| node.id == node_id) {
+        mind_map.nodes.push(MindMapNodeDto {
+            id: node_id.clone(),
+            label: format!("研究：{}", research.question),
+            kind: "research".into(),
+            note: research.next_steps.join("；"),
+            source_span_refs: research.source_span_refs.clone(),
+            collapsed: false,
+        });
+        mind_map.edges.push(MindMapEdgeDto {
+            id: format!("edge_root_{node_id}"),
+            from: mind_map.root.clone(),
+            to: node_id.clone(),
+            label: "研究".into(),
+        });
+    }
+    for source in &research.source_span_refs {
+        if !mind_map.source_spans.iter().any(|candidate| candidate == source) {
+            mind_map.source_spans.push(source.clone());
+        }
+    }
+    mind_map.edited = true;
+    mind_map.version += 1;
+    mind_map.parent_artifact_id = latest_mind_map.id.clone();
+    research.mind_map_node_id = node_id;
+    update_research_artifact_payload(connection, &research_artifact, &research)?;
+    insert_edited_mind_map(connection, &latest_mind_map, &mind_map)
+}
+
 fn build_summary(revisions: &[TranscriptRevisionDto]) -> SummaryDto {
     let source_segment_ids = revisions
         .iter()
@@ -500,6 +770,144 @@ fn build_todo_candidates(revisions: &[TranscriptRevisionDto]) -> Vec<TodoCandida
         confidence: 0.82,
         source_segment_ids,
     }]
+}
+
+fn build_moments(
+    revisions: &[TranscriptRevisionDto],
+    meeting_minutes: &MeetingMinutesDto,
+) -> Vec<MomentDto> {
+    let fallback = revisions.first();
+    let mut moments = Vec::new();
+    let patterns = [
+        (
+            "key_point",
+            "关键观点",
+            "修正文稿已经形成稳定语义输入，可继续承载摘要、Todo 和脑图。",
+            "可作为后续价值发现的主线素材。",
+            0.86,
+        ),
+        (
+            "decision",
+            "决策点",
+            meeting_minutes
+                .decisions
+                .first()
+                .map(String::as_str)
+                .unwrap_or("使用修正文稿作为后续语义产物的默认输入。"),
+            "可转为执行检查项。",
+            0.9,
+        ),
+        (
+            "risk",
+            "风险信号",
+            meeting_minutes
+                .risks
+                .first()
+                .map(String::as_str)
+                .unwrap_or("真实模型推理和来源追溯仍需要验证。"),
+            "建议进入 Deep Research 草稿继续拆解。",
+            0.88,
+        ),
+        (
+            "disagreement",
+            "分歧点",
+            meeting_minutes
+                .open_questions
+                .first()
+                .map(String::as_str)
+                .unwrap_or("低置信度修正是否自动套用仍待确认。"),
+            "需要补充判断标准并明确责任人。",
+            0.8,
+        ),
+        (
+            "highlight",
+            "高价值片段",
+            "说话人标签、时间跳转和错误片段复核可形成可复用工作流。",
+            "可沉淀为脑图节点或版本验收项。",
+            0.84,
+        ),
+    ];
+
+    for (index, (moment_type, title, summary, action_hint, importance)) in
+        patterns.into_iter().enumerate()
+    {
+        let revision = revisions.get(index).or(fallback);
+        let (start_ms, end_ms, source_span_refs) = revision
+            .map(|revision| {
+                (
+                    revision.start_ms,
+                    revision.end_ms,
+                    vec![revision.source_segment_id.clone()],
+                )
+            })
+            .unwrap_or((0, 0, meeting_minutes.source_segment_ids.clone()));
+        moments.push(MomentDto {
+            id: format!("moment_{}", index + 1),
+            title: title.into(),
+            moment_type: moment_type.into(),
+            summary: summary.into(),
+            importance,
+            start_ms,
+            end_ms,
+            source_span_refs,
+            action_hint: action_hint.into(),
+        });
+    }
+
+    moments
+}
+
+fn build_deep_research_draft(
+    session_id: &str,
+    source_key: &str,
+    question: &str,
+    summary: &SummaryDto,
+    meeting_minutes: &MeetingMinutesDto,
+    revisions: &[TranscriptRevisionDto],
+) -> DeepResearchDraftDto {
+    let mut source_span_refs = revisions
+        .iter()
+        .map(|revision| revision.source_segment_id.clone())
+        .collect::<Vec<_>>();
+    if source_span_refs.is_empty() {
+        source_span_refs = summary.source_segment_ids.clone();
+    }
+    if source_span_refs.is_empty() {
+        source_span_refs = meeting_minutes.source_segment_ids.clone();
+    }
+    DeepResearchDraftDto {
+        id: format!(
+            "research_{}_{}",
+            sanitize_identifier(session_id),
+            sanitize_identifier(source_key)
+        ),
+        question: question.into(),
+        background: format!(
+            "{}；{}",
+            summary.basis,
+            summary
+                .bullets
+                .first()
+                .map(String::as_str)
+                .unwrap_or("暂无额外摘要背景")
+        ),
+        hypotheses: vec![
+            "风险来自真实模型接入、转写质量和来源追溯之间的耦合。".into(),
+            "如果先固化片段来源和验收证据，可以降低后续产品化返工。".into(),
+        ],
+        search_directions: vec![
+            "复查同会话中的低置信度修正与失败任务日志。".into(),
+            "对照 MiniMax M3 语义产物的来源片段覆盖率。".into(),
+            "整理可转为 Todo 或脑图节点的执行项。".into(),
+        ],
+        next_steps: vec![
+            "确认最高风险片段的责任人与复核口径。".into(),
+            "把可执行研究结论转为 Todo 并绑定来源片段。".into(),
+        ],
+        source_span_refs,
+        converted_todo_id: String::new(),
+        mind_map_node_id: String::new(),
+    }
 }
 
 fn build_mind_map(
@@ -732,6 +1140,63 @@ fn upsert_artifact(
     Ok(())
 }
 
+fn upsert_artifact_with_schema(
+    connection: &Connection,
+    session_id: &str,
+    artifact_type: &str,
+    status: &str,
+    source_span_refs: &[String],
+    payload_json: &str,
+    error_message: &str,
+    schema_version: &str,
+) -> Result<(), String> {
+    let artifact_id = format!("semantic_{}_{}", session_id, artifact_type);
+    let source_refs_json =
+        serde_json::to_string(source_span_refs).unwrap_or_else(|_| "[]".to_string());
+    connection
+        .execute(
+            r#"
+            INSERT INTO semantic_artifacts (
+              id,
+              session_id,
+              artifact_type,
+              status,
+              provider,
+              model_name,
+              schema_version,
+              source_span_refs,
+              payload_json,
+              error_message,
+              created_at,
+              updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT(id) DO UPDATE SET
+              status = excluded.status,
+              provider = excluded.provider,
+              model_name = excluded.model_name,
+              schema_version = excluded.schema_version,
+              source_span_refs = excluded.source_span_refs,
+              payload_json = excluded.payload_json,
+              error_message = excluded.error_message,
+              updated_at = CURRENT_TIMESTAMP
+            "#,
+            params![
+                artifact_id,
+                session_id,
+                artifact_type,
+                status,
+                minimax_m3::PROVIDER_ID,
+                minimax_m3::DEFAULT_MODEL_NAME,
+                schema_version,
+                source_refs_json,
+                payload_json,
+                error_message,
+            ],
+        )
+        .map_err(|error| format!("写入语义产物失败: {error}"))?;
+    Ok(())
+}
+
 fn insert_artifact_with_id(
     connection: &Connection,
     artifact_id: &str,
@@ -788,7 +1253,7 @@ fn insert_model_invocation(
     response_summary: &str,
     error_message: &str,
 ) -> Result<ModelInvocationDto, String> {
-    let invocation_id = transcript_revision_service::next_invocation_id(session_id);
+    let invocation_id = next_model_invocation_id(connection, session_id)?;
     connection
         .execute(
             r#"
@@ -836,6 +1301,17 @@ fn insert_model_invocation(
     })
 }
 
+fn next_model_invocation_id(connection: &Connection, session_id: &str) -> Result<String, String> {
+    let count = connection
+        .query_row(
+            "SELECT COUNT(1) FROM model_invocations WHERE id LIKE ?1",
+            params![format!("model_invocation_{}_%", session_id)],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| format!("计算模型调用序号失败: {error}"))?;
+    Ok(format!("model_invocation_{}_v{}", session_id, count + 1))
+}
+
 fn latest_semantic_session_id(connection: &Connection) -> Option<String> {
     connection
         .query_row(
@@ -875,7 +1351,6 @@ fn query_artifacts(
         .map_err(|error| format!("读取语义产物失败: {error}"))
 }
 
-#[cfg(test)]
 fn query_artifact(
     connection: &Connection,
     session_id: &str,
@@ -970,6 +1445,17 @@ fn parse_artifact_payload<T: serde::de::DeserializeOwned>(
         .and_then(|artifact| serde_json::from_str::<T>(artifact.payload_json.as_str()).ok())
 }
 
+fn parse_all_artifact_payload<T: serde::de::DeserializeOwned>(
+    artifacts: &[SemanticArtifactDto],
+    artifact_type: &str,
+) -> Vec<T> {
+    artifacts
+        .iter()
+        .filter(|artifact| artifact.artifact_type == artifact_type && artifact.status == "succeeded")
+        .filter_map(|artifact| serde_json::from_str::<T>(artifact.payload_json.as_str()).ok())
+        .collect()
+}
+
 fn latest_mind_map_payload(
     connection: &Connection,
     session_id: &str,
@@ -1000,6 +1486,143 @@ fn latest_mind_map_payload(
             .map_err(|error| format!("读取最新脑图失败: {error}")),
         None => Ok(None),
     }
+}
+
+fn latest_mind_map_artifact(
+    connection: &Connection,
+    session_id: &str,
+) -> Result<Option<SemanticArtifactDto>, String> {
+    connection
+        .query_row(
+            r#"
+            SELECT id, session_id, artifact_type, status, provider, model_name, schema_version, source_span_refs, payload_json, error_message
+            FROM semantic_artifacts
+            WHERE session_id = ?1
+              AND artifact_type = 'mind_map'
+              AND status = 'succeeded'
+            ORDER BY datetime(created_at) DESC, id DESC
+            LIMIT 1
+            "#,
+            params![session_id],
+            |row| artifact_from_row(row),
+        )
+        .optional()
+        .map_err(|error| format!("查询最新脑图失败: {error}"))
+}
+
+fn next_research_artifact_id(connection: &Connection, session_id: &str) -> Result<String, String> {
+    let count = connection
+        .query_row(
+            "SELECT COUNT(1) FROM semantic_artifacts WHERE session_id = ?1 AND artifact_type = 'deep_research'",
+            params![session_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| format!("计算研究草稿版本失败: {error}"))?;
+    Ok(format!("semantic_{}_deep_research_v{}", session_id, count + 1))
+}
+
+fn parse_research_from_artifact(
+    artifact: &SemanticArtifactDto,
+    research_id: &str,
+) -> Result<DeepResearchDraftDto, String> {
+    if artifact.artifact_type != "deep_research" {
+        return Err("该语义产物不是研究草稿".to_string());
+    }
+    let research = serde_json::from_str::<DeepResearchDraftDto>(artifact.payload_json.as_str())
+        .map_err(|error| format!("解析研究草稿失败: {error}"))?;
+    if research.id != research_id {
+        return Err("研究草稿 ID 与产物不匹配".to_string());
+    }
+    Ok(research)
+}
+
+fn update_research_artifact_payload(
+    connection: &Connection,
+    artifact: &SemanticArtifactDto,
+    research: &DeepResearchDraftDto,
+) -> Result<(), String> {
+    let payload_json = serde_json::to_string(research)
+        .map_err(|error| format!("序列化研究草稿状态失败: {error}"))?;
+    let source_refs_json =
+        serde_json::to_string(&research.source_span_refs).unwrap_or_else(|_| "[]".to_string());
+    connection
+        .execute(
+            r#"
+            UPDATE semantic_artifacts
+            SET payload_json = ?1,
+                source_span_refs = ?2,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?3
+            "#,
+            params![payload_json, source_refs_json, artifact.id],
+        )
+        .map_err(|error| format!("更新研究草稿状态失败: {error}"))?;
+    Ok(())
+}
+
+fn existing_todo_by_dedup_key(
+    connection: &Connection,
+    dedup_key: &str,
+) -> Result<Option<TodoDto>, String> {
+    let todo_id = connection
+        .query_row(
+            "SELECT id FROM todos WHERE dedup_key = ?1 LIMIT 1",
+            params![dedup_key],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| format!("查询研究 Todo 去重失败: {error}"))?;
+    match todo_id {
+        Some(todo_id) => query_todo_by_id(connection, todo_id.as_str()).map(Some),
+        None => Ok(None),
+    }
+}
+
+fn query_todo_by_id(connection: &Connection, todo_id: &str) -> Result<TodoDto, String> {
+    connection
+        .query_row(
+            r#"
+            SELECT id, title, note, status, created_at, conversation_session_id, source_text, owner, due_at, priority, source_span_refs, candidate_id
+            FROM todos
+            WHERE id = ?1
+            "#,
+            params![todo_id],
+            |row| {
+                let source_refs_json: String = row.get(10)?;
+                Ok(TodoDto {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    note: row.get(2)?,
+                    status: row.get(3)?,
+                    created_at: row.get(4)?,
+                    conversation_session_id: row.get(5)?,
+                    source_text: row.get(6)?,
+                    owner: row.get(7)?,
+                    due_at: row.get(8)?,
+                    priority: row.get(9)?,
+                    source_span_refs: serde_json::from_str::<Vec<String>>(
+                        source_refs_json.as_str(),
+                    )
+                    .unwrap_or_default(),
+                    candidate_id: row.get(11)?,
+                })
+            },
+        )
+        .map_err(|error| format!("读取研究 Todo 失败: {error}"))
+}
+
+fn sanitize_identifier(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '_' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    sanitized.trim_matches('_').to_string()
 }
 
 fn default_recording_type() -> RecordingTypeDto {

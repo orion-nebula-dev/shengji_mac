@@ -243,6 +243,30 @@ export interface TodoCandidate {
   sourceSegmentIds: string[];
 }
 
+export interface MomentArtifact {
+  id: string;
+  title: string;
+  momentType: "key_point" | "decision" | "disagreement" | "risk" | "highlight" | string;
+  summary: string;
+  importance: number;
+  startMs: number;
+  endMs: number;
+  sourceSpanRefs: string[];
+  actionHint: string;
+}
+
+export interface DeepResearchDraft {
+  id: string;
+  question: string;
+  background: string;
+  hypotheses: string[];
+  searchDirections: string[];
+  nextSteps: string[];
+  sourceSpanRefs: string[];
+  convertedTodoId: string;
+  mindMapNodeId: string;
+}
+
 export interface MindMapNode {
   id: string;
   label: string;
@@ -285,6 +309,8 @@ export interface SemanticWorkbench {
   meetingMinutes: MeetingMinutes;
   todoCandidates: TodoCandidate[];
   mindMap: MindMapArtifact | null;
+  moments: MomentArtifact[];
+  deepResearch: DeepResearchDraft[];
   artifacts: SemanticArtifact[];
   modelInvocations: ModelInvocation[];
 }
