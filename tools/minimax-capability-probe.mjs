@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const DEFAULT_API_BASE = "https://api.minimax.io/v1";
+export const DEFAULT_API_BASE = "https://api.minimaxi.com/v1";
 const DEFAULT_DOCS_INDEX = "https://platform.minimax.io/docs/llms.txt";
 const DEFAULT_OPENAPI_URL =
   "https://platform.minimax.io/docs/zh/api-reference/openapi.json";
@@ -206,7 +206,7 @@ async function probeModels(context) {
     const response = await requestJson(`${trimSlash(context.apiBase)}/models`, {
       headers: authHeaders(context.apiKey),
     });
-    result.ok = response.ok;
+    result.ok = isSuccessfulMiniMaxResponse(response);
     result.status = response.status;
     result.summary = summarizeModels(response.body);
     result.response = response.body;
@@ -219,7 +219,9 @@ async function probeModels(context) {
 
 async function probeChat(context) {
   const model = context.flags.model || "MiniMax-M3";
-  const result = makeResult("chat", `POST /v1/chat/completions with ${model}`);
+  const endpoint =
+    context.flags.chatEndpoint || `${trimSlash(context.apiBase)}/chat/completions`;
+  const result = makeResult("chat", `POST ${endpoint} with ${model}`);
 
   if (!context.apiKey) {
     result.skipped = true;
@@ -228,7 +230,7 @@ async function probeChat(context) {
   }
 
   try {
-    const response = await requestJson(`${trimSlash(context.apiBase)}/chat/completions`, {
+    const response = await requestJson(endpoint, {
       method: "POST",
       headers: {
         ...authHeaders(context.apiKey),
@@ -247,11 +249,13 @@ async function probeChat(context) {
       }),
     });
 
-    result.ok = response.ok;
+    result.ok = isSuccessfulMiniMaxResponse(response);
     result.status = response.status;
     result.summary = {
+      endpoint,
       model,
       content: extractChatContent(response.body),
+      baseResp: response.body?.base_resp,
       usage: response.body?.usage,
     };
     result.response = response.body;
@@ -301,7 +305,7 @@ async function probeTts(context) {
       }),
     });
 
-    result.ok = response.ok;
+    result.ok = isSuccessfulMiniMaxResponse(response);
     result.status = response.status;
     result.summary = {
       model,
@@ -365,14 +369,14 @@ async function probeAsr(context) {
       const attempt = {
         model,
         status: response.status,
-        ok: response.ok,
+        ok: isSuccessfulMiniMaxResponse(response),
         durationMs: Date.now() - startedAt,
         summary: summarizeAsrResponse(response.body),
         response: response.body,
       };
       result.attempts.push(attempt);
 
-      if (response.ok) {
+      if (attempt.ok) {
         result.ok = true;
         result.status = response.status;
         break;
@@ -427,6 +431,23 @@ function makeResult(name, title) {
     ok: false,
     skipped: false,
   };
+}
+
+export function isSuccessfulMiniMaxResponse(response) {
+  if (!response?.ok) {
+    return false;
+  }
+
+  const baseResp = response.body?.base_resp;
+  if (baseResp && Number(baseResp.status_code ?? 0) !== 0) {
+    return false;
+  }
+
+  if (response.body?.error) {
+    return false;
+  }
+
+  return true;
 }
 
 function authHeaders(apiKey) {
@@ -509,7 +530,7 @@ Usage:
 Commands:
   docs    Check official docs index and OpenAPI paths for ASR/STT evidence.
   models  Call GET /v1/models.
-  chat    Validate MiniMax-M3 semantic/chat access.
+  chat    Validate MiniMax-M3 semantic/chat access through OpenAI-compatible /v1/chat/completions.
   tts     Validate Speech 2.x text-to-speech. This may incur a small cost.
   asr     Probe /v1/audio/transcriptions. This is not official docs-confirmed.
   all     Run docs + models + chat. Add --audio to also probe ASR.
@@ -525,6 +546,7 @@ Useful flags:
   --asr-models speech-2.8-turbo,speech-2.8-hd,MiniMax-M3
   --asr-endpoint https://api.minimax.io/v1/audio/transcriptions
   --model MiniMax-M3
+  --chat-endpoint https://api.minimaxi.com/v1/chat/completions
   --tts-model speech-2.8-turbo
   --voice-id English_expressive_narrator
 `);
