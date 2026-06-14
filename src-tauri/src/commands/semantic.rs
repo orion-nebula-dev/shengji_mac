@@ -4,10 +4,12 @@ use crate::{
     app::semantic_service,
     domain::{
         artifact::{
-            MindMapExportDto, SemanticArtifactDto, SemanticWorkbenchDto,
+            AddResearchToMindMapCommand, ConvertResearchToTodoCommand, MindMapExportDto,
+            SemanticArtifactDto, SemanticWorkbenchDto, StartResearchFromSegmentCommand,
             ToggleMindMapNodeCommand, UpdateMindMapNodeCommand,
         },
         correction::{CorrectionPatternDto, DeletedCorrectionPatternDto, TranscriptRevisionDto},
+        todo::TodoDto,
     },
     infra::sqlite::open_connection,
     AppState,
@@ -102,6 +104,37 @@ pub(crate) fn export_mind_map_payload(
     semantic_service::export_mind_map(&connection, artifact_id, format)
 }
 
+pub(crate) fn generate_value_discovery_payload(
+    db_path: &PathBuf,
+) -> Result<SemanticArtifactDto, String> {
+    let connection = open_connection(db_path)?;
+    semantic_service::generate_value_discovery(&connection)
+}
+
+pub(crate) fn start_research_from_segment_payload(
+    db_path: &PathBuf,
+    command: StartResearchFromSegmentCommand,
+) -> Result<SemanticArtifactDto, String> {
+    let connection = open_connection(db_path)?;
+    semantic_service::start_research_from_segment(&connection, command)
+}
+
+pub(crate) fn convert_research_to_todo_payload(
+    db_path: &PathBuf,
+    command: ConvertResearchToTodoCommand,
+) -> Result<TodoDto, String> {
+    let connection = open_connection(db_path)?;
+    semantic_service::convert_research_to_todo(&connection, command)
+}
+
+pub(crate) fn add_research_to_mind_map_payload(
+    db_path: &PathBuf,
+    command: AddResearchToMindMapCommand,
+) -> Result<SemanticArtifactDto, String> {
+    let connection = open_connection(db_path)?;
+    semantic_service::add_research_to_mind_map(&connection, command)
+}
+
 #[tauri::command]
 pub(crate) fn generate_semantic_workbench(
     state: tauri::State<'_, AppState>,
@@ -179,4 +212,35 @@ pub(crate) fn export_mind_map(
     state: tauri::State<'_, AppState>,
 ) -> Result<MindMapExportDto, String> {
     export_mind_map_payload(&state.db_path, &artifact_id, &format)
+}
+
+#[tauri::command]
+pub(crate) fn generate_value_discovery(
+    state: tauri::State<'_, AppState>,
+) -> Result<SemanticArtifactDto, String> {
+    generate_value_discovery_payload(&state.db_path)
+}
+
+#[tauri::command]
+pub(crate) fn start_research_from_segment(
+    command: StartResearchFromSegmentCommand,
+    state: tauri::State<'_, AppState>,
+) -> Result<SemanticArtifactDto, String> {
+    start_research_from_segment_payload(&state.db_path, command)
+}
+
+#[tauri::command]
+pub(crate) fn convert_research_to_todo(
+    command: ConvertResearchToTodoCommand,
+    state: tauri::State<'_, AppState>,
+) -> Result<TodoDto, String> {
+    convert_research_to_todo_payload(&state.db_path, command)
+}
+
+#[tauri::command]
+pub(crate) fn add_research_to_mind_map(
+    command: AddResearchToMindMapCommand,
+    state: tauri::State<'_, AppState>,
+) -> Result<SemanticArtifactDto, String> {
+    add_research_to_mind_map_payload(&state.db_path, command)
 }
