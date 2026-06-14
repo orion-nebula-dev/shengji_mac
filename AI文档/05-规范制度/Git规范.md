@@ -106,6 +106,32 @@ git pull origin dev
 git checkout -b feature-v0.16.0-feature-name
 ```
 
+补充要求：
+
+1. `main` 不是日常开发入口；日常开发默认从最新 `dev` 开始。
+2. 新建工作分支后，首次提交完成即推到 GitHub，避免长期只存在本地。
+3. 功能开发默认发起 `feature-* -> dev` 的 PR，不直接向 `main` 发起功能 PR。
+
+推荐命令：
+
+```bash
+git fetch origin
+git switch dev
+git pull --ff-only origin dev
+git switch -c feature-vX.Y.Z-feature-name
+git push -u origin feature-vX.Y.Z-feature-name
+```
+
+如果当前已经停在 `main`，标准回切方式是：
+
+```bash
+git switch dev
+git pull --ff-only origin dev
+git switch -c feature-vX.Y.Z-feature-name
+```
+
+只有在发布合并、打 tag、核对正式发布状态时，才切回 `main`。
+
 ### 4.2 开发中
 
 规则：
@@ -119,10 +145,11 @@ git checkout -b feature-v0.16.0-feature-name
 
 1. 自测通过
 2. 确认工作区干净
-3. 发起合版本流程
-4. 合并到 `main`
-5. 发布版本时打 tag
-6. 删除已合并临时分支
+3. 将当前工作分支 push 到 GitHub
+4. 发起指向 `dev` 的 PR
+5. 进入合版本流程并按晋升链路逐级合入
+6. 发布版本时在 `main` 合并提交上打 tag
+7. 删除已合并临时分支
 
 ### 4.4 合版本流程
 

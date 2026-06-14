@@ -16,6 +16,42 @@ applyTo: "**/*"
 4. 晋升链路为 `feature-* / hotfix-* -> dev -> test -> main`。
 5. `codex/*` 仅作为历史兼容命名，不是本项目推荐命名。
 
+## 日常开发流
+
+默认开发流：
+
+```text
+dev -> feature-* / hotfix-* -> push origin -> GitHub PR -> dev -> test -> main
+```
+
+要求：
+
+1. 日常开发前先切到最新 `dev`，不要以 `main` 作为日常开发入口。
+2. 新任务必须从 `dev` 拉出 `feature-*` 或 `hotfix-*`。
+3. 本地 commit 后必须尽快 `git push -u origin <branch>`，不要长期只保留本地分支。
+4. 功能 PR 默认目标分支为 `dev`，不得直接把工作分支 PR 到 `main`。
+5. `main` 只用于发布合并、tag、发布后核对，不用于日常功能开发。
+
+建议命令：
+
+```bash
+git fetch origin
+git switch dev
+git pull --ff-only origin dev
+git switch -c feature-vX.Y.Z-topic
+git push -u origin feature-vX.Y.Z-topic
+```
+
+如果当前人在 `main`：
+
+```bash
+git switch dev
+git pull --ff-only origin dev
+git switch -c feature-vX.Y.Z-topic
+```
+
+只有在准备发布、核对发布结果、或需要查看 `main` 正式状态时，才切回 `main`。
+
 ## Commit 规范
 
 格式：
