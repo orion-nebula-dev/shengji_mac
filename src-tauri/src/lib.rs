@@ -1013,7 +1013,11 @@ pub fn run() {
             commands::semantic::set_correction_pattern_enabled,
             commands::semantic::delete_correction_pattern,
             commands::semantic::retry_semantic_artifact,
-            commands::semantic::reject_transcript_revision
+            commands::semantic::reject_transcript_revision,
+            commands::semantic::generate_mind_map,
+            commands::semantic::update_mind_map_node,
+            commands::semantic::toggle_mind_map_node,
+            commands::semantic::export_mind_map
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1842,6 +1846,106 @@ mod tests {
         .expect("失败语义产物应提供重试入口");
         assert_eq!(retried.status, "pending");
         assert!(retried.error_message.is_empty());
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_generate_edit_and_export_v08_mind_map_without_overwriting_edits() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "shengji-v08-mind-map-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        let audio_path = temp_dir.join("sample-mind-map.wav");
+        fs::write(&audio_path, b"fake wav bytes for mind map")
+            .expect("应能准备本地音频文件");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        commands::transcript::import_local_audio_payload(
+            &db_path,
+            audio_path.to_string_lossy().as_ref(),
+        )
+        .expect("应能准备 v0.8 脑图输入");
+        commands::semantic::generate_semantic_workbench_payload(&db_path)
+            .expect("应能先生成修正文稿和摘要");
+
+        let generated = commands::semantic::generate_mind_map_payload(&db_path)
+            .expect("v0.8 应能生成 mind_map artifact");
+        assert_eq!(generated.artifact_type, "mind_map");
+        assert_eq!(generated.schema_version, "v0.8");
+        assert_eq!(generated.status, "succeeded");
+
+        let parsed =
+            serde_json::from_str::<domain::artifact::MindMapDto>(generated.payload_json.as_str())
+                .expect("mind_map payload 应符合契约");
+        assert_eq!(parsed.root, "root");
+        assert!(!parsed.nodes.is_empty(), "脑图应至少包含根节点和主题节点");
+        assert!(parsed
+            .nodes
+            .iter()
+            .any(|node| !node.source_span_refs.is_empty()));
+        assert!(parsed.summary.contains("修正文稿") || parsed.summary.contains("摘要"));
+        assert!(!parsed.edited);
+
+        let editable_node = parsed
+            .nodes
+            .iter()
+            .find(|node| node.id != parsed.root)
+            .expect("应存在可编辑节点");
+        let edited = commands::semantic::update_mind_map_node_payload(
+            &db_path,
+            domain::artifact::UpdateMindMapNodeCommand {
+                artifact_id: generated.id.clone(),
+                node_id: editable_node.id.clone(),
+                label: "复核说话人标签和时间跳转".into(),
+                note: "用户编辑后的节点说明必须保留为新版本。".into(),
+            },
+        )
+        .expect("用户编辑节点应生成新版本 artifact");
+        assert_ne!(edited.id, generated.id, "编辑不得覆盖原始生成 artifact");
+
+        let edited_payload =
+            serde_json::from_str::<domain::artifact::MindMapDto>(edited.payload_json.as_str())
+                .expect("编辑后的 mind_map payload 应符合契约");
+        assert!(edited_payload.edited);
+        assert_eq!(edited_payload.parent_artifact_id, generated.id);
+        assert!(edited_payload
+            .nodes
+            .iter()
+            .any(|node| node.label == "复核说话人标签和时间跳转"));
+
+        let regenerated = commands::semantic::generate_mind_map_payload(&db_path)
+            .expect("重新生成脑图应生成新 artifact");
+        assert_ne!(regenerated.id, edited.id);
+        let original_after_regen = {
+            let connection = open_connection(&db_path).expect("应能打开测试数据库");
+            connection
+                .query_row(
+                    "SELECT payload_json FROM semantic_artifacts WHERE id = ?1",
+                    params![edited.id.as_str()],
+                    |row| row.get::<_, String>(0),
+                )
+                .expect("编辑版本不应被重新生成覆盖")
+        };
+        assert!(original_after_regen.contains("复核说话人标签和时间跳转"));
+
+        let markdown = commands::semantic::export_mind_map_payload(
+            &db_path,
+            edited.id.as_str(),
+            "markdown",
+        )
+        .expect("应能导出 Markdown 脑图");
+        assert_eq!(markdown.format, "markdown");
+        assert!(markdown.content.contains("# 语义脑图"));
+        assert!(markdown.content.contains("来源"));
+
+        let json =
+            commands::semantic::export_mind_map_payload(&db_path, edited.id.as_str(), "json")
+                .expect("应能导出 JSON 脑图");
+        assert_eq!(json.format, "json");
+        assert!(json.content.contains("\"nodes\""));
 
         let _ = fs::remove_dir_all(temp_dir);
     }

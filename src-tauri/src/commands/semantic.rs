@@ -3,7 +3,10 @@ use std::path::PathBuf;
 use crate::{
     app::semantic_service,
     domain::{
-        artifact::{SemanticArtifactDto, SemanticWorkbenchDto},
+        artifact::{
+            MindMapExportDto, SemanticArtifactDto, SemanticWorkbenchDto,
+            ToggleMindMapNodeCommand, UpdateMindMapNodeCommand,
+        },
         correction::{CorrectionPatternDto, DeletedCorrectionPatternDto, TranscriptRevisionDto},
     },
     infra::sqlite::open_connection,
@@ -67,6 +70,38 @@ pub(crate) fn reject_transcript_revision_payload(
     semantic_service::reject_transcript_revision(&connection, revision_id)
 }
 
+pub(crate) fn generate_mind_map_payload(
+    db_path: &PathBuf,
+) -> Result<SemanticArtifactDto, String> {
+    let connection = open_connection(db_path)?;
+    semantic_service::generate_mind_map(&connection)
+}
+
+pub(crate) fn update_mind_map_node_payload(
+    db_path: &PathBuf,
+    command: UpdateMindMapNodeCommand,
+) -> Result<SemanticArtifactDto, String> {
+    let connection = open_connection(db_path)?;
+    semantic_service::update_mind_map_node(&connection, command)
+}
+
+pub(crate) fn toggle_mind_map_node_payload(
+    db_path: &PathBuf,
+    command: ToggleMindMapNodeCommand,
+) -> Result<SemanticArtifactDto, String> {
+    let connection = open_connection(db_path)?;
+    semantic_service::toggle_mind_map_node(&connection, command)
+}
+
+pub(crate) fn export_mind_map_payload(
+    db_path: &PathBuf,
+    artifact_id: &str,
+    format: &str,
+) -> Result<MindMapExportDto, String> {
+    let connection = open_connection(db_path)?;
+    semantic_service::export_mind_map(&connection, artifact_id, format)
+}
+
 #[tauri::command]
 pub(crate) fn generate_semantic_workbench(
     state: tauri::State<'_, AppState>,
@@ -112,4 +147,36 @@ pub(crate) fn reject_transcript_revision(
     state: tauri::State<'_, AppState>,
 ) -> Result<TranscriptRevisionDto, String> {
     reject_transcript_revision_payload(&state.db_path, &revision_id)
+}
+
+#[tauri::command]
+pub(crate) fn generate_mind_map(
+    state: tauri::State<'_, AppState>,
+) -> Result<SemanticArtifactDto, String> {
+    generate_mind_map_payload(&state.db_path)
+}
+
+#[tauri::command]
+pub(crate) fn update_mind_map_node(
+    command: UpdateMindMapNodeCommand,
+    state: tauri::State<'_, AppState>,
+) -> Result<SemanticArtifactDto, String> {
+    update_mind_map_node_payload(&state.db_path, command)
+}
+
+#[tauri::command]
+pub(crate) fn toggle_mind_map_node(
+    command: ToggleMindMapNodeCommand,
+    state: tauri::State<'_, AppState>,
+) -> Result<SemanticArtifactDto, String> {
+    toggle_mind_map_node_payload(&state.db_path, command)
+}
+
+#[tauri::command]
+pub(crate) fn export_mind_map(
+    artifact_id: String,
+    format: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<MindMapExportDto, String> {
+    export_mind_map_payload(&state.db_path, &artifact_id, &format)
 }
