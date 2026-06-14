@@ -128,6 +128,111 @@ export interface TranscriptReviewPayload {
   modelStatus: LocalModelStatusPayload;
 }
 
+export interface TranscriptRevisionPayload {
+  id: string;
+  sessionId: string;
+  sourceSegmentId: string;
+  speakerLabel: string;
+  startMs: number;
+  endMs: number;
+  originalText: string;
+  revisedText: string;
+  changeLevel: "none" | "punctuation" | "wording" | "meaning_affecting";
+  correctionType: string;
+  reasonSummary: string;
+  status: "proposed" | "rejected";
+}
+
+export interface CorrectionPatternPayload {
+  id: string;
+  phrase: string;
+  replacement: string;
+  patternType: string;
+  scope: string;
+  confidence: number;
+  enabled: boolean;
+}
+
+export interface DeletedCorrectionPatternPayload {
+  deletedId: string;
+}
+
+export interface SemanticArtifactPayload {
+  id: string;
+  sessionId: string;
+  artifactType:
+    | "transcript_revision"
+    | "recording_type"
+    | "summary"
+    | "meeting_minutes"
+    | "todo_extraction"
+    | "mind_map"
+    | "moment"
+    | "deep_research"
+    | "translation";
+  status: "pending" | "running" | "succeeded" | "failed";
+  provider: string;
+  modelName: string;
+  schemaVersion: string;
+  sourceSpanRefs: string[];
+  payloadJson: string;
+  errorMessage: string;
+}
+
+export interface ModelInvocationPayload {
+  id: string;
+  provider: string;
+  modelName: string;
+  capability: string;
+  status: "pending" | "running" | "succeeded" | "failed";
+  requestSummary: string;
+  responseSummary: string;
+  errorMessage: string;
+}
+
+export interface RecordingTypePayload {
+  value: string;
+  label: string;
+  templateId: string;
+  confidence: number;
+}
+
+export interface SummaryArtifactPayload {
+  title: string;
+  basis: string;
+  bullets: string[];
+  sourceSegmentIds: string[];
+}
+
+export interface MeetingMinutesPayload {
+  templateId: string;
+  decisions: string[];
+  risks: string[];
+  openQuestions: string[];
+  sourceSegmentIds: string[];
+}
+
+export interface TodoCandidatePayload {
+  title: string;
+  detail: string;
+  owner: string;
+  priority: string;
+  confidence: number;
+  sourceSegmentIds: string[];
+}
+
+export interface SemanticWorkbenchPayload {
+  sessionId: string;
+  recordingType: RecordingTypePayload;
+  revisions: TranscriptRevisionPayload[];
+  correctionPatterns: CorrectionPatternPayload[];
+  summary: SummaryArtifactPayload;
+  meetingMinutes: MeetingMinutesPayload;
+  todoCandidates: TodoCandidatePayload[];
+  artifacts: SemanticArtifactPayload[];
+  modelInvocations: ModelInvocationPayload[];
+}
+
 export interface RecordingActionPayload {
   message: string;
   runtime: RuntimeStatusPayload;
@@ -321,4 +426,70 @@ export async function retryDesktopTranscriptJob(
 
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<TranscriptJobPayload>("retry_transcript_job", { jobId });
+}
+
+export async function loadSemanticWorkbench(): Promise<SemanticWorkbenchPayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<SemanticWorkbenchPayload>("get_semantic_workbench");
+}
+
+export async function generateSemanticWorkbench(): Promise<SemanticWorkbenchPayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<SemanticWorkbenchPayload>("generate_semantic_workbench");
+}
+
+export async function setDesktopCorrectionPatternEnabled(
+  patternId: string,
+  enabled: boolean,
+): Promise<CorrectionPatternPayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<CorrectionPatternPayload>("set_correction_pattern_enabled", {
+    patternId,
+    enabled,
+  });
+}
+
+export async function deleteDesktopCorrectionPattern(
+  patternId: string,
+): Promise<DeletedCorrectionPatternPayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<DeletedCorrectionPatternPayload>("delete_correction_pattern", { patternId });
+}
+
+export async function retryDesktopSemanticArtifact(
+  artifactId: string,
+): Promise<SemanticArtifactPayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<SemanticArtifactPayload>("retry_semantic_artifact", { artifactId });
+}
+
+export async function rejectDesktopTranscriptRevision(
+  revisionId: string,
+): Promise<TranscriptRevisionPayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<TranscriptRevisionPayload>("reject_transcript_revision", { revisionId });
 }
