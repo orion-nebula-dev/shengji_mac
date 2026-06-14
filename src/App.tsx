@@ -1,27 +1,48 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  deleteDesktopCorrectionPattern,
   flushDesktopSession,
+  generateSemanticWorkbench,
   importDesktopLocalAudio,
   isTauriEnvironment,
   loadBootstrapData,
   loadDesktopContext,
+  loadSemanticWorkbench,
   loadTranscriptReview,
   markDesktopTranscriptSegment,
   processDesktopPendingJobs,
   renameDesktopSpeaker,
+  rejectDesktopTranscriptRevision,
+  retryDesktopSemanticArtifact,
   retryDesktopTranscriptJob,
   saveDesktopSettings,
+  setDesktopCorrectionPatternEnabled,
   simulateDesktopAudioSlice,
   startDesktopRecording,
   stopDesktopRecording,
   testDesktopModelConnection,
   toggleDesktopTodoStatus,
 } from "./lib/desktop";
-import { defaultTranscriptReview } from "./data/mock";
+import { defaultSemanticWorkbench, defaultTranscriptReview } from "./data/mock";
 import { getDefaultState, loadState, saveState } from "./lib/storage";
-import type { SessionItem, SettingsState, TodoItem, TranscriptReview } from "./types";
+import type {
+  CorrectionPattern,
+  SemanticArtifact,
+  SemanticWorkbench,
+  SessionItem,
+  SettingsState,
+  TodoItem,
+  TranscriptReview,
+} from "./types";
 
-type TabKey = "overview" | "actions" | "transcript" | "history" | "system" | "settings";
+type TabKey =
+  | "overview"
+  | "actions"
+  | "transcript"
+  | "semantic"
+  | "history"
+  | "system"
+  | "settings";
 
 const statusLabelMap = {
   pending: "未完成",
@@ -94,6 +115,9 @@ function App() {
   );
   const [currentPlaybackMs, setCurrentPlaybackMs] = useState(0);
   const [speakerDrafts, setSpeakerDrafts] = useState<Record<string, string>>({});
+  const [semanticWorkbench, setSemanticWorkbench] =
+    useState<SemanticWorkbench>(defaultSemanticWorkbench);
+  const [semanticLoading, setSemanticLoading] = useState(false);
   const [desktopContext, setDesktopContext] = useState<{
     runtime: string;
     platform: string;
@@ -118,6 +142,28 @@ function App() {
       .catch(() => {
         if (!cancelled) {
           setDesktopContext(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    loadSemanticWorkbench()
+      .then((workbench) => {
+        if (!workbench || cancelled) {
+          return;
+        }
+
+        setSemanticWorkbench(workbench);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSemanticWorkbench(defaultSemanticWorkbench);
         }
       });
 
@@ -468,6 +514,119 @@ function App() {
     window.setTimeout(() => setSaveBanner(""), 2400);
   }
 
+  async function handleGenerateSemanticWorkbench() {
+    setSemanticLoading(true);
+    const generated = await generateSemanticWorkbench().catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : "生成语义纪要失败。";
+      setSaveBanner(message);
+      window.setTimeout(() => setSaveBanner(""), 3200);
+      return null;
+    });
+    setSemanticLoading(false);
+
+    if (!generated) {
+      setSemanticWorkbench(defaultSemanticWorkbench);
+      setSaveBanner("浏览器原型模式已载入 v0.6 语义纪要样例。桌面端会写入 semantic_artifacts。");
+      window.setTimeout(() => setSaveBanner(""), 3600);
+      return;
+    }
+
+    setSemanticWorkbench(generated);
+    setSaveBanner("已基于修正文稿生成摘要、纪要和待办候选。");
+    window.setTimeout(() => setSaveBanner(""), 3200);
+  }
+
+  async function handleToggleCorrectionPattern(pattern: CorrectionPattern) {
+    const updated = await setDesktopCorrectionPatternEnabled(pattern.id, !pattern.enabled).catch(
+      () => null,
+    );
+    if (isTauriEnvironment() && !updated) {
+      setSaveBanner("更新修正记忆失败，请刷新后重试。");
+      window.setTimeout(() => setSaveBanner(""), 2400);
+      return;
+    }
+    const nextEnabled = updated?.enabled ?? !pattern.enabled;
+
+    setSemanticWorkbench((current) => ({
+      ...current,
+      correctionPatterns: current.correctionPatterns.map((candidate) =>
+        candidate.id === pattern.id
+          ? {
+              ...candidate,
+              enabled: nextEnabled,
+            }
+          : candidate,
+      ),
+    }));
+    setSaveBanner(nextEnabled ? "修正记忆已启用。" : "修正记忆已禁用。");
+    window.setTimeout(() => setSaveBanner(""), 2400);
+  }
+
+  async function handleDeleteCorrectionPattern(patternId: string) {
+    const deleted = await deleteDesktopCorrectionPattern(patternId).catch(() => null);
+    if (isTauriEnvironment() && !deleted) {
+      setSaveBanner("删除修正记忆失败，请刷新后重试。");
+      window.setTimeout(() => setSaveBanner(""), 2400);
+      return;
+    }
+    const deletedId = deleted?.deletedId ?? patternId;
+
+    setSemanticWorkbench((current) => ({
+      ...current,
+      correctionPatterns: current.correctionPatterns.filter((pattern) => pattern.id !== deletedId),
+    }));
+    setSaveBanner("修正记忆已删除。");
+    window.setTimeout(() => setSaveBanner(""), 2400);
+  }
+
+  async function handleRetrySemanticArtifact(artifact: SemanticArtifact) {
+    const retried = await retryDesktopSemanticArtifact(artifact.id).catch(() => null);
+
+    if (isTauriEnvironment() && !retried) {
+      setSaveBanner("语义产物当前不可重试，请检查状态。");
+      window.setTimeout(() => setSaveBanner(""), 2400);
+      return;
+    }
+
+    setSemanticWorkbench((current) => ({
+      ...current,
+      artifacts: current.artifacts.map((candidate) =>
+        candidate.id === artifact.id
+          ? {
+              ...candidate,
+              status: retried?.status ?? "pending",
+              errorMessage: retried?.errorMessage ?? "",
+            }
+          : candidate,
+      ),
+    }));
+    setSaveBanner("失败语义产物已重新排队。");
+    window.setTimeout(() => setSaveBanner(""), 2400);
+  }
+
+  async function handleRejectTranscriptRevision(revisionId: string) {
+    const rejected = await rejectDesktopTranscriptRevision(revisionId).catch(() => null);
+    if (isTauriEnvironment() && !rejected) {
+      setSaveBanner("拒绝修正失败，请刷新后重试。");
+      window.setTimeout(() => setSaveBanner(""), 2400);
+      return;
+    }
+
+    setSemanticWorkbench((current) => ({
+      ...current,
+      revisions: current.revisions.map((revision) =>
+        revision.id === revisionId
+          ? {
+              ...revision,
+              status: rejected?.status ?? "rejected",
+            }
+          : revision,
+      ),
+    }));
+    setSaveBanner("该条修正已拒绝，不再作为建议采用。");
+    window.setTimeout(() => setSaveBanner(""), 2400);
+  }
+
   const pendingTodoCount = todos.filter((todo) => todo.status === "pending").length;
   const completedTodoCount = todos.filter((todo) => todo.status === "completed").length;
   const failedSessionCount = sessions.filter((session) => session.extractionStatus === "failed").length;
@@ -476,6 +635,7 @@ function App() {
     { key: "overview", label: "今日工作台", description: "录音与概览" },
     { key: "actions", label: "行动中心", description: "Todo 执行" },
     { key: "transcript", label: "转写评估", description: "音频与说话人" },
+    { key: "semantic", label: "语义纪要", description: "修正与候选" },
     { key: "history", label: "会话日志", description: "文稿与来源" },
     { key: "system", label: "系统状态", description: "排障与运行时" },
     { key: "settings", label: "设置", description: "模型与录音" },
@@ -979,6 +1139,273 @@ function App() {
                         {transcriptReview.jobs.length === 0 ? (
                           <div className="empty-state">暂无转写任务</div>
                         ) : null}
+                      </div>
+                    </section>
+                  </aside>
+                </section>
+              </main>
+            ) : null}
+
+            {activeTab === "semantic" ? (
+              <main className="page-stack">
+                <div className="page-heading">
+                  <div>
+                    <p className="section-kicker">Semantic Workbench</p>
+                    <h2>转写修正与类型化纪要</h2>
+                  </div>
+                  <div className="heading-actions">
+                    <span className="status-chip chip-live">
+                      {semanticWorkbench.recordingType.label}
+                    </span>
+                    <button
+                      className="primary-button"
+                      type="button"
+                      onClick={handleGenerateSemanticWorkbench}
+                      disabled={semanticLoading}
+                    >
+                      {semanticLoading ? "生成中" : "生成纪要"}
+                    </button>
+                  </div>
+                </div>
+
+                <section className="semantic-layout">
+                  <section className="page-stack">
+                    <section className="panel-lite semantic-hero-panel">
+                      <div className="panel-head">
+                        <div>
+                          <p className="section-kicker">Transcript Revision</p>
+                          <h3>原文 / 修正文稿对照</h3>
+                        </div>
+                        <span className="status-chip">
+                          {semanticWorkbench.recordingType.templateId}
+                        </span>
+                      </div>
+                      <div className="revision-list">
+                        {semanticWorkbench.revisions.map((revision) => (
+                          <article
+                            key={revision.id}
+                            className={`revision-row ${
+                              revision.status === "rejected" ? "revision-row-rejected" : ""
+                            }`}
+                          >
+                            <div className="revision-meta">
+                              <span>{formatDuration(revision.startMs)} - {formatDuration(revision.endMs)}</span>
+                              <span>{revision.speakerLabel}</span>
+                              <span
+                                className={`badge ${
+                                  revision.changeLevel === "meaning_affecting"
+                                    ? "badge-failed"
+                                    : revision.changeLevel === "none"
+                                      ? "badge-completed"
+                                      : "badge-waiting"
+                                }`}
+                              >
+                                {revision.changeLevel === "meaning_affecting"
+                                  ? "影响语义"
+                                  : revision.changeLevel === "wording"
+                                    ? "措辞"
+                                    : revision.changeLevel === "punctuation"
+                                      ? "标点"
+                                      : "无修正"}
+                              </span>
+                              {revision.status === "rejected" ? (
+                                <span className="badge badge-waiting">已拒绝</span>
+                              ) : null}
+                            </div>
+                            <div className="revision-compare">
+                              <div>
+                                <span>原文</span>
+                                <p>{revision.originalText}</p>
+                              </div>
+                              <div>
+                                <span>修正文稿</span>
+                                <p>{revision.revisedText}</p>
+                              </div>
+                            </div>
+                            <p className="review-note">
+                              来源 {revision.sourceSegmentId} · {revision.reasonSummary}
+                            </p>
+                            {revision.status !== "rejected" && revision.changeLevel !== "none" ? (
+                              <div className="row-actions">
+                                <button
+                                  className="secondary-button"
+                                  type="button"
+                                  onClick={() => handleRejectTranscriptRevision(revision.id)}
+                                >
+                                  拒绝修正
+                                </button>
+                              </div>
+                            ) : null}
+                          </article>
+                        ))}
+                        {semanticWorkbench.revisions.length === 0 ? (
+                          <div className="empty-state">暂无修正文稿，请先生成纪要</div>
+                        ) : null}
+                      </div>
+                    </section>
+
+                    <section className="semantic-artifact-grid">
+                      <article className="panel-lite">
+                        <div className="panel-head">
+                          <div>
+                            <p className="section-kicker">Summary</p>
+                            <h3>{semanticWorkbench.summary.title}</h3>
+                          </div>
+                        </div>
+                        <p className="runtime-message">{semanticWorkbench.summary.basis}</p>
+                        <ul className="semantic-list">
+                          {semanticWorkbench.summary.bullets.map((item) => (
+                            <li key={item}>{item}</li>
+                          ))}
+                        </ul>
+                      </article>
+
+                      <article className="panel-lite">
+                        <div className="panel-head">
+                          <div>
+                            <p className="section-kicker">Minutes</p>
+                            <h3>类型化纪要</h3>
+                          </div>
+                        </div>
+                        <div className="minutes-block">
+                          <strong>决策</strong>
+                          {semanticWorkbench.meetingMinutes.decisions.map((item) => (
+                            <p key={item}>{item}</p>
+                          ))}
+                        </div>
+                        <div className="minutes-block">
+                          <strong>风险</strong>
+                          {semanticWorkbench.meetingMinutes.risks.map((item) => (
+                            <p key={item}>{item}</p>
+                          ))}
+                        </div>
+                      </article>
+                    </section>
+
+                    <section className="panel-lite">
+                      <div className="panel-head">
+                        <div>
+                          <p className="section-kicker">Todo Candidates</p>
+                          <h3>待办候选</h3>
+                        </div>
+                        <span className="status-chip">v0.7 前不写入正式 Todo</span>
+                      </div>
+                      <div className="todo-candidate-list">
+                        {semanticWorkbench.todoCandidates.map((todo) => (
+                          <article key={`${todo.title}-${todo.detail}`} className="todo-candidate-row">
+                            <div>
+                              <strong>{todo.title}</strong>
+                              <p>{todo.detail}</p>
+                              <span>来源：{todo.sourceSegmentIds.join("、") || "暂无来源"}</span>
+                            </div>
+                            <span className="badge badge-waiting">
+                              {(todo.confidence * 100).toFixed(0)}%
+                            </span>
+                          </article>
+                        ))}
+                        {semanticWorkbench.todoCandidates.length === 0 ? (
+                          <div className="empty-state">暂无待办候选</div>
+                        ) : null}
+                      </div>
+                    </section>
+                  </section>
+
+                  <aside className="semantic-side-stack">
+                    <section className="panel-lite">
+                      <div className="panel-head">
+                        <div>
+                          <p className="section-kicker">Correction Memory</p>
+                          <h3>本地修正记忆</h3>
+                        </div>
+                      </div>
+                      <div className="correction-list">
+                        {semanticWorkbench.correctionPatterns.map((pattern) => (
+                          <article key={pattern.id} className="correction-row">
+                            <div>
+                              <strong>{pattern.phrase} → {pattern.replacement}</strong>
+                              <span>{pattern.patternType} · {(pattern.confidence * 100).toFixed(0)}%</span>
+                            </div>
+                            <div className="row-actions">
+                              <button
+                                className="secondary-button"
+                                type="button"
+                                onClick={() => handleToggleCorrectionPattern(pattern)}
+                              >
+                                {pattern.enabled ? "禁用" : "启用"}
+                              </button>
+                              <button
+                                className="text-button"
+                                type="button"
+                                onClick={() => handleDeleteCorrectionPattern(pattern.id)}
+                              >
+                                删除
+                              </button>
+                            </div>
+                          </article>
+                        ))}
+                        {semanticWorkbench.correctionPatterns.length === 0 ? (
+                          <div className="empty-state">暂无修正记忆</div>
+                        ) : null}
+                      </div>
+                    </section>
+
+                    <section className="panel-lite">
+                      <div className="panel-head">
+                        <div>
+                          <p className="section-kicker">Artifacts</p>
+                          <h3>语义产物状态</h3>
+                        </div>
+                      </div>
+                      <div className="artifact-list">
+                        {semanticWorkbench.artifacts.map((artifact) => (
+                          <article key={artifact.id} className="artifact-row">
+                            <div>
+                              <strong>{artifact.artifactType}</strong>
+                              <span>{artifact.provider} · {artifact.schemaVersion}</span>
+                              {artifact.errorMessage ? <p>{artifact.errorMessage}</p> : null}
+                            </div>
+                            <div className="row-actions">
+                              <span
+                                className={`badge ${
+                                  artifact.status === "failed"
+                                    ? "badge-failed"
+                                    : artifact.status === "succeeded"
+                                      ? "badge-completed"
+                                      : "badge-waiting"
+                                }`}
+                              >
+                                {artifact.status}
+                              </span>
+                              {artifact.status === "failed" ? (
+                                <button
+                                  className="secondary-button"
+                                  type="button"
+                                  onClick={() => handleRetrySemanticArtifact(artifact)}
+                                >
+                                  重试
+                                </button>
+                              ) : null}
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    </section>
+
+                    <section className="panel-lite">
+                      <div className="panel-head">
+                        <div>
+                          <p className="section-kicker">Model Calls</p>
+                          <h3>模型调用记录</h3>
+                        </div>
+                      </div>
+                      <div className="model-call-list">
+                        {semanticWorkbench.modelInvocations.map((invocation) => (
+                          <article key={invocation.id} className="model-call-row">
+                            <strong>{invocation.modelName}</strong>
+                            <span>{invocation.requestSummary}</span>
+                            <span>{invocation.responseSummary || invocation.errorMessage}</span>
+                          </article>
+                        ))}
                       </div>
                     </section>
                   </aside>
