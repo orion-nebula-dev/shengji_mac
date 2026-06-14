@@ -84,7 +84,7 @@ const DEFAULT_SEMANTIC_PROVIDER_TYPE: &str = "minimax_m3";
 const DEFAULT_EMBEDDING_PROVIDER_TYPE: &str = "reserved";
 const DEFAULT_EXPORT_PROVIDER_TYPE: &str = "local_file";
 const DEFAULT_TODO_PROVIDER_TYPE: &str = "semantic_m3";
-const DEFAULT_SEMANTIC_BASE_URL: &str = "https://api.minimax.io/v1/responses";
+const DEFAULT_SEMANTIC_BASE_URL: &str = "https://api.minimaxi.com/v1/chat/completions";
 const DEFAULT_SEMANTIC_MODEL_NAME: &str = "MiniMax-M3";
 fn build_http_client() -> Result<Client, String> {
     Client::builder()
@@ -3299,7 +3299,7 @@ mod tests {
             asr_resource_id: "resource-test".into(),
             asr_model_name: "asr-test".into(),
             asr_api_key_masked: "asr-key-****".into(),
-            semantic_base_url: "https://api.minimax.io/v1/responses".into(),
+            semantic_base_url: DEFAULT_SEMANTIC_BASE_URL.into(),
             semantic_model_name: "MiniMax-M3".into(),
             semantic_api_key_masked: "semantic-key-****".into(),
             allow_cloud_fallback: false,
@@ -3334,7 +3334,7 @@ mod tests {
                 asr_resource_id: "".into(),
                 asr_model_name: "".into(),
                 asr_api_key_masked: "".into(),
-                semantic_base_url: "https://api.minimax.io/v1/responses".into(),
+                semantic_base_url: DEFAULT_SEMANTIC_BASE_URL.into(),
                 semantic_model_name: "MiniMax-M3".into(),
                 semantic_api_key_masked: "".into(),
                 allow_cloud_fallback: false,
@@ -3402,7 +3402,7 @@ mod tests {
                 asr_resource_id: "".into(),
                 asr_model_name: "".into(),
                 asr_api_key_masked: "".into(),
-                semantic_base_url: "https://api.minimax.io/v1/responses".into(),
+                semantic_base_url: DEFAULT_SEMANTIC_BASE_URL.into(),
                 semantic_model_name: "MiniMax-M3".into(),
                 semantic_api_key_masked: "".into(),
                 allow_cloud_fallback: false,
