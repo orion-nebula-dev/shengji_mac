@@ -9,6 +9,7 @@ import {
   exportDesktopMindMap,
   generateDesktopExportBundle,
   generateDesktopMindMap,
+  generateDesktopTranslation,
   generateDesktopValueDiscovery,
   generateSemanticWorkbench,
   importDesktopLocalAudio,
@@ -54,6 +55,7 @@ import type {
   TodoCandidateItem,
   TodoItem,
   TodoStatus,
+  TranslationArtifact,
   TranscriptReview,
 } from "./types";
 
@@ -102,6 +104,12 @@ const exportFormatLabelMap: Record<string, string> = {
   json: "JSON",
   snapshot: "分享快照",
 };
+
+function getExportFormatLabel(format: string) {
+  const [baseFormat, targetLanguage] = format.split("_");
+  const label = exportFormatLabelMap[baseFormat] ?? format;
+  return targetLanguage ? `${label} · ${targetLanguage}` : label;
+}
 
 const transcriptJobStatusLabelMap = {
   queued: "已排队",
@@ -168,6 +176,18 @@ function parseResearchArtifact(artifact: SemanticArtifact): DeepResearchDraft | 
   }
 }
 
+function parseTranslationArtifact(artifact: SemanticArtifact): TranslationArtifact | null {
+  if (artifact.artifactType !== "translation" || artifact.status !== "succeeded") {
+    return null;
+  }
+
+  try {
+    return JSON.parse(artifact.payloadJson) as TranslationArtifact;
+  } catch {
+    return null;
+  }
+}
+
 function mindMapToMarkdown(mindMap: MindMapArtifact) {
   return [
     "# 语义脑图",
@@ -183,6 +203,45 @@ function mindMapToMarkdown(mindMap: MindMapArtifact) {
       "",
     ]),
   ].join("\n");
+}
+
+function createLocalTranslationArtifact(
+  workbench: SemanticWorkbench,
+  targetLanguage: string,
+): SemanticArtifact {
+  const sourceSpanRefs = workbench.revisions.map((revision) => revision.sourceSegmentId);
+  const translation: TranslationArtifact = {
+    targetLanguage,
+    transcriptTranslations: workbench.revisions.map((revision) => ({
+      sourceSegmentId: revision.sourceSegmentId,
+      speakerLabel: revision.speakerLabel,
+      startMs: revision.startMs,
+      endMs: revision.endMs,
+      originalText: revision.revisedText,
+      translatedText: `[${targetLanguage}] ${revision.revisedText}`,
+    })),
+    summaryTranslation: {
+      sourceArtifactType: "summary",
+      originalTitle: workbench.summary.title,
+      translatedTitle: `[${targetLanguage}] ${workbench.summary.title}`,
+      originalBasis: workbench.summary.basis,
+      translatedBasis: `[${targetLanguage}] ${workbench.summary.basis}`,
+      translatedBullets: workbench.summary.bullets.map((bullet) => `[${targetLanguage}] ${bullet}`),
+    },
+    sourceSpanRefs,
+  };
+  return {
+    id: `semantic_${workbench.sessionId}_translation_${targetLanguage.replace(/[^A-Za-z0-9_-]/g, "_")}`,
+    sessionId: workbench.sessionId,
+    artifactType: "translation",
+    status: "succeeded",
+    provider: "minimax_m3",
+    modelName: "MiniMax-M3",
+    schemaVersion: "v1.1",
+    sourceSpanRefs,
+    payloadJson: JSON.stringify(translation),
+    errorMessage: "",
+  };
 }
 
 function createLocalMindMapArtifact(
@@ -262,6 +321,8 @@ function App() {
   const [exportBundle, setExportBundle] = useState<ExportBundle | null>(defaultExportBundle);
   const [exportLoading, setExportLoading] = useState(false);
   const [selectedExportFormat, setSelectedExportFormat] = useState("markdown");
+  const [selectedTargetLanguage, setSelectedTargetLanguage] = useState("en-US");
+  const [translationLoading, setTranslationLoading] = useState(false);
   const [sessionSearch, setSessionSearch] = useState("");
   const [valueDiscoveryLoading, setValueDiscoveryLoading] = useState(false);
   const [selectedResearchId, setSelectedResearchId] = useState(
@@ -1090,6 +1151,7 @@ function App() {
     setExportLoading(true);
     const generated = await generateDesktopExportBundle({
       formats: ["markdown", "srt", "json", "snapshot"],
+      targetLanguages: [],
     }).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : "生成导出包失败。";
       setSaveBanner(message);
@@ -1110,6 +1172,149 @@ function App() {
       setExportBundle(defaultExportBundle);
       setSelectedExportFormat(defaultExportBundle.items[0]?.format ?? "markdown");
       setSaveBanner("浏览器原型模式已载入 v1.0 导出包样例。");
+      window.setTimeout(() => setSaveBanner(""), 3200);
+    }
+  }
+
+  async function handleGenerateTranslation() {
+    const targetLanguage = selectedTargetLanguage.trim();
+    if (!targetLanguage) {
+      setSaveBanner("请选择目标语言。");
+      window.setTimeout(() => setSaveBanner(""), 2400);
+      return;
+    }
+    setTranslationLoading(true);
+    const generated = await generateDesktopTranslation({ targetLanguage }).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : "生成翻译失败。";
+      setSaveBanner(message);
+      window.setTimeout(() => setSaveBanner(""), 3200);
+      return null;
+    });
+    setTranslationLoading(false);
+
+    const artifact = generated ?? (!isTauriEnvironment() ? createLocalTranslationArtifact(semanticWorkbench, targetLanguage) : null);
+    if (!artifact) {
+      return;
+    }
+    const translation = parseTranslationArtifact(artifact);
+    setSemanticWorkbench((current) => ({
+      ...current,
+      translations: translation
+        ? [
+            translation,
+            ...current.translations.filter(
+              (candidate) => candidate.targetLanguage !== translation.targetLanguage,
+            ),
+          ]
+        : current.translations,
+      artifacts: [
+        artifact,
+        ...current.artifacts.filter((candidate) => candidate.id !== artifact.id),
+      ],
+    }));
+    setSaveBanner(`已生成 ${targetLanguage} 转写与摘要翻译。`);
+    window.setTimeout(() => setSaveBanner(""), 3000);
+  }
+
+  async function handleGenerateMultilingualExportBundle() {
+    const targetLanguage = selectedTargetLanguage.trim();
+    if (!targetLanguage) {
+      setSaveBanner("请选择目标语言。");
+      window.setTimeout(() => setSaveBanner(""), 2400);
+      return;
+    }
+    const hasTranslation = semanticWorkbench.translations.some(
+      (translation) => translation.targetLanguage === targetLanguage,
+    );
+    if (!hasTranslation) {
+      setSaveBanner("请先生成该目标语言的翻译产物。");
+      window.setTimeout(() => setSaveBanner(""), 2600);
+      return;
+    }
+
+    setExportLoading(true);
+    const generated = await generateDesktopExportBundle({
+      formats: ["markdown", "srt", "json", "snapshot"],
+      targetLanguages: [targetLanguage],
+    }).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : "生成多语言导出包失败。";
+      setSaveBanner(message);
+      window.setTimeout(() => setSaveBanner(""), 3200);
+      return null;
+    });
+    setExportLoading(false);
+
+    if (generated) {
+      setExportBundle(generated);
+      setSelectedExportFormat(generated.items[0]?.format ?? `markdown_${targetLanguage}`);
+      setSaveBanner(`已生成 ${targetLanguage} 多语言导出包。`);
+      window.setTimeout(() => setSaveBanner(""), 3000);
+      return;
+    }
+
+    if (!isTauriEnvironment()) {
+      const translation = semanticWorkbench.translations.find(
+        (candidate) => candidate.targetLanguage === targetLanguage,
+      );
+      if (!translation) {
+        return;
+      }
+      const localBundle: ExportBundle = {
+        ...defaultExportBundle,
+        id: `export_bundle_demo_${targetLanguage}`,
+        items: [
+          {
+            id: `export_demo_markdown_${targetLanguage}`,
+            format: `markdown_${targetLanguage}`,
+            fileName: `声记多语言导出-${targetLanguage}.md`,
+            mimeType: "text/markdown; charset=utf-8",
+            content: [
+              "# ShengJi Multilingual Export",
+              "",
+              "## Summary Translation",
+              translation.summaryTranslation.translatedBasis,
+              "",
+              "## Transcript Translation",
+              ...translation.transcriptTranslations.map(
+                (segment) =>
+                  `- Source segment \`${segment.sourceSegmentId}\` · ${segment.speakerLabel}: ${segment.translatedText}`,
+              ),
+            ].join("\n"),
+            status: "succeeded",
+            sourceSpanRefs: translation.sourceSpanRefs,
+            errorMessage: "",
+          },
+          {
+            id: `export_demo_json_${targetLanguage}`,
+            format: `json_${targetLanguage}`,
+            fileName: `声记多语言结构化导出-${targetLanguage}.json`,
+            mimeType: "application/json; charset=utf-8",
+            content: JSON.stringify(
+              {
+                sessionId: semanticWorkbench.sessionId,
+                targetLanguage,
+                translations: translation,
+              },
+              null,
+              2,
+            ),
+            status: "succeeded",
+            sourceSpanRefs: translation.sourceSpanRefs,
+            errorMessage: "",
+          },
+        ],
+        snapshot: {
+          id: `export_demo_snapshot_${targetLanguage}`,
+          fileName: `声记多语言分享快照-${targetLanguage}.html`,
+          title: `声记 Multilingual 分享快照 · ${targetLanguage}`,
+          html: "<!doctype html><html lang=\"en\"><title>ShengJi Multilingual Snapshot</title><body>Multilingual local export</body></html>",
+          sourceSpanRefs: translation.sourceSpanRefs,
+          privacySummary: defaultExportBundle.privacySummary,
+        },
+      };
+      setExportBundle(localBundle);
+      setSelectedExportFormat(localBundle.items[0]?.format ?? `markdown_${targetLanguage}`);
+      setSaveBanner(`浏览器原型模式已生成 ${targetLanguage} 多语言导出包。`);
       window.setTimeout(() => setSaveBanner(""), 3200);
     }
   }
@@ -1377,6 +1582,10 @@ function App() {
     exportBundle?.items[0];
   const exportReadyCount =
     exportBundle?.items.filter((item) => item.status === "succeeded").length ?? 0;
+  const activeTranslation =
+    semanticWorkbench.translations.find(
+      (translation) => translation.targetLanguage === selectedTargetLanguage,
+    ) ?? semanticWorkbench.translations[0];
   const navItems: Array<{ key: TabKey; label: string; description: string }> = [
     { key: "overview", label: "今日工作台", description: "录音与概览" },
     { key: "actions", label: "行动中心", description: "Todo 执行" },
@@ -2674,7 +2883,7 @@ function App() {
               <main className="page-stack">
                 <div className="page-heading">
                   <div>
-                    <p className="section-kicker">Export / v1.0</p>
+                    <p className="section-kicker">Export / v1.1</p>
                     <h2>导出中心</h2>
                   </div>
                   <div className="heading-actions">
@@ -2691,6 +2900,45 @@ function App() {
                     </button>
                   </div>
                 </div>
+
+                <section className="panel-lite translation-control-panel">
+                  <div>
+                    <p className="section-kicker">Translation</p>
+                    <h3>翻译与多语言导出</h3>
+                    <p className="runtime-message">
+                      翻译结果作为 `translation` 语义产物保存，来源回链到转写片段；摘要翻译不会覆盖原始摘要。
+                    </p>
+                  </div>
+                  <div className="translation-actions">
+                    <label className="field">
+                      <span>目标语言</span>
+                      <select
+                        value={selectedTargetLanguage}
+                        onChange={(event) => setSelectedTargetLanguage(event.target.value)}
+                      >
+                        <option value="en-US">English / en-US</option>
+                        <option value="ja-JP">日本語 / ja-JP</option>
+                        <option value="ko-KR">한국어 / ko-KR</option>
+                      </select>
+                    </label>
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      onClick={handleGenerateTranslation}
+                      disabled={translationLoading}
+                    >
+                      {translationLoading ? "翻译中" : "生成翻译"}
+                    </button>
+                    <button
+                      className="primary-button"
+                      type="button"
+                      onClick={handleGenerateMultilingualExportBundle}
+                      disabled={exportLoading}
+                    >
+                      多语言导出
+                    </button>
+                  </div>
+                </section>
 
                 <section className="export-layout">
                   <section className="panel-lite export-main-panel">
@@ -2714,7 +2962,7 @@ function App() {
                           type="button"
                           onClick={() => setSelectedExportFormat(item.format)}
                         >
-                          <span>{exportFormatLabelMap[item.format] ?? item.format}</span>
+                          <span>{getExportFormatLabel(item.format)}</span>
                           <small>{item.status === "succeeded" ? item.fileName : item.errorMessage}</small>
                         </button>
                       ))}
@@ -2790,6 +3038,36 @@ function App() {
                           </article>
                         ))}
                       </div>
+                    </section>
+
+                    <section className="panel-lite">
+                      <div className="panel-head">
+                        <div>
+                          <p className="section-kicker">Trace</p>
+                          <h3>翻译来源追溯</h3>
+                        </div>
+                        <span className="badge badge-waiting">
+                          {activeTranslation?.targetLanguage ?? "未生成"}
+                        </span>
+                      </div>
+                      {activeTranslation ? (
+                        <div className="translation-trace-list">
+                          <article>
+                            <strong>{activeTranslation.summaryTranslation.translatedTitle}</strong>
+                            <p>{activeTranslation.summaryTranslation.translatedBasis}</p>
+                            <span>来源：{activeTranslation.summaryTranslation.sourceArtifactType}</span>
+                          </article>
+                          {activeTranslation.transcriptTranslations.slice(0, 4).map((segment) => (
+                            <article key={segment.sourceSegmentId}>
+                              <strong>{segment.sourceSegmentId} · {segment.speakerLabel}</strong>
+                              <p>{segment.translatedText}</p>
+                              <span>{formatDuration(segment.startMs)} - {formatDuration(segment.endMs)}</span>
+                            </article>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="empty-state">先生成目标语言翻译，随后可追溯到原文片段。</div>
+                      )}
                     </section>
                   </aside>
                 </section>
