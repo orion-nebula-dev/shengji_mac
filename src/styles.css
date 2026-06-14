@@ -972,6 +972,123 @@ button:disabled {
   display: block;
 }
 
+.research-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.82fr) minmax(0, 1.2fr) 320px;
+  gap: 16px;
+  align-items: start;
+}
+
+.research-side-stack,
+.moment-list,
+.research-draft-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.research-moment-panel,
+.research-detail-panel {
+  min-height: 420px;
+}
+
+.moment-row,
+.research-draft-row {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #fff;
+  padding: 12px;
+}
+
+.moment-row {
+  border-left: 4px solid rgba(10, 132, 255, 0.34);
+}
+
+.moment-row-risk {
+  border-left-color: rgba(199, 91, 91, 0.52);
+}
+
+.moment-row-decision {
+  border-left-color: rgba(47, 157, 100, 0.5);
+}
+
+.moment-row-disagreement {
+  border-left-color: rgba(183, 121, 31, 0.5);
+}
+
+.moment-row-head,
+.moment-meta,
+.research-launch-grid,
+.research-detail {
+  display: grid;
+  gap: 10px;
+}
+
+.moment-row-head {
+  grid-template-columns: minmax(0, 1fr) max-content;
+  align-items: center;
+}
+
+.moment-row p,
+.research-detail p,
+.research-draft-row span {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.moment-row strong {
+  color: var(--text-main);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.moment-meta {
+  grid-template-columns: max-content minmax(0, 1fr);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.research-launch-grid {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+}
+
+.research-columns {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.research-columns > div {
+  min-height: 170px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-muted);
+  padding: 12px;
+}
+
+.research-columns strong,
+.research-draft-row strong {
+  display: block;
+  color: var(--text-main);
+  font-size: 13px;
+}
+
+.research-draft-row {
+  cursor: pointer;
+  text-align: left;
+}
+
+.research-draft-row-active {
+  border-color: rgba(10, 132, 255, 0.46);
+  background: var(--brand-soft);
+}
+
 .mindmap-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.55fr) minmax(360px, 0.95fr);
