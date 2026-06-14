@@ -1,6 +1,7 @@
 use crate::domain::provider::{ProviderCapability, ProviderDescriptor, ProviderLocality};
 
 pub mod asr;
+pub mod export;
 pub mod semantic;
 pub mod speaker;
 
@@ -41,12 +42,6 @@ pub fn provider_catalog() -> Vec<ProviderDescriptor> {
             locality: ProviderLocality::Reserved,
             privacy_boundary: "Embedding 预留：v0.4 不启用默认路径，不发送任何用户数据。",
         },
-        ProviderDescriptor {
-            id: "local_file",
-            display_name: "Local File Export",
-            capability: ProviderCapability::Export,
-            locality: ProviderLocality::Local,
-            privacy_boundary: "本地导出：Markdown、JSON、SRT 等导出默认写入用户选择的位置。",
-        },
+        export::local_file::descriptor(),
     ]
 }
