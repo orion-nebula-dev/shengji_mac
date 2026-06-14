@@ -16,8 +16,9 @@
 8. 支持本地模型缓存状态展示、处理任务记录、失败原因记录与基础稳定性保护。
 9. 支持基于修正文稿和摘要生成思维脑图，节点可编辑、折叠、追溯来源并导出 Markdown / JSON。
 10. 支持自动生成 Moment、Deep Research 草稿，并把研究结论转为 Todo 或脑图节点。
+11. 支持 v1.0 导出中心：Markdown、SRT、JSON、本地分享快照、会话归档搜索、导出记录和 provider 成本 / 隐私 / 密钥状态展示。
 
-## v0.5 处理链路
+## v1.0 处理链路
 
 ```text
 录音开始 / 本地音频导入
@@ -28,9 +29,11 @@
 -> 写入 transcript_segments / speakers / speaker_segments
 -> 支持说话人改名、时间轴跳转、错误片段标注与失败任务重试
 -> 创建 conversation_sessions
--> 创建 todo_extraction 任务
--> 登记 semantic_artifacts(type='todo_extraction')
--> 后续版本进入 Todo 候选确认与正式 todos
+-> 生成 transcript_revision / summary / meeting_minutes / todo_extraction
+-> 确认 Todo 候选并写入 todos
+-> 生成 mind_map / moment / deep_research
+-> 在导出中心生成 Markdown / SRT / JSON / 本地分享快照
+-> 写入 external_exports 形成本地导出记录
 ```
 
 ## 技术栈
@@ -138,6 +141,7 @@ SQLite 数据库：
 12. [发布说明_v0.7.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v0.7.0.md>)
 13. [发布说明_v0.8.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v0.8.0.md>)
 14. [发布说明_v0.9.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v0.9.0.md>)
+15. [发布说明_v1.0.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v1.0.0.md>)
 
 过时的一期文档、旧 v2.0 PRD 和旧设计包已归档到：
 
@@ -147,12 +151,12 @@ AI文档/废纸篓/2026-06-12-旧方案归档/
 
 ## 当前边界
 
-当前为 v0.9 Moment 与深度研究版本，尚未完成：
+当前为 v1.0 产品闭环版本，尚未完成：
 
 1. 自动 30 秒滚动切片录音。
 2. 真实 Argmax local server / CLI 推理执行与模型下载器。
 3. 声纹识别与特定用户过滤。
 4. SpeakerKit 真实说话人分离推理接入。
 5. 多设备同步。
-6. 分享导出产品化和多语言导出。
+6. 多语言导出、云端分享和外部同步。
 7. 真实联网深度研究检索与外部资料引用。

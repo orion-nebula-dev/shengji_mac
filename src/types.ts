@@ -300,6 +300,36 @@ export interface MindMapExport {
   content: string;
 }
 
+export interface ExportItem {
+  id: string;
+  format: "markdown" | "srt" | "json" | "snapshot" | string;
+  fileName: string;
+  mimeType: string;
+  content: string;
+  status: "pending" | "running" | "succeeded" | "failed";
+  sourceSpanRefs: string[];
+  errorMessage: string;
+}
+
+export interface ShareSnapshot {
+  id: string;
+  fileName: string;
+  title: string;
+  html: string;
+  sourceSpanRefs: string[];
+  privacySummary: string;
+}
+
+export interface ExportBundle {
+  id: string;
+  sessionId: string;
+  provider: "local_file" | string;
+  status: "pending" | "running" | "succeeded" | "failed";
+  privacySummary: string;
+  items: ExportItem[];
+  snapshot: ShareSnapshot | null;
+}
+
 export interface SemanticWorkbench {
   sessionId: string;
   recordingType: RecordingType;
