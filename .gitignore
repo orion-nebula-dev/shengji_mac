@@ -23,3 +23,9 @@ recordings/
 argmax-cli
 llama-cli
 llama-completion
+
+# Local AI planning / agent workspace files
+AI文档/
+AGENTS.md
+.codex/
+.agents/
