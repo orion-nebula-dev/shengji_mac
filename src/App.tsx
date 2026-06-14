@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   flushDesktopSession,
   importDesktopLocalAudio,
+  isTauriEnvironment,
   loadBootstrapData,
   loadDesktopContext,
   loadTranscriptReview,
@@ -443,6 +444,12 @@ function App() {
 
   async function handleRetryTranscriptJob(jobId: string) {
     const retried = await retryDesktopTranscriptJob(jobId).catch(() => null);
+
+    if (isTauriEnvironment() && !retried) {
+      setSaveBanner("转写任务当前不可重试，请检查任务状态。");
+      window.setTimeout(() => setSaveBanner(""), 2400);
+      return;
+    }
 
     setTranscriptReview((current) => ({
       ...current,

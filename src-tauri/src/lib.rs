@@ -1621,6 +1621,46 @@ mod tests {
     }
 
     #[test]
+    fn should_reject_transcript_job_retry_after_max_attempts() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "shengji-v05-transcript-retry-limit-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        connection
+            .execute(
+                r#"
+                INSERT INTO transcript_jobs (
+                  id,
+                  audio_segment_id,
+                  status,
+                  retry_count,
+                  max_retry_count,
+                  error_message,
+                  provider,
+                  model_name,
+                  created_at
+                ) VALUES ('transcript_job_retry_exhausted', 'missing_audio_for_retry', 'failed', 3, 3, '本地模型未就绪', 'local_whisperkit', 'large-v3-turbo', CURRENT_TIMESTAMP)
+                "#,
+                [],
+            )
+            .expect("应能准备达到重试上限的失败任务");
+
+        let error = commands::transcript::retry_transcript_job_payload(
+            &db_path,
+            "transcript_job_retry_exhausted",
+        )
+        .expect_err("达到最大重试次数后不应继续重试");
+        assert!(error.contains("最大重试次数"));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
     fn should_register_semantic_todo_artifact_by_default() {
         let temp_dir = std::env::temp_dir().join(format!(
             "smart-todo-v04-semantic-todo-test-{}",
