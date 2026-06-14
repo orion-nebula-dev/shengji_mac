@@ -1,5 +1,6 @@
 pub(crate) mod bootstrap;
 pub(crate) mod desktop_context;
+pub(crate) mod export;
 pub(crate) mod jobs;
 pub(crate) mod model_test;
 pub(crate) mod recording;

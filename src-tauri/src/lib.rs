@@ -1021,7 +1021,8 @@ pub fn run() {
             commands::semantic::generate_value_discovery,
             commands::semantic::start_research_from_segment,
             commands::semantic::convert_research_to_todo,
-            commands::semantic::add_research_to_mind_map
+            commands::semantic::add_research_to_mind_map,
+            commands::export::generate_export_bundle
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -2066,6 +2067,87 @@ mod tests {
             .nodes
             .iter()
             .any(|node| node.kind == "research" && node.label.contains("研究")));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_generate_v10_export_bundle_and_local_share_snapshot() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "shengji-v10-export-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        let audio_path = temp_dir.join("sample-export.wav");
+        fs::write(&audio_path, b"fake wav bytes for export")
+            .expect("应能准备本地音频文件");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        commands::transcript::import_local_audio_payload(
+            &db_path,
+            audio_path.to_string_lossy().as_ref(),
+        )
+        .expect("应能准备 v1.0 导出输入");
+        commands::semantic::generate_semantic_workbench_payload(&db_path)
+            .expect("应能生成语义工作台");
+        commands::semantic::generate_mind_map_payload(&db_path)
+            .expect("应能生成脑图");
+        commands::semantic::generate_value_discovery_payload(&db_path)
+            .expect("应能生成价值发现");
+
+        let bundle = commands::export::generate_export_bundle_payload(
+            &db_path,
+            domain::export::GenerateExportBundleCommand {
+                formats: vec![
+                    "markdown".into(),
+                    "srt".into(),
+                    "json".into(),
+                    "snapshot".into(),
+                ],
+            },
+        )
+        .expect("v1.0 应能生成完整导出包");
+
+        assert_eq!(bundle.provider, "local_file");
+        assert_eq!(bundle.status, "succeeded");
+        assert_eq!(bundle.items.len(), 4);
+        assert!(bundle.privacy_summary.contains("本地"));
+        assert!(bundle
+            .items
+            .iter()
+            .any(|item| item.format == "markdown" && item.content.contains("# 声记会话导出")));
+        assert!(bundle
+            .items
+            .iter()
+            .any(|item| item.format == "srt" && item.content.contains("00:00:00,000 -->")));
+        let json_item = bundle
+            .items
+            .iter()
+            .find(|item| item.format == "json")
+            .expect("应包含 JSON 导出");
+        let json_value: serde_json::Value =
+            serde_json::from_str(json_item.content.as_str()).expect("JSON 导出应可解析");
+        assert_eq!(json_value["sessionId"], bundle.session_id);
+        assert!(json_value["transcriptSegments"].is_array());
+        assert!(json_value["semanticArtifacts"].is_array());
+
+        let snapshot = bundle
+            .snapshot
+            .as_ref()
+            .expect("应生成本地分享快照");
+        assert!(snapshot.html.contains("<!doctype html>"));
+        assert!(snapshot.html.contains("声记分享快照"));
+        assert!(
+            !snapshot.html.contains(temp_dir.to_string_lossy().as_ref()),
+            "分享快照不应暴露完整本地路径"
+        );
+
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let export_count: i64 = connection
+            .query_row("SELECT COUNT(1) FROM external_exports", [], |row| row.get(0))
+            .expect("应能读取导出记录");
+        assert_eq!(export_count, 4);
 
         let _ = fs::remove_dir_all(temp_dir);
     }

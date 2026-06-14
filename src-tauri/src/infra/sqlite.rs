@@ -798,6 +798,24 @@ pub(crate) fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
 
+      CREATE TABLE IF NOT EXISTS external_exports (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        export_type TEXT NOT NULL,
+        format TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'succeeded'
+          CHECK (status IN ('pending', 'running', 'succeeded', 'failed')),
+        provider TEXT NOT NULL DEFAULT 'local_file',
+        file_name TEXT NOT NULL DEFAULT '',
+        mime_type TEXT NOT NULL DEFAULT '',
+        content_preview TEXT NOT NULL DEFAULT '',
+        source_span_refs TEXT NOT NULL DEFAULT '[]',
+        error_message TEXT NOT NULL DEFAULT '',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (session_id) REFERENCES conversation_sessions(id) ON DELETE CASCADE
+      );
+
       CREATE INDEX IF NOT EXISTS idx_audio_segments_created_at
         ON audio_segments(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_conversation_sessions_created_at
@@ -835,6 +853,10 @@ pub(crate) fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
         WHERE dedup_key <> '';
       CREATE INDEX IF NOT EXISTS idx_processing_jobs_status
         ON processing_jobs(status);
+      CREATE INDEX IF NOT EXISTS idx_external_exports_session
+        ON external_exports(session_id);
+      CREATE INDEX IF NOT EXISTS idx_external_exports_created_at
+        ON external_exports(created_at DESC);
       "#,
         )
         .map_err(|error| format!("初始化表结构失败: {error}"))?;

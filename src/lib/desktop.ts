@@ -321,6 +321,40 @@ export interface MindMapExportPayload {
   content: string;
 }
 
+export interface GenerateExportBundlePayload {
+  formats: Array<"markdown" | "srt" | "json" | "snapshot">;
+}
+
+export interface ExportItemPayload {
+  id: string;
+  format: string;
+  fileName: string;
+  mimeType: string;
+  content: string;
+  status: "pending" | "running" | "succeeded" | "failed";
+  sourceSpanRefs: string[];
+  errorMessage: string;
+}
+
+export interface ShareSnapshotPayload {
+  id: string;
+  fileName: string;
+  title: string;
+  html: string;
+  sourceSpanRefs: string[];
+  privacySummary: string;
+}
+
+export interface ExportBundlePayload {
+  id: string;
+  sessionId: string;
+  provider: string;
+  status: "pending" | "running" | "succeeded" | "failed";
+  privacySummary: string;
+  items: ExportItemPayload[];
+  snapshot: ShareSnapshotPayload | null;
+}
+
 export interface StartResearchFromSegmentPayload {
   segmentId: string;
   question: string;
@@ -705,6 +739,17 @@ export async function exportDesktopMindMap(
 
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<MindMapExportPayload>("export_mind_map", { artifactId, format });
+}
+
+export async function generateDesktopExportBundle(
+  command: GenerateExportBundlePayload,
+): Promise<ExportBundlePayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<ExportBundlePayload>("generate_export_bundle", { command });
 }
 
 export async function generateDesktopValueDiscovery(): Promise<SemanticArtifactPayload | null> {
