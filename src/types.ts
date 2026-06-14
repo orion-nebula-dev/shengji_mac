@@ -243,6 +243,39 @@ export interface TodoCandidate {
   sourceSegmentIds: string[];
 }
 
+export interface MindMapNode {
+  id: string;
+  label: string;
+  kind: "root" | "summary" | "decision" | "source" | string;
+  note: string;
+  sourceSpanRefs: string[];
+  collapsed: boolean;
+}
+
+export interface MindMapEdge {
+  id: string;
+  from: string;
+  to: string;
+  label: string;
+}
+
+export interface MindMapArtifact {
+  root: string;
+  nodes: MindMapNode[];
+  edges: MindMapEdge[];
+  summary: string;
+  sourceSpans: string[];
+  edited: boolean;
+  version: number;
+  parentArtifactId: string;
+}
+
+export interface MindMapExport {
+  format: "markdown" | "json";
+  fileName: string;
+  content: string;
+}
+
 export interface SemanticWorkbench {
   sessionId: string;
   recordingType: RecordingType;
@@ -251,6 +284,7 @@ export interface SemanticWorkbench {
   summary: SummaryArtifact;
   meetingMinutes: MeetingMinutes;
   todoCandidates: TodoCandidate[];
+  mindMap: MindMapArtifact | null;
   artifacts: SemanticArtifact[];
   modelInvocations: ModelInvocation[];
 }

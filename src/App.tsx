@@ -4,6 +4,8 @@ import {
   deleteDesktopCorrectionPattern,
   dismissDesktopTodoCandidate,
   flushDesktopSession,
+  exportDesktopMindMap,
+  generateDesktopMindMap,
   generateSemanticWorkbench,
   importDesktopLocalAudio,
   isTauriEnvironment,
@@ -26,12 +28,16 @@ import {
   syncDesktopTodoCandidates,
   testDesktopModelConnection,
   toggleDesktopTodoStatus,
+  toggleDesktopMindMapNode,
+  updateDesktopMindMapNode,
   updateDesktopTodoStatus,
 } from "./lib/desktop";
 import { defaultSemanticWorkbench, defaultTodoCandidates, defaultTranscriptReview } from "./data/mock";
 import { getDefaultState, loadState, saveState } from "./lib/storage";
 import type {
   CorrectionPattern,
+  MindMapArtifact,
+  MindMapExport,
   SemanticArtifact,
   SemanticWorkbench,
   SessionItem,
@@ -47,6 +53,7 @@ type TabKey =
   | "actions"
   | "transcript"
   | "semantic"
+  | "mindmap"
   | "history"
   | "system"
   | "settings";
@@ -107,6 +114,55 @@ function getFallbackReasonText(session?: SessionItem) {
   return session.extractionFallbackReason || "未记录回退原因";
 }
 
+function parseMindMapArtifact(artifact: SemanticArtifact): MindMapArtifact | null {
+  if (artifact.artifactType !== "mind_map" || artifact.status !== "succeeded") {
+    return null;
+  }
+
+  try {
+    return JSON.parse(artifact.payloadJson) as MindMapArtifact;
+  } catch {
+    return null;
+  }
+}
+
+function mindMapToMarkdown(mindMap: MindMapArtifact) {
+  return [
+    "# 语义脑图",
+    "",
+    `- 摘要：${mindMap.summary}`,
+    `- 版本：${mindMap.version}`,
+    `- 来源：${mindMap.sourceSpans.join("、") || "暂无来源"}`,
+    "",
+    ...mindMap.nodes.flatMap((node) => [
+      `${node.id === mindMap.root ? "##" : "###"} ${node.label}`,
+      node.note,
+      `来源：${node.sourceSpanRefs.join("、") || "暂无来源"}`,
+      "",
+    ]),
+  ].join("\n");
+}
+
+function createLocalMindMapArtifact(
+  workbench: SemanticWorkbench,
+  mindMap: MindMapArtifact,
+  edited: boolean,
+): SemanticArtifact {
+  const version = workbench.artifacts.filter((artifact) => artifact.artifactType === "mind_map").length + 1;
+  return {
+    id: `semantic_${workbench.sessionId}_mind_map_${edited ? "edited" : "generated"}_v${version}`,
+    sessionId: workbench.sessionId,
+    artifactType: "mind_map",
+    status: "succeeded",
+    provider: "minimax_m3",
+    modelName: "MiniMax-M3",
+    schemaVersion: "v0.8",
+    sourceSpanRefs: mindMap.sourceSpans,
+    payloadJson: JSON.stringify(mindMap),
+    errorMessage: "",
+  };
+}
+
 function App() {
   const manualFlushCooldownMs = 10_000;
   const initialState = useMemo(() => loadState(), []);
@@ -135,6 +191,12 @@ function App() {
   const [semanticWorkbench, setSemanticWorkbench] =
     useState<SemanticWorkbench>(defaultSemanticWorkbench);
   const [semanticLoading, setSemanticLoading] = useState(false);
+  const [mindMapLoading, setMindMapLoading] = useState(false);
+  const [selectedMindMapNodeId, setSelectedMindMapNodeId] = useState(
+    defaultSemanticWorkbench.mindMap?.root ?? "",
+  );
+  const [mindMapDraft, setMindMapDraft] = useState({ label: "", note: "" });
+  const [mindMapExport, setMindMapExport] = useState<MindMapExport | null>(null);
   const [desktopContext, setDesktopContext] = useState<{
     runtime: string;
     platform: string;
@@ -166,6 +228,15 @@ function App() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    const node = semanticWorkbench.mindMap?.nodes.find(
+      (candidate) => candidate.id === selectedMindMapNodeId,
+    );
+    if (node) {
+      setMindMapDraft({ label: node.label, note: node.note });
+    }
+  }, [selectedMindMapNodeId, semanticWorkbench.mindMap]);
 
   useEffect(() => {
     let cancelled = false;
@@ -770,6 +841,167 @@ function App() {
     window.setTimeout(() => setSaveBanner(""), 2400);
   }
 
+  function applyMindMapArtifact(artifact: SemanticArtifact) {
+    const mindMap = parseMindMapArtifact(artifact);
+    if (!mindMap) {
+      setSaveBanner("脑图产物解析失败，请重新生成。");
+      window.setTimeout(() => setSaveBanner(""), 2600);
+      return;
+    }
+
+    setSemanticWorkbench((current) => ({
+      ...current,
+      mindMap,
+      artifacts: [
+        artifact,
+        ...current.artifacts.filter((candidate) => candidate.id !== artifact.id),
+      ],
+    }));
+    setSelectedMindMapNodeId((current) => current || mindMap.root);
+  }
+
+  async function handleGenerateMindMap() {
+    setMindMapLoading(true);
+    const artifact = await generateDesktopMindMap().catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : "生成思维脑图失败。";
+      setSaveBanner(message);
+      window.setTimeout(() => setSaveBanner(""), 3200);
+      return null;
+    });
+    setMindMapLoading(false);
+
+    if (artifact) {
+      applyMindMapArtifact(artifact);
+      setSaveBanner("已生成 v0.8 思维脑图。");
+      window.setTimeout(() => setSaveBanner(""), 2800);
+      return;
+    }
+
+    if (!isTauriEnvironment() && semanticWorkbench.mindMap) {
+      const nextMindMap = {
+        ...semanticWorkbench.mindMap,
+        edited: false,
+        version: semanticWorkbench.mindMap.version + 1,
+        parentArtifactId: "",
+      };
+      const localArtifact = createLocalMindMapArtifact(semanticWorkbench, nextMindMap, false);
+      applyMindMapArtifact(localArtifact);
+      setSaveBanner("浏览器原型模式已生成 v0.8 脑图样例。");
+      window.setTimeout(() => setSaveBanner(""), 2800);
+    }
+  }
+
+  async function handleToggleMindMapNode(nodeId: string, collapsed: boolean) {
+    const artifact = semanticWorkbench.artifacts.find(
+      (candidate) => candidate.artifactType === "mind_map" && candidate.status === "succeeded",
+    );
+    const updated = artifact
+      ? await toggleDesktopMindMapNode({
+          artifactId: artifact.id,
+          nodeId,
+          collapsed,
+        }).catch(() => null)
+      : null;
+
+    if (updated) {
+      applyMindMapArtifact(updated);
+      setSaveBanner(collapsed ? "节点已折叠为新版本。" : "节点已展开为新版本。");
+      window.setTimeout(() => setSaveBanner(""), 2400);
+      return;
+    }
+
+    if (!isTauriEnvironment() && semanticWorkbench.mindMap) {
+      const nextMindMap = {
+        ...semanticWorkbench.mindMap,
+        nodes: semanticWorkbench.mindMap.nodes.map((node) =>
+          node.id === nodeId ? { ...node, collapsed } : node,
+        ),
+        edited: true,
+        version: semanticWorkbench.mindMap.version + 1,
+        parentArtifactId: artifact?.id ?? "",
+      };
+      applyMindMapArtifact(createLocalMindMapArtifact(semanticWorkbench, nextMindMap, true));
+    }
+  }
+
+  async function handleSaveMindMapNode() {
+    const artifact = semanticWorkbench.artifacts.find(
+      (candidate) => candidate.artifactType === "mind_map" && candidate.status === "succeeded",
+    );
+    if (!semanticWorkbench.mindMap || !selectedMindMapNodeId || !mindMapDraft.label.trim()) {
+      setSaveBanner("请选择节点并填写节点标题。");
+      window.setTimeout(() => setSaveBanner(""), 2400);
+      return;
+    }
+
+    const updated = artifact
+      ? await updateDesktopMindMapNode({
+          artifactId: artifact.id,
+          nodeId: selectedMindMapNodeId,
+          label: mindMapDraft.label.trim(),
+          note: mindMapDraft.note.trim(),
+        }).catch(() => null)
+      : null;
+
+    if (updated) {
+      applyMindMapArtifact(updated);
+      setSaveBanner("节点编辑已保存为新脑图版本。");
+      window.setTimeout(() => setSaveBanner(""), 2600);
+      return;
+    }
+
+    if (!isTauriEnvironment()) {
+      const nextMindMap = {
+        ...semanticWorkbench.mindMap,
+        nodes: semanticWorkbench.mindMap.nodes.map((node) =>
+          node.id === selectedMindMapNodeId
+            ? { ...node, label: mindMapDraft.label.trim(), note: mindMapDraft.note.trim() }
+            : node,
+        ),
+        edited: true,
+        version: semanticWorkbench.mindMap.version + 1,
+        parentArtifactId: artifact?.id ?? "",
+      };
+      applyMindMapArtifact(createLocalMindMapArtifact(semanticWorkbench, nextMindMap, true));
+      setSaveBanner("浏览器原型模式已保存编辑版本。");
+      window.setTimeout(() => setSaveBanner(""), 2600);
+    }
+  }
+
+  async function handleExportMindMap(format: "markdown" | "json") {
+    const artifact = semanticWorkbench.artifacts.find(
+      (candidate) => candidate.artifactType === "mind_map" && candidate.status === "succeeded",
+    );
+    const exported = artifact
+      ? await exportDesktopMindMap(artifact.id, format).catch(() => null)
+      : null;
+
+    if (exported) {
+      setMindMapExport(exported);
+      setSaveBanner(`已生成 ${exported.fileName} 导出内容。`);
+      window.setTimeout(() => setSaveBanner(""), 2600);
+      return;
+    }
+
+    if (!isTauriEnvironment() && semanticWorkbench.mindMap) {
+      setMindMapExport({
+        format,
+        fileName: `demo-mind-map.${format === "markdown" ? "md" : "json"}`,
+        content:
+          format === "markdown"
+            ? mindMapToMarkdown(semanticWorkbench.mindMap)
+            : JSON.stringify(semanticWorkbench.mindMap, null, 2),
+      });
+      setSaveBanner("浏览器原型模式已生成导出预览。");
+      window.setTimeout(() => setSaveBanner(""), 2600);
+    }
+  }
+
+  const currentMindMap = semanticWorkbench.mindMap;
+  const selectedMindMapNode = currentMindMap?.nodes.find(
+    (node) => node.id === selectedMindMapNodeId,
+  );
+
   const pendingTodoCount = todos.filter(
     (todo) => todo.status === "open" || todo.status === "in_progress",
   ).length;
@@ -784,6 +1016,7 @@ function App() {
     { key: "actions", label: "行动中心", description: "Todo 执行" },
     { key: "transcript", label: "转写评估", description: "音频与说话人" },
     { key: "semantic", label: "语义纪要", description: "修正与候选" },
+    { key: "mindmap", label: "思维脑图", description: "结构与导出" },
     { key: "history", label: "会话日志", description: "文稿与来源" },
     { key: "system", label: "系统状态", description: "排障与运行时" },
     { key: "settings", label: "设置", description: "模型与录音" },
@@ -1654,6 +1887,178 @@ function App() {
                           </article>
                         ))}
                       </div>
+                    </section>
+                  </aside>
+                </section>
+              </main>
+            ) : null}
+
+            {activeTab === "mindmap" ? (
+              <main className="page-stack">
+                <div className="page-heading">
+                  <div>
+                    <p className="section-kicker">MindMap / v0.8</p>
+                    <h2>思维脑图</h2>
+                  </div>
+                  <div className="heading-actions">
+                    <span className="status-chip">
+                      {currentMindMap?.edited ? `已编辑 v${currentMindMap.version}` : `生成版 v${currentMindMap?.version ?? 0}`}
+                    </span>
+                    <button
+                      className="primary-button"
+                      type="button"
+                      onClick={handleGenerateMindMap}
+                      disabled={mindMapLoading}
+                    >
+                      {mindMapLoading ? "生成中" : "生成 / 重新生成"}
+                    </button>
+                  </div>
+                </div>
+
+                <section className="mindmap-layout">
+                  <section className="panel-lite mindmap-canvas-panel">
+                    <div className="panel-head">
+                      <div>
+                        <p className="section-kicker">Canvas</p>
+                        <h3>{currentMindMap?.nodes.find((node) => node.id === currentMindMap.root)?.label ?? "暂无脑图"}</h3>
+                      </div>
+                      <span className="badge badge-waiting">
+                        {currentMindMap?.sourceSpans.length ?? 0} 个来源
+                      </span>
+                    </div>
+                    {currentMindMap ? (
+                        <div className="mindmap-edge-strip" aria-label="脑图边关系">
+                          {currentMindMap.edges.map((edge) => (
+                            <span key={edge.id}>
+                              {edge.from} → {edge.to} · {edge.label}
+                            </span>
+                          ))}
+                        </div>
+                    ) : null}
+                    {currentMindMap ? (
+                      <div className="mindmap-canvas" aria-label="思维脑图画布">
+                        {currentMindMap.nodes.map((node) => {
+                          const isRoot = node.id === currentMindMap.root;
+                          const isSelected = node.id === selectedMindMapNodeId;
+                          return (
+                            <button
+                              key={node.id}
+                              className={`mindmap-node mindmap-node-${node.kind} ${
+                                isRoot ? "mindmap-node-root" : ""
+                              } ${isSelected ? "mindmap-node-selected" : ""}`}
+                              type="button"
+                              onClick={() => setSelectedMindMapNodeId(node.id)}
+                              title={node.sourceSpanRefs.join("、") || "暂无来源"}
+                            >
+                              <span>{node.label}</span>
+                              <small>{node.kind} · {node.collapsed ? "已折叠" : "展开"}</small>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="empty-state">暂无脑图，请先生成 v0.8 思维脑图。</div>
+                    )}
+                  </section>
+
+                  <aside className="mindmap-side-stack">
+                    <section className="panel-lite">
+                      <div className="panel-head">
+                        <div>
+                          <p className="section-kicker">Node Editor</p>
+                          <h3>节点编辑</h3>
+                        </div>
+                        {selectedMindMapNode ? (
+                          <button
+                            className="secondary-button"
+                            type="button"
+                            onClick={() =>
+                              handleToggleMindMapNode(
+                                selectedMindMapNode.id,
+                                !selectedMindMapNode.collapsed,
+                              )
+                            }
+                          >
+                            {selectedMindMapNode.collapsed ? "展开" : "折叠"}
+                          </button>
+                        ) : null}
+                      </div>
+                      {selectedMindMapNode ? (
+                        <div className="mindmap-editor">
+                          <label className="field field-wide">
+                            <span>节点标题</span>
+                            <input
+                              type="text"
+                              value={mindMapDraft.label}
+                              onChange={(event) =>
+                                setMindMapDraft((current) => ({
+                                  ...current,
+                                  label: event.target.value,
+                                }))
+                              }
+                            />
+                          </label>
+                          <label className="field field-wide">
+                            <span>节点说明</span>
+                            <textarea
+                              value={mindMapDraft.note}
+                              onChange={(event) =>
+                                setMindMapDraft((current) => ({
+                                  ...current,
+                                  note: event.target.value,
+                                }))
+                              }
+                            />
+                          </label>
+                          <div className="source-ref-list">
+                            {selectedMindMapNode.sourceSpanRefs.map((source) => (
+                              <button
+                                key={source}
+                                className="source-ref"
+                                type="button"
+                                onClick={() => setActiveTab("transcript")}
+                                title="跳转到转写评估页查看来源"
+                              >
+                                {source}
+                              </button>
+                            ))}
+                          </div>
+                          <button
+                            className="primary-button"
+                            type="button"
+                            onClick={handleSaveMindMapNode}
+                          >
+                            保存为新版本
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="empty-state">请选择一个节点。</div>
+                      )}
+                    </section>
+
+                    <section className="panel-lite">
+                      <div className="panel-head">
+                        <div>
+                          <p className="section-kicker">Export</p>
+                          <h3>导出</h3>
+                        </div>
+                        <div className="row-actions">
+                          <button className="secondary-button" type="button" onClick={() => handleExportMindMap("markdown")}>
+                            Markdown
+                          </button>
+                          <button className="secondary-button" type="button" onClick={() => handleExportMindMap("json")}>
+                            JSON
+                          </button>
+                        </div>
+                      </div>
+                      {mindMapExport ? (
+                        <div className="export-preview">
+                          <strong>{mindMapExport.fileName}</strong>
+                          <pre>{mindMapExport.content}</pre>
+                        </div>
+                      ) : (
+                        <div className="empty-state">导出后会在这里显示可复用内容。</div>
+                      )}
                     </section>
                   </aside>
                 </section>

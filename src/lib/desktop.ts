@@ -251,6 +251,52 @@ export interface TodoCandidatePayload {
   sourceSegmentIds: string[];
 }
 
+export interface MindMapNodePayload {
+  id: string;
+  label: string;
+  kind: string;
+  note: string;
+  sourceSpanRefs: string[];
+  collapsed: boolean;
+}
+
+export interface MindMapEdgePayload {
+  id: string;
+  from: string;
+  to: string;
+  label: string;
+}
+
+export interface MindMapArtifactPayload {
+  root: string;
+  nodes: MindMapNodePayload[];
+  edges: MindMapEdgePayload[];
+  summary: string;
+  sourceSpans: string[];
+  edited: boolean;
+  version: number;
+  parentArtifactId: string;
+}
+
+export interface UpdateMindMapNodePayload {
+  artifactId: string;
+  nodeId: string;
+  label: string;
+  note: string;
+}
+
+export interface ToggleMindMapNodePayload {
+  artifactId: string;
+  nodeId: string;
+  collapsed: boolean;
+}
+
+export interface MindMapExportPayload {
+  format: "markdown" | "json";
+  fileName: string;
+  content: string;
+}
+
 export interface SemanticWorkbenchPayload {
   sessionId: string;
   recordingType: RecordingTypePayload;
@@ -259,6 +305,7 @@ export interface SemanticWorkbenchPayload {
   summary: SummaryArtifactPayload;
   meetingMinutes: MeetingMinutesPayload;
   todoCandidates: TodoCandidatePayload[];
+  mindMap: MindMapArtifactPayload | null;
   artifacts: SemanticArtifactPayload[];
   modelInvocations: ModelInvocationPayload[];
 }
@@ -574,4 +621,47 @@ export async function rejectDesktopTranscriptRevision(
 
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<TranscriptRevisionPayload>("reject_transcript_revision", { revisionId });
+}
+
+export async function generateDesktopMindMap(): Promise<SemanticArtifactPayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<SemanticArtifactPayload>("generate_mind_map");
+}
+
+export async function updateDesktopMindMapNode(
+  command: UpdateMindMapNodePayload,
+): Promise<SemanticArtifactPayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<SemanticArtifactPayload>("update_mind_map_node", { command });
+}
+
+export async function toggleDesktopMindMapNode(
+  command: ToggleMindMapNodePayload,
+): Promise<SemanticArtifactPayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<SemanticArtifactPayload>("toggle_mind_map_node", { command });
+}
+
+export async function exportDesktopMindMap(
+  artifactId: string,
+  format: "markdown" | "json",
+): Promise<MindMapExportPayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<MindMapExportPayload>("export_mind_map", { artifactId, format });
 }
