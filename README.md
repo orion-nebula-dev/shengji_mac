@@ -14,6 +14,7 @@
 6. Todo 入口固定为 MiniMax M3 语义边界，候选产物先进入 `semantic_artifacts(type='todo_extraction')`。
 7. 支持 Todo 完成/未完成切换。
 8. 支持本地模型缓存状态展示、处理任务记录、失败原因记录与基础稳定性保护。
+9. 支持基于修正文稿和摘要生成思维脑图，节点可编辑、折叠、追溯来源并导出 Markdown / JSON。
 
 ## v0.5 处理链路
 
@@ -134,6 +135,7 @@ SQLite 数据库：
 10. [发布说明_v0.5.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v0.5.0.md>)
 11. [发布说明_v0.6.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v0.6.0.md>)
 12. [发布说明_v0.7.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v0.7.0.md>)
+13. [发布说明_v0.8.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v0.8.0.md>)
 
 过时的一期文档、旧 v2.0 PRD 和旧设计包已归档到：
 
@@ -143,10 +145,11 @@ AI文档/废纸篓/2026-06-12-旧方案归档/
 
 ## 当前边界
 
-当前为 v0.7 待办中枢版本，尚未完成：
+当前为 v0.8 思维脑图版本，尚未完成：
 
 1. 自动 30 秒滚动切片录音。
 2. 真实 Argmax local server / CLI 推理执行与模型下载器。
 3. 声纹识别与特定用户过滤。
 4. SpeakerKit 真实说话人分离推理接入。
 5. 多设备同步。
+6. Moment、深度研究、分享导出产品化和多语言导出。
