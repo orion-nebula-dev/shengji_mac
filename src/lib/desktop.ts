@@ -251,6 +251,30 @@ export interface TodoCandidatePayload {
   sourceSegmentIds: string[];
 }
 
+export interface MomentArtifactPayload {
+  id: string;
+  title: string;
+  momentType: string;
+  summary: string;
+  importance: number;
+  startMs: number;
+  endMs: number;
+  sourceSpanRefs: string[];
+  actionHint: string;
+}
+
+export interface DeepResearchDraftPayload {
+  id: string;
+  question: string;
+  background: string;
+  hypotheses: string[];
+  searchDirections: string[];
+  nextSteps: string[];
+  sourceSpanRefs: string[];
+  convertedTodoId: string;
+  mindMapNodeId: string;
+}
+
 export interface MindMapNodePayload {
   id: string;
   label: string;
@@ -297,6 +321,21 @@ export interface MindMapExportPayload {
   content: string;
 }
 
+export interface StartResearchFromSegmentPayload {
+  segmentId: string;
+  question: string;
+}
+
+export interface ConvertResearchToTodoPayload {
+  artifactId: string;
+  researchId: string;
+}
+
+export interface AddResearchToMindMapPayload {
+  artifactId: string;
+  researchId: string;
+}
+
 export interface SemanticWorkbenchPayload {
   sessionId: string;
   recordingType: RecordingTypePayload;
@@ -306,6 +345,8 @@ export interface SemanticWorkbenchPayload {
   meetingMinutes: MeetingMinutesPayload;
   todoCandidates: TodoCandidatePayload[];
   mindMap: MindMapArtifactPayload | null;
+  moments: MomentArtifactPayload[];
+  deepResearch: DeepResearchDraftPayload[];
   artifacts: SemanticArtifactPayload[];
   modelInvocations: ModelInvocationPayload[];
 }
@@ -664,4 +705,46 @@ export async function exportDesktopMindMap(
 
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<MindMapExportPayload>("export_mind_map", { artifactId, format });
+}
+
+export async function generateDesktopValueDiscovery(): Promise<SemanticArtifactPayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<SemanticArtifactPayload>("generate_value_discovery");
+}
+
+export async function startDesktopResearchFromSegment(
+  command: StartResearchFromSegmentPayload,
+): Promise<SemanticArtifactPayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<SemanticArtifactPayload>("start_research_from_segment", { command });
+}
+
+export async function convertDesktopResearchToTodo(
+  command: ConvertResearchToTodoPayload,
+): Promise<TodoPayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<TodoPayload>("convert_research_to_todo", { command });
+}
+
+export async function addDesktopResearchToMindMap(
+  command: AddResearchToMindMapPayload,
+): Promise<SemanticArtifactPayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<SemanticArtifactPayload>("add_research_to_mind_map", { command });
 }
