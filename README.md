@@ -111,7 +111,7 @@ SQLite 数据库：
 
 ### MiniMax M3 语义配置
 
-1. `M3 调用地址`
+1. `M3 调用地址`：默认 `https://api.minimaxi.com/v1/chat/completions`，用于 Token Plan 中国区 `sk-cp-...` key。
 2. `M3 模型`
 3. `M3 API Key`
 4. `Todo 语义产物` 固定进入 `semantic_artifacts(type='todo_extraction')`

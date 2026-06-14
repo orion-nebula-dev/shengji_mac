@@ -75,7 +75,7 @@ fn ensure_app_settings_columns(connection: &Connection) -> Result<(), String> {
         ),
         (
             "semantic_base_url",
-            "ALTER TABLE app_settings ADD COLUMN semantic_base_url TEXT NOT NULL DEFAULT 'https://api.minimax.io/v1/responses'",
+            "ALTER TABLE app_settings ADD COLUMN semantic_base_url TEXT NOT NULL DEFAULT 'https://api.minimaxi.com/v1/chat/completions'",
         ),
         (
             "semantic_model_name",
@@ -145,7 +145,10 @@ fn ensure_app_settings_columns(connection: &Connection) -> Result<(), String> {
                 ELSE export_provider_type
               END,
               semantic_base_url = CASE
-                WHEN TRIM(semantic_base_url) = '' THEN 'https://api.minimax.io/v1/responses'
+                WHEN TRIM(semantic_base_url) = ''
+                  OR semantic_base_url = 'https://api.minimax.io/v1/responses'
+                  OR semantic_base_url = 'https://api.minimax.io/v1/text/chatcompletion_v2'
+                THEN 'https://api.minimaxi.com/v1/chat/completions'
                 ELSE semantic_base_url
               END,
               semantic_model_name = CASE

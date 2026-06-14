@@ -114,6 +114,12 @@ MINIMAX_API_KEY="你的 key" npm run probe:minimax -- models
 MINIMAX_API_KEY="你的 key" npm run probe:minimax -- chat --model MiniMax-M3
 ```
 
+当前项目默认使用 Token Plan 中国区 OpenAI-compatible endpoint：
+
+```text
+https://api.minimaxi.com/v1/chat/completions
+```
+
 成功时说明：
 
 1. API Key 可用。
