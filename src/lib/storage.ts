@@ -1,5 +1,5 @@
 import { defaultRuntime, defaultSessions, defaultSettings, defaultTodos } from "../data/mock";
-import type { RuntimeStatus, SessionItem, SettingsState, TodoItem } from "../types";
+import type { RuntimeStatus, SessionItem, SettingsState, TodoItem, TodoStatus } from "../types";
 
 const STORAGE_KEY = "smart-todo-desktop-state";
 
@@ -63,9 +63,29 @@ export function loadState(): PersistedState {
       semanticApiKeyMasked: mergedSettings.semanticApiKeyMasked,
       allowCloudFallback: mergedSettings.allowCloudFallback,
     };
+    const normalizedTodos = (parsed.todos ?? defaultState.todos).map((todo) => {
+      const legacyStatus = String((todo as TodoItem & { status: string }).status);
+      const status: TodoStatus =
+        legacyStatus === "completed" || legacyStatus === "done"
+          ? "done"
+          : legacyStatus === "in_progress"
+            ? "in_progress"
+            : legacyStatus === "dismissed"
+              ? "dismissed"
+              : "open";
+      return {
+        ...todo,
+        status,
+        owner: todo.owner ?? "",
+        dueAt: todo.dueAt ?? "",
+        priority: todo.priority ?? "medium",
+        sourceSpanRefs: todo.sourceSpanRefs ?? [],
+        candidateId: todo.candidateId ?? "",
+      };
+    });
     return {
       settings: sanitizedSettings,
-      todos: parsed.todos ?? defaultState.todos,
+      todos: normalizedTodos,
       sessions: parsed.sessions ?? defaultState.sessions,
       runtime: {
         ...defaultState.runtime,
