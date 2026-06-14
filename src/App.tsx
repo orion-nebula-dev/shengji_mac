@@ -7,6 +7,7 @@ import {
   dismissDesktopTodoCandidate,
   flushDesktopSession,
   exportDesktopMindMap,
+  generateDesktopExportBundle,
   generateDesktopMindMap,
   generateDesktopValueDiscovery,
   generateSemanticWorkbench,
@@ -36,11 +37,13 @@ import {
   updateDesktopMindMapNode,
   updateDesktopTodoStatus,
 } from "./lib/desktop";
-import { defaultSemanticWorkbench, defaultTodoCandidates, defaultTranscriptReview } from "./data/mock";
+import { defaultExportBundle, defaultSemanticWorkbench, defaultTodoCandidates, defaultTranscriptReview } from "./data/mock";
 import { getDefaultState, loadState, saveState } from "./lib/storage";
 import type {
   CorrectionPattern,
   DeepResearchDraft,
+  ExportBundle,
+  ExportItem,
   MindMapArtifact,
   MindMapExport,
   MomentArtifact,
@@ -61,6 +64,7 @@ type TabKey =
   | "semantic"
   | "research"
   | "mindmap"
+  | "export"
   | "history"
   | "system"
   | "settings";
@@ -91,6 +95,13 @@ const extractionStatusLabelMap = {
   failed: "失败可重试",
   pending: "等待中",
 } as const;
+
+const exportFormatLabelMap: Record<string, string> = {
+  markdown: "Markdown",
+  srt: "SRT 字幕",
+  json: "JSON",
+  snapshot: "分享快照",
+};
 
 const transcriptJobStatusLabelMap = {
   queued: "已排队",
@@ -248,6 +259,10 @@ function App() {
   );
   const [mindMapDraft, setMindMapDraft] = useState({ label: "", note: "" });
   const [mindMapExport, setMindMapExport] = useState<MindMapExport | null>(null);
+  const [exportBundle, setExportBundle] = useState<ExportBundle | null>(defaultExportBundle);
+  const [exportLoading, setExportLoading] = useState(false);
+  const [selectedExportFormat, setSelectedExportFormat] = useState("markdown");
+  const [sessionSearch, setSessionSearch] = useState("");
   const [valueDiscoveryLoading, setValueDiscoveryLoading] = useState(false);
   const [selectedResearchId, setSelectedResearchId] = useState(
     defaultSemanticWorkbench.deepResearch[0]?.id ?? "",
@@ -1071,6 +1086,34 @@ function App() {
     }
   }
 
+  async function handleGenerateExportBundle() {
+    setExportLoading(true);
+    const generated = await generateDesktopExportBundle({
+      formats: ["markdown", "srt", "json", "snapshot"],
+    }).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : "生成导出包失败。";
+      setSaveBanner(message);
+      window.setTimeout(() => setSaveBanner(""), 3200);
+      return null;
+    });
+    setExportLoading(false);
+
+    if (generated) {
+      setExportBundle(generated);
+      setSelectedExportFormat(generated.items[0]?.format ?? "markdown");
+      setSaveBanner("已生成 Markdown、SRT、JSON 和本地分享快照。");
+      window.setTimeout(() => setSaveBanner(""), 3200);
+      return;
+    }
+
+    if (!isTauriEnvironment()) {
+      setExportBundle(defaultExportBundle);
+      setSelectedExportFormat(defaultExportBundle.items[0]?.format ?? "markdown");
+      setSaveBanner("浏览器原型模式已载入 v1.0 导出包样例。");
+      window.setTimeout(() => setSaveBanner(""), 3200);
+    }
+  }
+
   function findResearchArtifact(researchId: string) {
     return semanticWorkbench.artifacts.find((artifact) => {
       const research = parseResearchArtifact(artifact);
@@ -1321,6 +1364,19 @@ function App() {
   ).length;
   const failedSessionCount = sessions.filter((session) => session.extractionStatus === "failed").length;
   const latestSession = sessions[0];
+  const filteredSessions = sessions.filter((session) => {
+    const query = sessionSearch.trim().toLowerCase();
+    if (!query) {
+      return true;
+    }
+    return [session.id, session.mergedText, session.extractionProviderUsed, session.triggerReason]
+      .some((field) => field.toLowerCase().includes(query));
+  });
+  const selectedExportItem: ExportItem | undefined =
+    exportBundle?.items.find((item) => item.format === selectedExportFormat) ??
+    exportBundle?.items[0];
+  const exportReadyCount =
+    exportBundle?.items.filter((item) => item.status === "succeeded").length ?? 0;
   const navItems: Array<{ key: TabKey; label: string; description: string }> = [
     { key: "overview", label: "今日工作台", description: "录音与概览" },
     { key: "actions", label: "行动中心", description: "Todo 执行" },
@@ -1328,6 +1384,7 @@ function App() {
     { key: "semantic", label: "语义纪要", description: "修正与候选" },
     { key: "research", label: "价值发现", description: "Moment 与研究" },
     { key: "mindmap", label: "思维脑图", description: "结构与导出" },
+    { key: "export", label: "导出中心", description: "快照与归档" },
     { key: "history", label: "会话日志", description: "文稿与来源" },
     { key: "system", label: "系统状态", description: "排障与运行时" },
     { key: "settings", label: "设置", description: "模型与录音" },
@@ -2613,6 +2670,132 @@ function App() {
               </main>
             ) : null}
 
+            {activeTab === "export" ? (
+              <main className="page-stack">
+                <div className="page-heading">
+                  <div>
+                    <p className="section-kicker">Export / v1.0</p>
+                    <h2>导出中心</h2>
+                  </div>
+                  <div className="heading-actions">
+                    <span className="status-chip">
+                      {exportBundle ? `${exportReadyCount} 个格式就绪` : "等待生成"}
+                    </span>
+                    <button
+                      className="primary-button"
+                      type="button"
+                      onClick={handleGenerateExportBundle}
+                      disabled={exportLoading}
+                    >
+                      {exportLoading ? "生成中" : "生成导出包"}
+                    </button>
+                  </div>
+                </div>
+
+                <section className="export-layout">
+                  <section className="panel-lite export-main-panel">
+                    <div className="panel-head">
+                      <div>
+                        <p className="section-kicker">Local Bundle</p>
+                        <h3>{exportBundle?.sessionId ?? latestSession?.id ?? "暂无会话"}</h3>
+                      </div>
+                      <span className="badge badge-completed">
+                        {exportBundle?.provider ?? "local_file"}
+                      </span>
+                    </div>
+
+                    <div className="export-format-tabs">
+                      {(exportBundle?.items ?? []).map((item) => (
+                        <button
+                          key={item.id}
+                          className={`export-format-tab ${
+                            selectedExportItem?.id === item.id ? "export-format-tab-active" : ""
+                          }`}
+                          type="button"
+                          onClick={() => setSelectedExportFormat(item.format)}
+                        >
+                          <span>{exportFormatLabelMap[item.format] ?? item.format}</span>
+                          <small>{item.status === "succeeded" ? item.fileName : item.errorMessage}</small>
+                        </button>
+                      ))}
+                    </div>
+
+                    {selectedExportItem ? (
+                      <div className="export-preview export-preview-large">
+                        <div className="export-file-meta">
+                          <strong>{selectedExportItem.fileName}</strong>
+                          <span>{selectedExportItem.mimeType}</span>
+                          <span>{selectedExportItem.sourceSpanRefs.length} 个来源片段</span>
+                        </div>
+                        <pre>{selectedExportItem.content}</pre>
+                      </div>
+                    ) : (
+                      <div className="empty-state">点击生成导出包后显示 Markdown、SRT、JSON 和快照预览。</div>
+                    )}
+                  </section>
+
+                  <aside className="export-side-stack">
+                    <section className="panel-lite">
+                      <div className="panel-head">
+                        <div>
+                          <p className="section-kicker">Snapshot</p>
+                          <h3>本地分享快照</h3>
+                        </div>
+                        <span className="badge badge-waiting">
+                          {exportBundle?.snapshot ? "已生成" : "未生成"}
+                        </span>
+                      </div>
+                      <p className="runtime-message">
+                        {exportBundle?.privacySummary ?? "导出内容只在本机生成，不上传音频、完整路径或密钥。"}
+                      </p>
+                      <ul className="compact-list">
+                        <li><span>快照文件</span><strong>{exportBundle?.snapshot?.fileName ?? "待生成"}</strong></li>
+                        <li><span>快照标题</span><strong>{exportBundle?.snapshot?.title ?? "声记分享快照"}</strong></li>
+                        <li><span>来源覆盖</span><strong>{exportBundle?.snapshot?.sourceSpanRefs.length ?? 0} 个片段</strong></li>
+                      </ul>
+                    </section>
+
+                    <section className="panel-lite">
+                      <div className="panel-head">
+                        <div>
+                          <p className="section-kicker">AI Artifacts</p>
+                          <h3>状态、来源与重试</h3>
+                        </div>
+                      </div>
+                      <div className="artifact-export-list">
+                        {semanticWorkbench.artifacts.map((artifact) => (
+                          <article key={artifact.id} className="artifact-export-row">
+                            <div>
+                              <strong>{artifact.artifactType}</strong>
+                              <span>{artifact.provider} · {artifact.modelName} · {artifact.sourceSpanRefs.length} 来源</span>
+                              {artifact.errorMessage ? <p>{artifact.errorMessage}</p> : null}
+                            </div>
+                            {artifact.status === "failed" ? (
+                              <button
+                                className="secondary-button"
+                                type="button"
+                                onClick={() => handleRetrySemanticArtifact(artifact)}
+                              >
+                                重试
+                              </button>
+                            ) : (
+                              <span
+                                className={`badge ${
+                                  artifact.status === "succeeded" ? "badge-completed" : "badge-waiting"
+                                }`}
+                              >
+                                {artifact.status}
+                              </span>
+                            )}
+                          </article>
+                        ))}
+                      </div>
+                    </section>
+                  </aside>
+                </section>
+              </main>
+            ) : null}
+
             {activeTab === "history" ? (
               <main className="page-stack">
                 <div className="page-heading">
@@ -2624,8 +2807,24 @@ function App() {
                     手动刷新当前会话
                   </button>
                 </div>
+                <section className="panel-lite archive-search-panel">
+                  <label className="field field-wide">
+                    <span>搜索会话归档</span>
+                    <input
+                      type="search"
+                      value={sessionSearch}
+                      onChange={(event) => setSessionSearch(event.target.value)}
+                      placeholder="按会话 ID、文稿、Provider 或触发原因搜索"
+                    />
+                  </label>
+                  <div className="archive-metrics">
+                    <span>{filteredSessions.length} / {sessions.length} 个会话</span>
+                    <span>{failedSessionCount} 个失败项</span>
+                    <span>{sessions.filter((session) => session.extractionFallbackUsed).length} 个回退项</span>
+                  </div>
+                </section>
                 <section className="session-list">
-                  {sessions.map((session) => (
+                  {filteredSessions.map((session) => (
                     <article key={session.id} className="session-card">
                       <div className="todo-card-header">
                         <div>
@@ -2653,6 +2852,9 @@ function App() {
                       </div>
                     </article>
                   ))}
+                  {filteredSessions.length === 0 ? (
+                    <div className="empty-state">没有匹配的归档会话。</div>
+                  ) : null}
                 </section>
               </main>
             ) : null}
@@ -2778,7 +2980,7 @@ function App() {
                     <div className="runtime-hint">
                       <p className="section-kicker">本地优先策略</p>
                       <p>
-                        当前本地 WhisperKit / Argmax 接口已进入 v0.4 边界设计，正式转写执行在 v0.5 接入。关闭兜底时不会上传音频。
+                        当前本地 WhisperKit / Argmax 已纳入 v1.0 产品闭环。关闭兜底时不会上传音频。
                       </p>
                     </div>
                   </section>
@@ -2789,7 +2991,7 @@ function App() {
                         <p className="section-kicker">语义理解与隐私边界</p>
                         <h3>MiniMax M3 工作台基座</h3>
                       </div>
-                      <span className="status-chip">v0.4 架构边界</span>
+                      <span className="status-chip">v1.0 产品闭环</span>
                     </div>
                     <div className="settings-grid settings-grid-three">
                       <label className="field">
@@ -2823,7 +3025,7 @@ function App() {
                     <div className="privacy-boundary-grid">
                       <div>
                         <strong>本地</strong>
-                        <p>音频转写与说话人分离默认留在本机，v0.5 才接入实际 Argmax local server。</p>
+                        <p>音频转写与说话人分离默认留在本机，导出也只使用本地 SQLite 产物。</p>
                       </div>
                       <div>
                         <strong>云端</strong>
@@ -2831,7 +3033,29 @@ function App() {
                       </div>
                       <div>
                         <strong>预留</strong>
-                        <p>Embedding 与导出已登记 provider 边界，但 v0.4 不启用向量检索默认路径。</p>
+                        <p>Embedding 保持预留；本地导出已在 v1.0 启用。</p>
+                      </div>
+                    </div>
+                    <div className="provider-status-grid">
+                      <div>
+                        <span>MiniMax M3 成本</span>
+                        <strong>按云端 token 计费</strong>
+                        <p>摘要、纪要、Todo、脑图、研究共享同一语义入口。</p>
+                      </div>
+                      <div>
+                        <span>本地导出成本</span>
+                        <strong>无外部调用</strong>
+                        <p>Markdown、SRT、JSON 和快照只使用本地 SQLite 产物。</p>
+                      </div>
+                      <div>
+                        <span>密钥状态</span>
+                        <strong>{settings.semanticApiKeyMasked ? "已配置 M3 Key" : "未配置 M3 Key"}</strong>
+                        <p>{settings.asrApiKeyMasked ? "ASR Key 已脱敏保存。" : "ASR Key 未配置；本地 ASR 可继续使用。"}</p>
+                      </div>
+                      <div>
+                        <span>隐私说明</span>
+                        <strong>导出不上传</strong>
+                        <p>日志和导出记录不展示完整音频路径、API Key 或完整隐私文本。</p>
                       </div>
                     </div>
                   </section>
@@ -2858,7 +3082,7 @@ function App() {
                     </div>
                     <div className="runtime-hint">
                       <p className="section-kicker">语义入口</p>
-                      <p>v0.4 默认只登记 Todo 语义产物边界，实际 Todo 候选确认在 v0.7 接入。</p>
+                      <p>v1.0 已将 Todo 候选、纪要、脑图和导出闭环统一纳入 MiniMax M3 语义产物。</p>
                       <p>Todo 候选统一通过 MiniMax M3 语义链路承载，产物落库到 semantic_artifacts。</p>
                     </div>
                   </section>
