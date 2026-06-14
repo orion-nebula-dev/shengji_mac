@@ -31,17 +31,40 @@ export function loadState(): PersistedState {
       ...defaultState.settings,
       ...(parsed.settings ?? {}),
     };
-    if (
-      mergedSettings.providerMode === "cloud" &&
-      mergedSettings.asrProviderType === "cloud" &&
-      mergedSettings.todoProviderType === "cloud"
-    ) {
-      mergedSettings.providerMode = "local";
-      mergedSettings.asrProviderType = "local";
-      mergedSettings.todoProviderType = "embedded_local";
+    const legacyAsrProviderType = String(
+      (mergedSettings as SettingsState & { asrProviderType: string }).asrProviderType,
+    );
+    if (legacyAsrProviderType === "local" || legacyAsrProviderType.trim().length === 0) {
+      mergedSettings.asrProviderType = "local_whisperkit";
     }
+    if (legacyAsrProviderType === "cloud") {
+      mergedSettings.asrProviderType = "cloud_volc";
+    }
+    mergedSettings.todoProviderType = "semantic_m3";
+    const sanitizedSettings: SettingsState = {
+      recordEnabled: mergedSettings.recordEnabled,
+      language: mergedSettings.language,
+      chunkSeconds: mergedSettings.chunkSeconds,
+      idleTriggerSeconds: mergedSettings.idleTriggerSeconds,
+      providerMode: mergedSettings.providerMode,
+      asrProviderType: mergedSettings.asrProviderType,
+      speakerProviderType: mergedSettings.speakerProviderType,
+      todoProviderType: "semantic_m3",
+      semanticProviderType: mergedSettings.semanticProviderType,
+      embeddingProviderType: mergedSettings.embeddingProviderType,
+      exportProviderType: mergedSettings.exportProviderType,
+      asrSubmitUrl: mergedSettings.asrSubmitUrl,
+      asrQueryUrl: mergedSettings.asrQueryUrl,
+      asrResourceId: mergedSettings.asrResourceId,
+      asrModelName: mergedSettings.asrModelName,
+      asrApiKeyMasked: mergedSettings.asrApiKeyMasked,
+      semanticBaseUrl: mergedSettings.semanticBaseUrl,
+      semanticModelName: mergedSettings.semanticModelName,
+      semanticApiKeyMasked: mergedSettings.semanticApiKeyMasked,
+      allowCloudFallback: mergedSettings.allowCloudFallback,
+    };
     return {
-      settings: mergedSettings,
+      settings: sanitizedSettings,
       todos: parsed.todos ?? defaultState.todos,
       sessions: parsed.sessions ?? defaultState.sessions,
       runtime: {

@@ -5,9 +5,12 @@ export type SessionStatus =
   | "ready_for_extraction"
   | "extracted"
   | "failed";
-export type ProviderType = "cloud" | "embedded_local";
-export type AsrProviderType = "cloud" | "local";
-export type LocalRuntimeStatus = "not_ready" | "starting" | "ready" | "failed";
+export type ProviderType = "semantic_m3";
+export type AsrProviderType = "cloud_volc" | "local_whisperkit";
+export type SpeakerProviderType = "local_speakerkit";
+export type SemanticProviderType = "minimax_m3";
+export type EmbeddingProviderType = "reserved";
+export type ExportProviderType = "local_file";
 
 export interface SettingsState {
   recordEnabled: boolean;
@@ -16,19 +19,20 @@ export interface SettingsState {
   idleTriggerSeconds: number;
   providerMode: "cloud" | "local";
   asrProviderType: AsrProviderType;
+  speakerProviderType: SpeakerProviderType;
   todoProviderType: ProviderType;
+  semanticProviderType: SemanticProviderType;
+  embeddingProviderType: EmbeddingProviderType;
+  exportProviderType: ExportProviderType;
   asrSubmitUrl: string;
   asrQueryUrl: string;
   asrResourceId: string;
   asrModelName: string;
   asrApiKeyMasked: string;
-  todoBaseUrl: string;
-  todoModelName: string;
-  todoApiKeyMasked: string;
-  localTodoModelVersion: string;
+  semanticBaseUrl: string;
+  semanticModelName: string;
+  semanticApiKeyMasked: string;
   allowCloudFallback: boolean;
-  localTodoRuntimeStatus: LocalRuntimeStatus;
-  localTodoLastHealthCheckAt: string;
 }
 
 export interface TodoItem {
@@ -63,11 +67,64 @@ export interface RuntimeStatus {
   lastExtractionSummary: string;
 }
 
-export interface LocalRuntimeState {
-  providerType: ProviderType;
-  modelVersion: string;
-  runtimeStatus: LocalRuntimeStatus;
-  lastHealthCheckAt: string;
-  fallbackEnabled: boolean;
-  message: string;
+export interface TranscriptAudio {
+  id: string;
+  fileName: string;
+  durationMs: number;
+  status: string;
+  provider: string;
+  modelName: string;
+  offlineAvailable: boolean;
+}
+
+export interface SpeakerItem {
+  id: string;
+  label: string;
+  displayName: string;
+  color: string;
+  segmentCount: number;
+  corrected: boolean;
+}
+
+export interface TranscriptSegment {
+  id: string;
+  audioSegmentId: string;
+  speakerId: string;
+  speakerLabel: string;
+  startMs: number;
+  endMs: number;
+  text: string;
+  confidence: number;
+  provider: string;
+  reviewStatus: "normal" | "flagged" | "corrected";
+  reviewReason: string;
+}
+
+export interface TranscriptJob {
+  id: string;
+  audioSegmentId: string;
+  status: "queued" | "running" | "succeeded" | "failed" | "retrying";
+  retryCount: number;
+  maxRetryCount: number;
+  errorMessage: string;
+  provider: string;
+  modelName: string;
+}
+
+export interface LocalModelStatus {
+  provider: string;
+  modelName: string;
+  cacheDir: string;
+  downloadStatus: "not_started" | "downloading" | "available" | "failed";
+  downloadProgress: number;
+  offlineAvailable: boolean;
+  deviceRecommendation: string;
+}
+
+export interface TranscriptReview {
+  audio: TranscriptAudio;
+  segments: TranscriptSegment[];
+  speakers: SpeakerItem[];
+  jobs: TranscriptJob[];
+  modelStatus: LocalModelStatus;
 }
