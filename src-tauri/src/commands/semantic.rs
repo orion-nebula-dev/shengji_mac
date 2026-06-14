@@ -4,9 +4,9 @@ use crate::{
     app::semantic_service,
     domain::{
         artifact::{
-            AddResearchToMindMapCommand, ConvertResearchToTodoCommand, MindMapExportDto,
-            SemanticArtifactDto, SemanticWorkbenchDto, StartResearchFromSegmentCommand,
-            ToggleMindMapNodeCommand, UpdateMindMapNodeCommand,
+            AddResearchToMindMapCommand, ConvertResearchToTodoCommand, GenerateTranslationCommand,
+            MindMapExportDto, SemanticArtifactDto, SemanticWorkbenchDto,
+            StartResearchFromSegmentCommand, ToggleMindMapNodeCommand, UpdateMindMapNodeCommand,
         },
         correction::{CorrectionPatternDto, DeletedCorrectionPatternDto, TranscriptRevisionDto},
         todo::TodoDto,
@@ -72,9 +72,7 @@ pub(crate) fn reject_transcript_revision_payload(
     semantic_service::reject_transcript_revision(&connection, revision_id)
 }
 
-pub(crate) fn generate_mind_map_payload(
-    db_path: &PathBuf,
-) -> Result<SemanticArtifactDto, String> {
+pub(crate) fn generate_mind_map_payload(db_path: &PathBuf) -> Result<SemanticArtifactDto, String> {
     let connection = open_connection(db_path)?;
     semantic_service::generate_mind_map(&connection)
 }
@@ -109,6 +107,14 @@ pub(crate) fn generate_value_discovery_payload(
 ) -> Result<SemanticArtifactDto, String> {
     let connection = open_connection(db_path)?;
     semantic_service::generate_value_discovery(&connection)
+}
+
+pub(crate) fn generate_translation_payload(
+    db_path: &PathBuf,
+    command: GenerateTranslationCommand,
+) -> Result<SemanticArtifactDto, String> {
+    let connection = open_connection(db_path)?;
+    semantic_service::generate_translation(&connection, command)
 }
 
 pub(crate) fn start_research_from_segment_payload(
@@ -219,6 +225,14 @@ pub(crate) fn generate_value_discovery(
     state: tauri::State<'_, AppState>,
 ) -> Result<SemanticArtifactDto, String> {
     generate_value_discovery_payload(&state.db_path)
+}
+
+#[tauri::command]
+pub(crate) fn generate_translation(
+    command: GenerateTranslationCommand,
+    state: tauri::State<'_, AppState>,
+) -> Result<SemanticArtifactDto, String> {
+    generate_translation_payload(&state.db_path, command)
 }
 
 #[tauri::command]

@@ -9,7 +9,7 @@ pub const DEFAULT_BASE_URL: &str = "https://api.minimax.io/v1/responses";
 pub const DEFAULT_MODEL_NAME: &str = "MiniMax-M3";
 pub const MAX_CONTEXT_TOKENS: usize = 1_000_000;
 pub const PRIVACY_BOUNDARY: &str =
-    "云端语义理解：仅发送转写后的文本上下文，用于摘要、Todo、脑图和研究。";
+    "云端语义理解：仅发送转写后的文本上下文，用于摘要、Todo、脑图、研究和翻译。";
 pub const SUPPORTED_ARTIFACT_TYPES: &[&str] = &[
     "transcript_revision",
     "recording_type",
@@ -19,6 +19,7 @@ pub const SUPPORTED_ARTIFACT_TYPES: &[&str] = &[
     "mind_map",
     "moment",
     "deep_research",
+    "translation",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]

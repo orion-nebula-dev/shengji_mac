@@ -55,82 +55,170 @@ pub(crate) fn generate_export_bundle(
 
     let bundle_id = format!("export_bundle_{}_{}", session_id, current_timestamp_label());
     let formats = normalize_formats(command.formats);
+    let target_languages = normalize_target_languages(command.target_languages);
     let mut items = Vec::new();
     let mut snapshot = None;
 
-    for format in formats {
-        match format.as_str() {
-            "markdown" => {
-                let content = render_markdown(
-                    session_id.as_str(),
-                    &transcript_segments,
-                    &artifacts,
-                    &todos,
-                );
-                items.push(build_item(
-                    &bundle_id,
-                    session_id.as_str(),
-                    "markdown",
-                    "声记会话导出.md",
-                    "text/markdown; charset=utf-8",
-                    content,
-                    source_span_refs.clone(),
-                ));
-            }
-            "srt" => {
-                let content = render_srt(&transcript_segments);
-                items.push(build_item(
-                    &bundle_id,
-                    session_id.as_str(),
-                    "srt",
-                    "声记字幕导出.srt",
-                    "application/x-subrip; charset=utf-8",
-                    content,
-                    transcript_segments
-                        .iter()
-                        .map(|segment| segment.id.clone())
-                        .collect(),
-                ));
-            }
-            "json" => {
-                let content = render_json(session_id.as_str(), &transcript_segments, &artifacts, &todos)?;
-                items.push(build_item(
-                    &bundle_id,
-                    session_id.as_str(),
-                    "json",
-                    "声记结构化导出.json",
-                    "application/json; charset=utf-8",
-                    content,
-                    source_span_refs.clone(),
-                ));
-            }
-            "snapshot" => {
-                let snapshot_dto = ShareSnapshotDto {
-                    id: format!("{}_snapshot", bundle_id),
-                    file_name: "声记分享快照.html".into(),
-                    title: "声记分享快照".into(),
-                    html: render_snapshot_html(
+    if target_languages.is_empty() {
+        for format in formats {
+            match format.as_str() {
+                "markdown" => {
+                    let content = render_markdown(
                         session_id.as_str(),
                         &transcript_segments,
                         &artifacts,
                         &todos,
-                    ),
-                    source_span_refs: source_span_refs.clone(),
-                    privacy_summary: privacy_summary(),
-                };
-                items.push(build_item(
-                    &bundle_id,
-                    session_id.as_str(),
-                    "snapshot",
-                    snapshot_dto.file_name.as_str(),
-                    "text/html; charset=utf-8",
-                    snapshot_dto.html.clone(),
-                    source_span_refs.clone(),
-                ));
-                snapshot = Some(snapshot_dto);
+                    );
+                    items.push(build_item(
+                        &bundle_id,
+                        session_id.as_str(),
+                        "markdown",
+                        "声记会话导出.md",
+                        "text/markdown; charset=utf-8",
+                        content,
+                        source_span_refs.clone(),
+                    ));
+                }
+                "srt" => {
+                    let content = render_srt(&transcript_segments);
+                    items.push(build_item(
+                        &bundle_id,
+                        session_id.as_str(),
+                        "srt",
+                        "声记字幕导出.srt",
+                        "application/x-subrip; charset=utf-8",
+                        content,
+                        transcript_segments
+                            .iter()
+                            .map(|segment| segment.id.clone())
+                            .collect(),
+                    ));
+                }
+                "json" => {
+                    let content = render_json(
+                        session_id.as_str(),
+                        &transcript_segments,
+                        &artifacts,
+                        &todos,
+                    )?;
+                    items.push(build_item(
+                        &bundle_id,
+                        session_id.as_str(),
+                        "json",
+                        "声记结构化导出.json",
+                        "application/json; charset=utf-8",
+                        content,
+                        source_span_refs.clone(),
+                    ));
+                }
+                "snapshot" => {
+                    let snapshot_dto = ShareSnapshotDto {
+                        id: format!("{}_snapshot", bundle_id),
+                        file_name: "声记分享快照.html".into(),
+                        title: "声记分享快照".into(),
+                        html: render_snapshot_html(
+                            session_id.as_str(),
+                            &transcript_segments,
+                            &artifacts,
+                            &todos,
+                        ),
+                        source_span_refs: source_span_refs.clone(),
+                        privacy_summary: privacy_summary(),
+                    };
+                    items.push(build_item(
+                        &bundle_id,
+                        session_id.as_str(),
+                        "snapshot",
+                        snapshot_dto.file_name.as_str(),
+                        "text/html; charset=utf-8",
+                        snapshot_dto.html.clone(),
+                        source_span_refs.clone(),
+                    ));
+                    snapshot = Some(snapshot_dto);
+                }
+                _ => {
+                    return Err(format!("暂不支持的导出格式: {format}"));
+                }
             }
-            _ => {
-                return Err(format!("暂不支持的导出格式: {format}"));
+        }
+    } else {
+        for target_language in target_languages {
+            let translation =
+                translation_payload_for_language(&artifacts, target_language.as_str())
+                    .ok_or_else(|| format!("缺少 {target_language} 翻译产物，请先生成翻译。"))?;
+            let language_source_refs = translation_source_span_refs(&translation);
+            for format in &formats {
+                match format.as_str() {
+                    "markdown" => {
+                        items.push(build_item(
+                            &bundle_id,
+                            session_id.as_str(),
+                            format!("markdown_{target_language}").as_str(),
+                            format!("声记多语言导出-{target_language}.md").as_str(),
+                            "text/markdown; charset=utf-8",
+                            render_multilingual_markdown(
+                                session_id.as_str(),
+                                target_language.as_str(),
+                                &translation,
+                            ),
+                            language_source_refs.clone(),
+                        ));
+                    }
+                    "srt" => {
+                        items.push(build_item(
+                            &bundle_id,
+                            session_id.as_str(),
+                            format!("srt_{target_language}").as_str(),
+                            format!("声记多语言字幕-{target_language}.srt").as_str(),
+                            "application/x-subrip; charset=utf-8",
+                            render_multilingual_srt(&translation),
+                            language_source_refs.clone(),
+                        ));
+                    }
+                    "json" => {
+                        items.push(build_item(
+                            &bundle_id,
+                            session_id.as_str(),
+                            format!("json_{target_language}").as_str(),
+                            format!("声记多语言结构化导出-{target_language}.json").as_str(),
+                            "application/json; charset=utf-8",
+                            render_multilingual_json(
+                                session_id.as_str(),
+                                target_language.as_str(),
+                                &translation,
+                                &artifacts,
+                            )?,
+                            language_source_refs.clone(),
+                        ));
+                    }
+                    "snapshot" => {
+                        let snapshot_dto = ShareSnapshotDto {
+                            id: format!("{}_snapshot_{}", bundle_id, target_language),
+                            file_name: format!("声记多语言分享快照-{target_language}.html"),
+                            title: format!("声记 Multilingual 分享快照 · {target_language}"),
+                            html: render_multilingual_snapshot_html(
+                                session_id.as_str(),
+                                target_language.as_str(),
+                                &translation,
+                            ),
+                            source_span_refs: language_source_refs.clone(),
+                            privacy_summary: privacy_summary(),
+                        };
+                        items.push(build_item(
+                            &bundle_id,
+                            session_id.as_str(),
+                            format!("snapshot_{target_language}").as_str(),
+                            snapshot_dto.file_name.as_str(),
+                            "text/html; charset=utf-8",
+                            snapshot_dto.html.clone(),
+                            language_source_refs.clone(),
+                        ));
+                        snapshot = Some(snapshot_dto);
+                    }
+                    _ => {
+                        return Err(format!("暂不支持的导出格式: {format}"));
+                    }
+                }
             }
         }
     }
@@ -208,7 +296,10 @@ fn query_transcript_segments(
         .map_err(|error| format!("读取转写导出失败: {error}"))
 }
 
-fn query_artifacts(connection: &Connection, session_id: &str) -> Result<Vec<ExportArtifact>, String> {
+fn query_artifacts(
+    connection: &Connection,
+    session_id: &str,
+) -> Result<Vec<ExportArtifact>, String> {
     let mut statement = connection
         .prepare(
             r#"
@@ -280,7 +371,12 @@ fn query_todos(connection: &Connection, session_id: &str) -> Result<Vec<ExportTo
 
 fn normalize_formats(formats: Vec<String>) -> Vec<String> {
     let requested = if formats.is_empty() {
-        vec!["markdown".into(), "srt".into(), "json".into(), "snapshot".into()]
+        vec![
+            "markdown".into(),
+            "srt".into(),
+            "json".into(),
+            "snapshot".into(),
+        ]
     } else {
         formats
     };
@@ -288,6 +384,21 @@ fn normalize_formats(formats: Vec<String>) -> Vec<String> {
     let mut normalized = Vec::new();
     for format in requested {
         let value = format.trim().to_ascii_lowercase();
+        if !value.is_empty() && !normalized.contains(&value) {
+            normalized.push(value);
+        }
+    }
+    normalized
+}
+
+fn normalize_target_languages(target_languages: Vec<String>) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for target_language in target_languages {
+        let value = target_language
+            .trim()
+            .chars()
+            .filter(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+            .collect::<String>();
         if !value.is_empty() && !normalized.contains(&value) {
             normalized.push(value);
         }
@@ -517,6 +628,123 @@ fn render_json(
     serde_json::to_string_pretty(&value).map_err(|error| format!("生成 JSON 导出失败: {error}"))
 }
 
+fn render_multilingual_markdown(
+    session_id: &str,
+    target_language: &str,
+    translation: &Value,
+) -> String {
+    let mut output = String::new();
+    output.push_str("# ShengJi Multilingual Export\n\n");
+    output.push_str(&format!("- Session: `{session_id}`\n"));
+    output.push_str(&format!("- Target language: `{target_language}`\n"));
+    output.push_str("- Privacy: generated locally from translation artifacts.\n\n");
+
+    output.push_str("## Summary Translation\n\n");
+    if let Some(summary) = translation.get("summaryTranslation") {
+        if let Some(title) = summary.get("translatedTitle").and_then(Value::as_str) {
+            output.push_str(&format!("### {title}\n\n"));
+        }
+        if let Some(basis) = summary.get("translatedBasis").and_then(Value::as_str) {
+            output.push_str(basis);
+            output.push_str("\n\n");
+        }
+        if let Some(bullets) = summary.get("translatedBullets").and_then(Value::as_array) {
+            for bullet in bullets.iter().filter_map(Value::as_str) {
+                output.push_str(&format!("- {bullet}\n"));
+            }
+        }
+    }
+    output.push('\n');
+
+    output.push_str("## Transcript Translation\n\n");
+    if let Some(segments) = translation
+        .get("transcriptTranslations")
+        .and_then(Value::as_array)
+    {
+        for segment in segments {
+            let source_segment_id = segment
+                .get("sourceSegmentId")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let speaker_label = segment
+                .get("speakerLabel")
+                .and_then(Value::as_str)
+                .unwrap_or("Speaker");
+            let translated_text = segment
+                .get("translatedText")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            output.push_str(&format!(
+                "- Source segment `{source_segment_id}` · {speaker_label}: {translated_text}\n"
+            ));
+        }
+    }
+
+    output
+}
+
+fn render_multilingual_srt(translation: &Value) -> String {
+    translation
+        .get("transcriptTranslations")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .map(|(index, segment)| {
+            let start_ms = segment.get("startMs").and_then(Value::as_i64).unwrap_or(0);
+            let end_ms = segment
+                .get("endMs")
+                .and_then(Value::as_i64)
+                .unwrap_or(start_ms + 1_000);
+            let speaker_label = segment
+                .get("speakerLabel")
+                .and_then(Value::as_str)
+                .unwrap_or("Speaker");
+            let translated_text = segment
+                .get("translatedText")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            format!(
+                "{}\n{} --> {}\n{}: {}\n",
+                index + 1,
+                format_srt_time(start_ms),
+                format_srt_time(end_ms.max(start_ms + 1_000)),
+                speaker_label,
+                translated_text
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn render_multilingual_json(
+    session_id: &str,
+    target_language: &str,
+    translation: &Value,
+    artifacts: &[ExportArtifact],
+) -> Result<String, String> {
+    let value = json!({
+        "sessionId": session_id,
+        "targetLanguage": target_language,
+        "provider": local_file::PROVIDER_ID,
+        "privacySummary": privacy_summary(),
+        "translations": translation,
+        "sourceArtifacts": artifacts.iter().filter(|artifact| {
+            matches!(artifact.artifact_type.as_str(), "summary" | "transcript_revision" | "translation")
+        }).map(|artifact| json!({
+            "id": artifact.id,
+            "artifactType": artifact.artifact_type,
+            "status": artifact.status,
+            "provider": artifact.provider,
+            "modelName": artifact.model_name,
+            "sourceSpanRefs": artifact.source_span_refs,
+        })).collect::<Vec<_>>(),
+        "exportsGeneratedAt": current_timestamp_label(),
+    });
+    serde_json::to_string_pretty(&value)
+        .map_err(|error| format!("生成多语言 JSON 导出失败: {error}"))
+}
+
 fn render_snapshot_html(
     session_id: &str,
     transcript_segments: &[ExportTranscriptSegment],
@@ -524,14 +752,25 @@ fn render_snapshot_html(
     todos: &[ExportTodo],
 ) -> String {
     let summary = artifact_payload(artifacts, "summary")
-        .and_then(|value| value.get("basis").and_then(Value::as_str).map(str::to_string))
+        .and_then(|value| {
+            value
+                .get("basis")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
         .unwrap_or_else(|| "暂无摘要".into());
     let todo_items = if todos.is_empty() {
         "<li>暂无 Todo</li>".to_string()
     } else {
         todos
             .iter()
-            .map(|todo| format!("<li><strong>{}</strong><span>{}</span></li>", escape_html(todo.title.as_str()), escape_html(todo.status.as_str())))
+            .map(|todo| {
+                format!(
+                    "<li><strong>{}</strong><span>{}</span></li>",
+                    escape_html(todo.title.as_str()),
+                    escape_html(todo.status.as_str())
+                )
+            })
             .collect::<Vec<_>>()
             .join("")
     };
@@ -596,11 +835,121 @@ fn render_snapshot_html(
     )
 }
 
+fn render_multilingual_snapshot_html(
+    session_id: &str,
+    target_language: &str,
+    translation: &Value,
+) -> String {
+    let summary = translation
+        .get("summaryTranslation")
+        .and_then(|value| value.get("translatedBasis"))
+        .and_then(Value::as_str)
+        .unwrap_or("No translated summary yet.");
+    let transcript = translation
+        .get("transcriptTranslations")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .take(8)
+        .map(|segment| {
+            let source_segment_id = segment
+                .get("sourceSegmentId")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let translated_text = segment
+                .get("translatedText")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            format!(
+                "<li><time>{}</time><span>{}</span></li>",
+                escape_html(source_segment_id),
+                escape_html(translated_text)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ShengJi Multilingual Snapshot</title>
+  <style>
+    body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; background: #f5f5f7; color: #1d1d1f; }}
+    main {{ max-width: 920px; margin: 0 auto; padding: 40px 24px; }}
+    header {{ padding: 32px 0 24px; border-bottom: 1px solid #d2d2d7; }}
+    h1 {{ margin: 0 0 8px; font-size: 34px; letter-spacing: 0; }}
+    section {{ padding: 24px 0; border-bottom: 1px solid #e5e5ea; }}
+    ul {{ margin: 0; padding-left: 18px; }}
+    li {{ margin: 8px 0; }}
+    time {{ display: inline-block; min-width: 180px; color: #6e6e73; }}
+    .meta {{ color: #6e6e73; font-size: 14px; }}
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>ShengJi Multilingual Snapshot</h1>
+      <p class="meta">Session {session_id} · Language {target_language} · Multilingual local export</p>
+    </header>
+    <section>
+      <h2>Summary Translation</h2>
+      <p>{summary}</p>
+    </section>
+    <section>
+      <h2>Transcript Translation</h2>
+      <ul>{transcript}</ul>
+    </section>
+  </main>
+</body>
+</html>"#,
+        session_id = escape_html(session_id),
+        target_language = escape_html(target_language),
+        summary = escape_html(summary),
+        transcript = transcript,
+    )
+}
+
 fn artifact_payload<'a>(artifacts: &'a [ExportArtifact], artifact_type: &str) -> Option<Value> {
     artifacts
         .iter()
         .find(|artifact| artifact.artifact_type == artifact_type && artifact.status == "succeeded")
         .and_then(|artifact| serde_json::from_str::<Value>(artifact.payload_json.as_str()).ok())
+}
+
+fn translation_payload_for_language(
+    artifacts: &[ExportArtifact],
+    target_language: &str,
+) -> Option<Value> {
+    artifacts
+        .iter()
+        .filter(|artifact| {
+            artifact.artifact_type == "translation" && artifact.status == "succeeded"
+        })
+        .filter_map(|artifact| serde_json::from_str::<Value>(artifact.payload_json.as_str()).ok())
+        .find(|value| {
+            value
+                .get("targetLanguage")
+                .and_then(Value::as_str)
+                .map(|candidate| candidate == target_language)
+                .unwrap_or(false)
+        })
+}
+
+fn translation_source_span_refs(translation: &Value) -> Vec<String> {
+    translation
+        .get("sourceSpanRefs")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
 }
 
 fn collect_source_span_refs(artifacts: &[ExportArtifact], todos: &[ExportTodo]) -> Vec<String> {
@@ -671,7 +1020,11 @@ fn privacy_summary() -> String {
 }
 
 fn format_time_range(start_ms: i64, end_ms: i64) -> String {
-    format!("{} - {}", format_plain_time(start_ms), format_plain_time(end_ms))
+    format!(
+        "{} - {}",
+        format_plain_time(start_ms),
+        format_plain_time(end_ms)
+    )
 }
 
 fn format_plain_time(milliseconds: i64) -> String {
