@@ -171,7 +171,7 @@ pub(crate) fn retry_transcript_job(
     connection: &Connection,
     job_id: &str,
 ) -> Result<TranscriptJobDto, String> {
-    connection
+    let updated_count = connection
         .execute(
             r#"
             UPDATE transcript_jobs
@@ -186,6 +186,10 @@ pub(crate) fn retry_transcript_job(
             params![job_id],
         )
         .map_err(|error| format!("重试转写任务失败: {error}"))?;
+
+    if updated_count == 0 {
+        return Err("未找到可重试转写任务，或任务已达到最大重试次数".to_string());
+    }
 
     query_transcript_job(connection, job_id)?.ok_or_else(|| "未找到可重试转写任务".to_string())
 }
