@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   acceptDesktopTodoCandidate,
+  addDesktopResearchToMindMap,
+  convertDesktopResearchToTodo,
   deleteDesktopCorrectionPattern,
   dismissDesktopTodoCandidate,
   flushDesktopSession,
   exportDesktopMindMap,
   generateDesktopMindMap,
+  generateDesktopValueDiscovery,
   generateSemanticWorkbench,
   importDesktopLocalAudio,
   isTauriEnvironment,
@@ -24,6 +27,7 @@ import {
   setDesktopCorrectionPatternEnabled,
   simulateDesktopAudioSlice,
   startDesktopRecording,
+  startDesktopResearchFromSegment,
   stopDesktopRecording,
   syncDesktopTodoCandidates,
   testDesktopModelConnection,
@@ -36,8 +40,10 @@ import { defaultSemanticWorkbench, defaultTodoCandidates, defaultTranscriptRevie
 import { getDefaultState, loadState, saveState } from "./lib/storage";
 import type {
   CorrectionPattern,
+  DeepResearchDraft,
   MindMapArtifact,
   MindMapExport,
+  MomentArtifact,
   SemanticArtifact,
   SemanticWorkbench,
   SessionItem,
@@ -53,6 +59,7 @@ type TabKey =
   | "actions"
   | "transcript"
   | "semantic"
+  | "research"
   | "mindmap"
   | "history"
   | "system"
@@ -126,6 +133,30 @@ function parseMindMapArtifact(artifact: SemanticArtifact): MindMapArtifact | nul
   }
 }
 
+function parseMomentArtifact(artifact: SemanticArtifact): MomentArtifact[] {
+  if (artifact.artifactType !== "moment" || artifact.status !== "succeeded") {
+    return [];
+  }
+
+  try {
+    return JSON.parse(artifact.payloadJson) as MomentArtifact[];
+  } catch {
+    return [];
+  }
+}
+
+function parseResearchArtifact(artifact: SemanticArtifact): DeepResearchDraft | null {
+  if (artifact.artifactType !== "deep_research" || artifact.status !== "succeeded") {
+    return null;
+  }
+
+  try {
+    return JSON.parse(artifact.payloadJson) as DeepResearchDraft;
+  } catch {
+    return null;
+  }
+}
+
 function mindMapToMarkdown(mindMap: MindMapArtifact) {
   return [
     "# 语义脑图",
@@ -159,6 +190,26 @@ function createLocalMindMapArtifact(
     schemaVersion: "v0.8",
     sourceSpanRefs: mindMap.sourceSpans,
     payloadJson: JSON.stringify(mindMap),
+    errorMessage: "",
+  };
+}
+
+function createLocalValueArtifact(
+  workbench: SemanticWorkbench,
+  artifactType: "moment" | "deep_research",
+  payload: MomentArtifact[] | DeepResearchDraft,
+  sourceSpanRefs: string[],
+): SemanticArtifact {
+  return {
+    id: `semantic_${workbench.sessionId}_${artifactType}_local_${Date.now()}`,
+    sessionId: workbench.sessionId,
+    artifactType,
+    status: "succeeded",
+    provider: "minimax_m3",
+    modelName: "MiniMax-M3",
+    schemaVersion: "v0.9",
+    sourceSpanRefs,
+    payloadJson: JSON.stringify(payload),
     errorMessage: "",
   };
 }
@@ -197,6 +248,14 @@ function App() {
   );
   const [mindMapDraft, setMindMapDraft] = useState({ label: "", note: "" });
   const [mindMapExport, setMindMapExport] = useState<MindMapExport | null>(null);
+  const [valueDiscoveryLoading, setValueDiscoveryLoading] = useState(false);
+  const [selectedResearchId, setSelectedResearchId] = useState(
+    defaultSemanticWorkbench.deepResearch[0]?.id ?? "",
+  );
+  const [researchSegmentId, setResearchSegmentId] = useState(
+    defaultSemanticWorkbench.revisions[0]?.sourceSegmentId ?? "",
+  );
+  const [researchQuestion, setResearchQuestion] = useState("这个片段是否值得继续研究？");
   const [desktopContext, setDesktopContext] = useState<{
     runtime: string;
     platform: string;
@@ -237,6 +296,21 @@ function App() {
       setMindMapDraft({ label: node.label, note: node.note });
     }
   }, [selectedMindMapNodeId, semanticWorkbench.mindMap]);
+
+  useEffect(() => {
+    if (
+      semanticWorkbench.deepResearch.length > 0 &&
+      !semanticWorkbench.deepResearch.some((research) => research.id === selectedResearchId)
+    ) {
+      setSelectedResearchId(semanticWorkbench.deepResearch[0].id);
+    }
+    if (
+      semanticWorkbench.revisions.length > 0 &&
+      !semanticWorkbench.revisions.some((revision) => revision.sourceSegmentId === researchSegmentId)
+    ) {
+      setResearchSegmentId(semanticWorkbench.revisions[0].sourceSegmentId);
+    }
+  }, [researchSegmentId, selectedResearchId, semanticWorkbench.deepResearch, semanticWorkbench.revisions]);
 
   useEffect(() => {
     let cancelled = false;
@@ -997,10 +1071,246 @@ function App() {
     }
   }
 
+  function findResearchArtifact(researchId: string) {
+    return semanticWorkbench.artifacts.find((artifact) => {
+      const research = parseResearchArtifact(artifact);
+      return research?.id === researchId;
+    });
+  }
+
+  async function handleGenerateValueDiscovery() {
+    setValueDiscoveryLoading(true);
+    const artifact = await generateDesktopValueDiscovery().catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : "生成价值发现失败。";
+      setSaveBanner(message);
+      window.setTimeout(() => setSaveBanner(""), 3200);
+      return null;
+    });
+    setValueDiscoveryLoading(false);
+
+    if (artifact) {
+      const refreshed = await loadSemanticWorkbench().catch(() => null);
+      if (refreshed) {
+        setSemanticWorkbench(refreshed);
+        setSelectedResearchId(refreshed.deepResearch[0]?.id ?? "");
+      } else {
+        const moments = parseMomentArtifact(artifact);
+        setSemanticWorkbench((current) => ({
+          ...current,
+          moments: moments.length > 0 ? moments : current.moments,
+          artifacts: [
+            artifact,
+            ...current.artifacts.filter((candidate) => candidate.id !== artifact.id),
+          ],
+        }));
+      }
+      setSaveBanner("已生成 v0.9 Moment 与研究草稿。");
+      window.setTimeout(() => setSaveBanner(""), 3000);
+      return;
+    }
+
+    if (!isTauriEnvironment()) {
+      setSemanticWorkbench(defaultSemanticWorkbench);
+      setSelectedResearchId(defaultSemanticWorkbench.deepResearch[0]?.id ?? "");
+      setSaveBanner("浏览器原型模式已载入 v0.9 价值发现样例。");
+      window.setTimeout(() => setSaveBanner(""), 3000);
+    }
+  }
+
+  async function handleStartResearchFromSegment() {
+    const selectedRevision = semanticWorkbench.revisions.find(
+      (revision) => revision.sourceSegmentId === researchSegmentId,
+    );
+    if (!selectedRevision) {
+      setSaveBanner("请选择一个可研究的来源片段。");
+      window.setTimeout(() => setSaveBanner(""), 2400);
+      return;
+    }
+
+    const artifact = await startDesktopResearchFromSegment({
+      segmentId: selectedRevision.sourceSegmentId,
+      question: researchQuestion,
+    }).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : "发起研究失败。";
+      setSaveBanner(message);
+      window.setTimeout(() => setSaveBanner(""), 3200);
+      return null;
+    });
+
+    if (artifact) {
+      const research = parseResearchArtifact(artifact);
+      const refreshed = await loadSemanticWorkbench().catch(() => null);
+      if (refreshed) {
+        setSemanticWorkbench(refreshed);
+      } else if (research) {
+        setSemanticWorkbench((current) => ({
+          ...current,
+          deepResearch: [
+            research,
+            ...current.deepResearch.filter((candidate) => candidate.id !== research.id),
+          ],
+          artifacts: [
+            artifact,
+            ...current.artifacts.filter((candidate) => candidate.id !== artifact.id),
+          ],
+        }));
+      }
+      setSelectedResearchId(research?.id ?? "");
+      setSaveBanner("已从来源片段生成研究草稿。");
+      window.setTimeout(() => setSaveBanner(""), 2800);
+      return;
+    }
+
+    if (!isTauriEnvironment()) {
+      const research: DeepResearchDraft = {
+        id: `research_${selectedRevision.sourceSegmentId}`,
+        question: researchQuestion.trim() || "这个片段是否值得继续研究？",
+        background: `${selectedRevision.speakerLabel} ${formatDuration(selectedRevision.startMs)} - ${formatDuration(selectedRevision.endMs)}：${selectedRevision.revisedText}`,
+        hypotheses: ["该片段可能包含后续验收风险。", "补充来源证据后可转为行动项。"],
+        searchDirections: ["检查同会话低置信度片段。", "对照语义产物来源覆盖率。"],
+        nextSteps: ["复核该片段并补充结论。", "将结论转为 Todo 或脑图节点。"],
+        sourceSpanRefs: [selectedRevision.sourceSegmentId],
+        convertedTodoId: "",
+        mindMapNodeId: "",
+      };
+      const artifact = createLocalValueArtifact(
+        semanticWorkbench,
+        "deep_research",
+        research,
+        research.sourceSpanRefs,
+      );
+      setSemanticWorkbench((current) => ({
+        ...current,
+        deepResearch: [
+          research,
+          ...current.deepResearch.filter((candidate) => candidate.id !== research.id),
+        ],
+        artifacts: [artifact, ...current.artifacts],
+      }));
+      setSelectedResearchId(research.id);
+      setSaveBanner("浏览器原型模式已生成片段研究草稿。");
+      window.setTimeout(() => setSaveBanner(""), 2800);
+    }
+  }
+
+  async function handleConvertResearchToTodo(research: DeepResearchDraft) {
+    const artifact = findResearchArtifact(research.id);
+    const converted = artifact
+      ? await convertDesktopResearchToTodo({
+          artifactId: artifact.id,
+          researchId: research.id,
+        }).catch(() => null)
+      : null;
+
+    if (converted) {
+      setTodos((current) => [
+        converted,
+        ...current.filter((todo) => todo.id !== converted.id),
+      ]);
+      setSelectedTodoId(converted.id);
+      const refreshed = await loadSemanticWorkbench().catch(() => null);
+      if (refreshed) {
+        setSemanticWorkbench(refreshed);
+      }
+      setSaveBanner("研究结论已转为正式 Todo。");
+      window.setTimeout(() => setSaveBanner(""), 2800);
+      return;
+    }
+
+    if (!isTauriEnvironment()) {
+      const todoId = `todo_v09_${Date.now()}`;
+      const localTodo: TodoItem = {
+        id: todoId,
+        title: `研究：${research.question}`,
+        note: research.nextSteps.join("；"),
+        status: "open",
+        createdAt: "刚刚",
+        conversationSessionId: semanticWorkbench.sessionId,
+        sourceText: research.background,
+        owner: "",
+        dueAt: "",
+        priority: "medium",
+        sourceSpanRefs: research.sourceSpanRefs,
+        candidateId: research.id,
+      };
+      setTodos((current) => [localTodo, ...current]);
+      setSelectedTodoId(todoId);
+      setSemanticWorkbench((current) => ({
+        ...current,
+        deepResearch: current.deepResearch.map((candidate) =>
+          candidate.id === research.id ? { ...candidate, convertedTodoId: todoId } : candidate,
+        ),
+      }));
+      setSaveBanner("浏览器原型模式已把研究结论转为 Todo。");
+      window.setTimeout(() => setSaveBanner(""), 2800);
+    }
+  }
+
+  async function handleAddResearchToMindMap(research: DeepResearchDraft) {
+    const artifact = findResearchArtifact(research.id);
+    const updated = artifact
+      ? await addDesktopResearchToMindMap({
+          artifactId: artifact.id,
+          researchId: research.id,
+        }).catch(() => null)
+      : null;
+
+    if (updated) {
+      applyMindMapArtifact(updated);
+      const refreshed = await loadSemanticWorkbench().catch(() => null);
+      if (refreshed) {
+        setSemanticWorkbench(refreshed);
+      }
+      setSaveBanner("研究结论已追加为脑图节点。");
+      window.setTimeout(() => setSaveBanner(""), 2800);
+      return;
+    }
+
+    if (!isTauriEnvironment() && semanticWorkbench.mindMap) {
+      const nodeId = `research_${research.id}`;
+      const nextMindMap: MindMapArtifact = {
+        ...semanticWorkbench.mindMap,
+        nodes: [
+          ...semanticWorkbench.mindMap.nodes,
+          {
+            id: nodeId,
+            label: `研究：${research.question}`,
+            kind: "research",
+            note: research.nextSteps.join("；"),
+            sourceSpanRefs: research.sourceSpanRefs,
+            collapsed: false,
+          },
+        ],
+        edges: [
+          ...semanticWorkbench.mindMap.edges,
+          { id: `edge_root_${nodeId}`, from: semanticWorkbench.mindMap.root, to: nodeId, label: "研究" },
+        ],
+        sourceSpans: Array.from(new Set([...semanticWorkbench.mindMap.sourceSpans, ...research.sourceSpanRefs])),
+        edited: true,
+        version: semanticWorkbench.mindMap.version + 1,
+        parentArtifactId: semanticWorkbench.artifacts.find((item) => item.artifactType === "mind_map")?.id ?? "",
+      };
+      const localArtifact = createLocalMindMapArtifact(semanticWorkbench, nextMindMap, true);
+      applyMindMapArtifact(localArtifact);
+      setSemanticWorkbench((current) => ({
+        ...current,
+        deepResearch: current.deepResearch.map((candidate) =>
+          candidate.id === research.id ? { ...candidate, mindMapNodeId: nodeId } : candidate,
+        ),
+      }));
+      setSelectedMindMapNodeId(nodeId);
+      setSaveBanner("浏览器原型模式已追加研究脑图节点。");
+      window.setTimeout(() => setSaveBanner(""), 2800);
+    }
+  }
+
   const currentMindMap = semanticWorkbench.mindMap;
   const selectedMindMapNode = currentMindMap?.nodes.find(
     (node) => node.id === selectedMindMapNodeId,
   );
+  const selectedResearch =
+    semanticWorkbench.deepResearch.find((research) => research.id === selectedResearchId) ??
+    semanticWorkbench.deepResearch[0];
 
   const pendingTodoCount = todos.filter(
     (todo) => todo.status === "open" || todo.status === "in_progress",
@@ -1016,6 +1326,7 @@ function App() {
     { key: "actions", label: "行动中心", description: "Todo 执行" },
     { key: "transcript", label: "转写评估", description: "音频与说话人" },
     { key: "semantic", label: "语义纪要", description: "修正与候选" },
+    { key: "research", label: "价值发现", description: "Moment 与研究" },
     { key: "mindmap", label: "思维脑图", description: "结构与导出" },
     { key: "history", label: "会话日志", description: "文稿与来源" },
     { key: "system", label: "系统状态", description: "排障与运行时" },
@@ -1887,6 +2198,243 @@ function App() {
                           </article>
                         ))}
                       </div>
+                    </section>
+                  </aside>
+                </section>
+              </main>
+            ) : null}
+
+            {activeTab === "research" ? (
+              <main className="page-stack">
+                <div className="page-heading">
+                  <div>
+                    <p className="section-kicker">Value Discovery / v0.9</p>
+                    <h2>Moment 与深度研究</h2>
+                  </div>
+                  <div className="heading-actions">
+                    <span className="status-chip">
+                      {semanticWorkbench.moments.length} 个 Moment
+                    </span>
+                    <button
+                      className="primary-button"
+                      type="button"
+                      onClick={handleGenerateValueDiscovery}
+                      disabled={valueDiscoveryLoading}
+                    >
+                      {valueDiscoveryLoading ? "生成中" : "生成价值发现"}
+                    </button>
+                  </div>
+                </div>
+
+                <section className="research-layout">
+                  <section className="panel-lite research-moment-panel">
+                    <div className="panel-head">
+                      <div>
+                        <p className="section-kicker">Moments</p>
+                        <h3>关键片段</h3>
+                      </div>
+                      <span className="badge badge-waiting">3-10 条</span>
+                    </div>
+                    <div className="moment-list">
+                      {semanticWorkbench.moments.map((moment) => (
+                        <article key={moment.id} className={`moment-row moment-row-${moment.momentType}`}>
+                          <div className="moment-row-head">
+                            <span className="status-chip">{moment.title}</span>
+                            <strong>{formatDuration(moment.startMs)} - {formatDuration(moment.endMs)}</strong>
+                          </div>
+                          <p>{moment.summary}</p>
+                          <div className="moment-meta">
+                            <span>{(moment.importance * 100).toFixed(0)}%</span>
+                            <span>{moment.actionHint}</span>
+                          </div>
+                          <div className="source-ref-list">
+                            {moment.sourceSpanRefs.map((source) => (
+                              <button
+                                key={source}
+                                className="source-ref"
+                                type="button"
+                                onClick={() => {
+                                  setResearchSegmentId(source);
+                                  setActiveTab("transcript");
+                                }}
+                                title="跳转到转写评估页查看来源"
+                              >
+                                {source}
+                              </button>
+                            ))}
+                          </div>
+                        </article>
+                      ))}
+                      {semanticWorkbench.moments.length === 0 ? (
+                        <div className="empty-state">暂无 Moment，请先生成价值发现。</div>
+                      ) : null}
+                    </div>
+                  </section>
+
+                  <section className="page-stack">
+                    <section className="panel-lite research-launch-panel">
+                      <div className="panel-head">
+                        <div>
+                          <p className="section-kicker">Research From Segment</p>
+                          <h3>从片段发起研究</h3>
+                        </div>
+                      </div>
+                      <div className="research-launch-grid">
+                        <label className="field field-wide">
+                          <span>来源片段</span>
+                          <select
+                            value={researchSegmentId}
+                            onChange={(event) => setResearchSegmentId(event.target.value)}
+                          >
+                            {semanticWorkbench.revisions.map((revision) => (
+                              <option key={revision.id} value={revision.sourceSegmentId}>
+                                {formatDuration(revision.startMs)} {revision.speakerLabel} · {revision.sourceSegmentId}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="field field-wide">
+                          <span>研究问题</span>
+                          <input
+                            type="text"
+                            value={researchQuestion}
+                            onChange={(event) => setResearchQuestion(event.target.value)}
+                            placeholder="输入一个要继续验证的问题"
+                          />
+                        </label>
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          onClick={handleStartResearchFromSegment}
+                        >
+                          生成片段研究
+                        </button>
+                      </div>
+                    </section>
+
+                    <section className="panel-lite research-detail-panel">
+                      <div className="panel-head">
+                        <div>
+                          <p className="section-kicker">Deep Research</p>
+                          <h3>{selectedResearch?.question ?? "暂无研究草稿"}</h3>
+                        </div>
+                        {selectedResearch ? (
+                          <span className="status-chip">
+                            {selectedResearch.convertedTodoId ? "已转 Todo" : "草稿"}
+                          </span>
+                        ) : null}
+                      </div>
+
+                      {selectedResearch ? (
+                        <div className="research-detail">
+                          <p className="runtime-message">{selectedResearch.background}</p>
+                          <div className="research-columns">
+                            <div>
+                              <strong>待验证假设</strong>
+                              {selectedResearch.hypotheses.map((item) => (
+                                <p key={item}>{item}</p>
+                              ))}
+                            </div>
+                            <div>
+                              <strong>检索方向</strong>
+                              {selectedResearch.searchDirections.map((item) => (
+                                <p key={item}>{item}</p>
+                              ))}
+                            </div>
+                            <div>
+                              <strong>可执行下一步</strong>
+                              {selectedResearch.nextSteps.map((item) => (
+                                <p key={item}>{item}</p>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="source-ref-list">
+                            {selectedResearch.sourceSpanRefs.map((source) => (
+                              <button
+                                key={source}
+                                className="source-ref"
+                                type="button"
+                                onClick={() => setActiveTab("transcript")}
+                                title="跳转到转写评估页查看来源"
+                              >
+                                {source}
+                              </button>
+                            ))}
+                          </div>
+                          <div className="row-actions">
+                            <button
+                              className="primary-button"
+                              type="button"
+                              onClick={() => handleConvertResearchToTodo(selectedResearch)}
+                            >
+                              转为 Todo
+                            </button>
+                            <button
+                              className="secondary-button"
+                              type="button"
+                              onClick={() => handleAddResearchToMindMap(selectedResearch)}
+                            >
+                              加入脑图
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="empty-state">暂无研究草稿，请先生成价值发现。</div>
+                      )}
+                    </section>
+                  </section>
+
+                  <aside className="research-side-stack">
+                    <section className="panel-lite">
+                      <div className="panel-head">
+                        <div>
+                          <p className="section-kicker">Drafts</p>
+                          <h3>研究草稿</h3>
+                        </div>
+                      </div>
+                      <div className="research-draft-list">
+                        {semanticWorkbench.deepResearch.map((research) => (
+                          <button
+                            key={research.id}
+                            className={`research-draft-row ${
+                              selectedResearch?.id === research.id ? "research-draft-row-active" : ""
+                            }`}
+                            type="button"
+                            onClick={() => setSelectedResearchId(research.id)}
+                          >
+                            <strong>{research.question}</strong>
+                            <span>
+                              {research.sourceSpanRefs.length} 个来源 · {research.mindMapNodeId ? "已入脑图" : "未入脑图"}
+                            </span>
+                          </button>
+                        ))}
+                        {semanticWorkbench.deepResearch.length === 0 ? (
+                          <div className="empty-state">暂无草稿</div>
+                        ) : null}
+                      </div>
+                    </section>
+
+                    <section className="panel-lite">
+                      <div className="panel-head">
+                        <div>
+                          <p className="section-kicker">Trace</p>
+                          <h3>来源片段状态</h3>
+                        </div>
+                      </div>
+                      <ul className="compact-list">
+                        <li>
+                          <span>修正文稿</span>
+                          <strong>{semanticWorkbench.revisions.length}</strong>
+                        </li>
+                        <li>
+                          <span>研究草稿</span>
+                          <strong>{semanticWorkbench.deepResearch.length}</strong>
+                        </li>
+                        <li>
+                          <span>脑图</span>
+                          <strong>{semanticWorkbench.mindMap ? `v${semanticWorkbench.mindMap.version}` : "无"}</strong>
+                        </li>
+                      </ul>
                     </section>
                   </aside>
                 </section>
