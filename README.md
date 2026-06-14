@@ -133,6 +133,7 @@ SQLite 数据库：
 9. [发布说明_v0.4.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v0.4.0.md>)
 10. [发布说明_v0.5.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v0.5.0.md>)
 11. [发布说明_v0.6.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v0.6.0.md>)
+12. [发布说明_v0.7.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v0.7.0.md>)
 
 过时的一期文档、旧 v2.0 PRD 和旧设计包已归档到：
 
@@ -142,7 +143,7 @@ AI文档/废纸篓/2026-06-12-旧方案归档/
 
 ## 当前边界
 
-当前为 v0.6 转写修正与类型化纪要版本，尚未完成：
+当前为 v0.7 待办中枢版本，尚未完成：
 
 1. 自动 30 秒滚动切片录音。
 2. 真实 Argmax local server / CLI 推理执行与模型下载器。
