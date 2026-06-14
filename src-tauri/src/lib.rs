@@ -967,7 +967,7 @@ pub fn run() {
                 .app_data_dir()
                 .map_err(|error| format!("解析应用数据目录失败: {error}"))?;
             let recordings_dir = app_data_dir.join("recordings");
-            let db_path = app_data_dir.join("smart-todo.sqlite");
+            let db_path = app_data_dir.join("shengji.sqlite");
 
             initialize_database(&db_path)?;
             fs::create_dir_all(&recordings_dir)

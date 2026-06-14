@@ -9,7 +9,7 @@ fn main() {
     {
         let db_path = std::env::var("SMART_TODO_DB_PATH").unwrap_or_else(|_| {
             let home = std::env::var("HOME").unwrap_or_default();
-            format!("{home}/Library/Application Support/com.smarttodo.desktop/smart-todo.sqlite")
+            format!("{home}/Library/Application Support/com.shengji.desktop/shengji.sqlite")
         });
 
         match app_lib::process_pending_jobs_once_for_cli(&db_path) {
