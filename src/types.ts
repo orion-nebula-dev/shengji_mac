@@ -128,3 +128,108 @@ export interface TranscriptReview {
   jobs: TranscriptJob[];
   modelStatus: LocalModelStatus;
 }
+
+export interface TranscriptRevision {
+  id: string;
+  sessionId: string;
+  sourceSegmentId: string;
+  speakerLabel: string;
+  startMs: number;
+  endMs: number;
+  originalText: string;
+  revisedText: string;
+  changeLevel: "none" | "punctuation" | "wording" | "meaning_affecting";
+  correctionType: string;
+  reasonSummary: string;
+  status: "proposed" | "rejected";
+}
+
+export interface CorrectionPattern {
+  id: string;
+  phrase: string;
+  replacement: string;
+  patternType: string;
+  scope: string;
+  confidence: number;
+  enabled: boolean;
+}
+
+export interface DeletedCorrectionPattern {
+  deletedId: string;
+}
+
+export interface SemanticArtifact {
+  id: string;
+  sessionId: string;
+  artifactType:
+    | "transcript_revision"
+    | "recording_type"
+    | "summary"
+    | "meeting_minutes"
+    | "todo_extraction"
+    | "mind_map"
+    | "moment"
+    | "deep_research"
+    | "translation";
+  status: "pending" | "running" | "succeeded" | "failed";
+  provider: string;
+  modelName: string;
+  schemaVersion: string;
+  sourceSpanRefs: string[];
+  payloadJson: string;
+  errorMessage: string;
+}
+
+export interface ModelInvocation {
+  id: string;
+  provider: string;
+  modelName: string;
+  capability: string;
+  status: "pending" | "running" | "succeeded" | "failed";
+  requestSummary: string;
+  responseSummary: string;
+  errorMessage: string;
+}
+
+export interface RecordingType {
+  value: string;
+  label: string;
+  templateId: string;
+  confidence: number;
+}
+
+export interface SummaryArtifact {
+  title: string;
+  basis: string;
+  bullets: string[];
+  sourceSegmentIds: string[];
+}
+
+export interface MeetingMinutes {
+  templateId: string;
+  decisions: string[];
+  risks: string[];
+  openQuestions: string[];
+  sourceSegmentIds: string[];
+}
+
+export interface TodoCandidate {
+  title: string;
+  detail: string;
+  owner: string;
+  priority: string;
+  confidence: number;
+  sourceSegmentIds: string[];
+}
+
+export interface SemanticWorkbench {
+  sessionId: string;
+  recordingType: RecordingType;
+  revisions: TranscriptRevision[];
+  correctionPatterns: CorrectionPattern[];
+  summary: SummaryArtifact;
+  meetingMinutes: MeetingMinutes;
+  todoCandidates: TodoCandidate[];
+  artifacts: SemanticArtifact[];
+  modelInvocations: ModelInvocation[];
+}
