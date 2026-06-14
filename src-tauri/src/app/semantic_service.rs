@@ -6,10 +6,11 @@ use crate::{
     domain::{
         artifact::{
             AddResearchToMindMapCommand, ConvertResearchToTodoCommand, DeepResearchDraftDto,
-            MeetingMinutesDto, MindMapDto, MindMapEdgeDto, MindMapExportDto, MindMapNodeDto,
-            ModelInvocationDto, MomentDto, RecordingTypeDto, SemanticArtifactDto,
-            SemanticWorkbenchDto, StartResearchFromSegmentCommand, SummaryDto, TodoCandidateDto,
-            ToggleMindMapNodeCommand, UpdateMindMapNodeCommand,
+            GenerateTranslationCommand, MeetingMinutesDto, MindMapDto, MindMapEdgeDto,
+            MindMapExportDto, MindMapNodeDto, ModelInvocationDto, MomentDto, RecordingTypeDto,
+            SemanticArtifactDto, SemanticWorkbenchDto, StartResearchFromSegmentCommand, SummaryDto,
+            SummaryTranslationDto, TodoCandidateDto, ToggleMindMapNodeCommand,
+            TranscriptTranslationDto, TranslationArtifactDto, UpdateMindMapNodeCommand,
         },
         correction::{CorrectionPatternDto, DeletedCorrectionPatternDto, TranscriptRevisionDto},
         todo::TodoDto,
@@ -20,6 +21,7 @@ use crate::{
 const SEMANTIC_SCHEMA_VERSION: &str = "v0.6";
 const MIND_MAP_SCHEMA_VERSION: &str = "v0.8";
 const VALUE_DISCOVERY_SCHEMA_VERSION: &str = "v0.9";
+const TRANSLATION_SCHEMA_VERSION: &str = "v1.1";
 
 pub(crate) fn generate_semantic_workbench(
     connection: &Connection,
@@ -184,6 +186,10 @@ pub(crate) fn get_semantic_workbench(
             "todo_extraction",
         )
         .unwrap_or_default(),
+        translations: parse_all_artifact_payload::<TranslationArtifactDto>(
+            artifacts.as_slice(),
+            "translation",
+        ),
         mind_map: latest_mind_map_payload(connection, &session_id)?,
         moments: parse_artifact_payload::<Vec<MomentDto>>(artifacts.as_slice(), "moment")
             .unwrap_or_default(),
@@ -246,6 +252,58 @@ pub(crate) fn reject_transcript_revision(
         "",
     )?;
     Ok(updated_revision)
+}
+
+pub(crate) fn generate_translation(
+    connection: &Connection,
+    command: GenerateTranslationCommand,
+) -> Result<SemanticArtifactDto, String> {
+    let target_language = normalize_target_language(command.target_language.as_str())?;
+    let session_id = latest_semantic_session_id(connection)
+        .filter(|candidate| !candidate.is_empty())
+        .ok_or_else(|| "暂无可翻译的语义会话，请先生成摘要和转写修正。".to_string())?;
+    let artifacts = query_artifacts(connection, &session_id)?;
+    let revisions = parse_artifact_payload::<Vec<TranscriptRevisionDto>>(
+        artifacts.as_slice(),
+        "transcript_revision",
+    )
+    .unwrap_or_default();
+    if revisions.is_empty() {
+        return Err("暂无可翻译的转写片段。".into());
+    }
+    let summary = parse_artifact_payload::<SummaryDto>(artifacts.as_slice(), "summary")
+        .unwrap_or_else(|| build_summary(&revisions));
+    let translation = build_translation_artifact(target_language.as_str(), &revisions, &summary);
+    let payload_json = serde_json::to_string(&translation)
+        .map_err(|error| format!("序列化翻译产物失败: {error}"))?;
+
+    insert_model_invocation(
+        connection,
+        &session_id,
+        "succeeded",
+        "使用修正文稿与摘要生成 v1.1 翻译产物",
+        "生成 translation artifact，包含转写翻译、摘要翻译和来源追溯",
+        "",
+    )?;
+
+    let artifact_id = format!(
+        "semantic_{}_translation_{}",
+        session_id,
+        sanitize_identifier(target_language.as_str())
+    );
+    upsert_artifact_with_id(
+        connection,
+        artifact_id.as_str(),
+        &session_id,
+        "translation",
+        "succeeded",
+        translation.source_span_refs.as_slice(),
+        payload_json.as_str(),
+        "",
+        TRANSLATION_SCHEMA_VERSION,
+    )?;
+
+    query_artifact_by_id(connection, artifact_id.as_str())
 }
 
 #[cfg(test)]
@@ -357,21 +415,19 @@ pub(crate) fn generate_mind_map(connection: &Connection) -> Result<SemanticArtif
                 .map(|revision| revision.source_segment_id.clone())
                 .collect(),
         });
-    let meeting_minutes = parse_artifact_payload::<MeetingMinutesDto>(
-        artifacts.as_slice(),
-        "meeting_minutes",
-    )
-    .unwrap_or_else(|| MeetingMinutesDto {
-        template_id: "meeting_minutes_v1".into(),
-        decisions: Vec::new(),
-        risks: Vec::new(),
-        open_questions: Vec::new(),
-        source_segment_ids: summary.source_segment_ids.clone(),
-    });
+    let meeting_minutes =
+        parse_artifact_payload::<MeetingMinutesDto>(artifacts.as_slice(), "meeting_minutes")
+            .unwrap_or_else(|| MeetingMinutesDto {
+                template_id: "meeting_minutes_v1".into(),
+                decisions: Vec::new(),
+                risks: Vec::new(),
+                open_questions: Vec::new(),
+                source_segment_ids: summary.source_segment_ids.clone(),
+            });
 
     let mind_map = build_mind_map(&summary, &meeting_minutes, &revisions, false, 1, "");
-    let payload_json = serde_json::to_string(&mind_map)
-        .map_err(|error| format!("序列化脑图产物失败: {error}"))?;
+    let payload_json =
+        serde_json::to_string(&mind_map).map_err(|error| format!("序列化脑图产物失败: {error}"))?;
     let artifact_id = next_mind_map_artifact_id(connection, &session_id, false)?;
     let source_refs = mind_map.source_spans.clone();
     insert_artifact_with_id(
@@ -477,17 +533,15 @@ pub(crate) fn generate_value_discovery(
 
     let summary = parse_artifact_payload::<SummaryDto>(artifacts.as_slice(), "summary")
         .unwrap_or_else(|| build_summary(&revisions));
-    let meeting_minutes = parse_artifact_payload::<MeetingMinutesDto>(
-        artifacts.as_slice(),
-        "meeting_minutes",
-    )
-    .unwrap_or_else(|| {
-        let source_segment_ids = revisions
-            .iter()
-            .map(|revision| revision.source_segment_id.clone())
-            .collect::<Vec<_>>();
-        build_meeting_minutes(&revisions, &source_segment_ids)
-    });
+    let meeting_minutes =
+        parse_artifact_payload::<MeetingMinutesDto>(artifacts.as_slice(), "meeting_minutes")
+            .unwrap_or_else(|| {
+                let source_segment_ids = revisions
+                    .iter()
+                    .map(|revision| revision.source_segment_id.clone())
+                    .collect::<Vec<_>>();
+                build_meeting_minutes(&revisions, &source_segment_ids)
+            });
     let moments = build_moments(&revisions, &meeting_minutes);
     let moment_source_refs = moments
         .iter()
@@ -519,8 +573,8 @@ pub(crate) fn generate_value_discovery(
         &meeting_minutes,
         &revisions,
     );
-    let research_payload = serde_json::to_string(&research)
-        .map_err(|error| format!("序列化研究草稿失败: {error}"))?;
+    let research_payload =
+        serde_json::to_string(&research).map_err(|error| format!("序列化研究草稿失败: {error}"))?;
     upsert_artifact_with_schema(
         connection,
         &session_id,
@@ -571,11 +625,9 @@ pub(crate) fn start_research_from_segment(
         .iter()
         .map(|revision| revision.source_segment_id.clone())
         .collect::<Vec<_>>();
-    let meeting_minutes = parse_artifact_payload::<MeetingMinutesDto>(
-        artifacts.as_slice(),
-        "meeting_minutes",
-    )
-    .unwrap_or_else(|| build_meeting_minutes(&revisions, &source_segment_ids));
+    let meeting_minutes =
+        parse_artifact_payload::<MeetingMinutesDto>(artifacts.as_slice(), "meeting_minutes")
+            .unwrap_or_else(|| build_meeting_minutes(&revisions, &source_segment_ids));
     let question = if command.question.trim().is_empty() {
         format!("片段“{}”是否需要继续研究？", source_revision.revised_text)
     } else {
@@ -707,7 +759,11 @@ pub(crate) fn add_research_to_mind_map(
         });
     }
     for source in &research.source_span_refs {
-        if !mind_map.source_spans.iter().any(|candidate| candidate == source) {
+        if !mind_map
+            .source_spans
+            .iter()
+            .any(|candidate| candidate == source)
+        {
             mind_map.source_spans.push(source.clone());
         }
     }
@@ -770,6 +826,69 @@ fn build_todo_candidates(revisions: &[TranscriptRevisionDto]) -> Vec<TodoCandida
         confidence: 0.82,
         source_segment_ids,
     }]
+}
+
+fn build_translation_artifact(
+    target_language: &str,
+    revisions: &[TranscriptRevisionDto],
+    summary: &SummaryDto,
+) -> TranslationArtifactDto {
+    let transcript_translations = revisions
+        .iter()
+        .map(|revision| TranscriptTranslationDto {
+            source_segment_id: revision.source_segment_id.clone(),
+            speaker_label: revision.speaker_label.clone(),
+            start_ms: revision.start_ms,
+            end_ms: revision.end_ms,
+            original_text: revision.revised_text.clone(),
+            translated_text: deterministic_translate(
+                target_language,
+                revision.revised_text.as_str(),
+            ),
+        })
+        .collect::<Vec<_>>();
+    let source_span_refs = revisions
+        .iter()
+        .map(|revision| revision.source_segment_id.clone())
+        .collect::<Vec<_>>();
+
+    TranslationArtifactDto {
+        target_language: target_language.into(),
+        transcript_translations,
+        summary_translation: SummaryTranslationDto {
+            source_artifact_type: "summary".into(),
+            original_title: summary.title.clone(),
+            translated_title: deterministic_translate(target_language, summary.title.as_str()),
+            original_basis: summary.basis.clone(),
+            translated_basis: deterministic_translate(target_language, summary.basis.as_str()),
+            translated_bullets: summary
+                .bullets
+                .iter()
+                .map(|bullet| deterministic_translate(target_language, bullet.as_str()))
+                .collect(),
+        },
+        source_span_refs,
+    }
+}
+
+fn deterministic_translate(target_language: &str, text: &str) -> String {
+    format!("[{target_language}] {text}")
+}
+
+fn normalize_target_language(target_language: &str) -> Result<String, String> {
+    let normalized = target_language.trim();
+    if normalized.is_empty() {
+        return Err("目标语言不能为空。".into());
+    }
+    let safe = normalized
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+        .collect::<String>();
+    if safe.is_empty() {
+        Err("目标语言格式无效。".into())
+    } else {
+        Ok(safe)
+    }
 }
 
 fn build_moments(
@@ -961,7 +1080,10 @@ fn build_mind_map(
         });
     }
 
-    for revision in revisions.iter().filter(|revision| revision.change_level != "none") {
+    for revision in revisions
+        .iter()
+        .filter(|revision| revision.change_level != "none")
+    {
         nodes.push(MindMapNodeDto {
             id: format!("source_{}", revision.source_segment_id),
             label: revision.revised_text.clone(),
@@ -978,7 +1100,10 @@ fn build_mind_map(
         to: "summary".into(),
         label: "概括".into(),
     }];
-    for node in nodes.iter().filter(|node| node.id != "root" && node.id != "summary") {
+    for node in nodes
+        .iter()
+        .filter(|node| node.id != "root" && node.id != "summary")
+    {
         edges.push(MindMapEdgeDto {
             id: format!("edge_root_{}", node.id),
             from: "root".into(),
@@ -1050,7 +1175,11 @@ fn mind_map_to_markdown(mind_map: &MindMapDto) -> String {
         String::new(),
     ];
     for node in &mind_map.nodes {
-        let marker = if node.id == mind_map.root { "##" } else { "###" };
+        let marker = if node.id == mind_map.root {
+            "##"
+        } else {
+            "###"
+        };
         lines.push(format!("{marker} {}", node.label));
         if !node.note.trim().is_empty() {
             lines.push(node.note.clone());
@@ -1242,6 +1371,63 @@ fn insert_artifact_with_id(
             ],
         )
         .map_err(|error| format!("写入语义产物版本失败: {error}"))?;
+    Ok(())
+}
+
+fn upsert_artifact_with_id(
+    connection: &Connection,
+    artifact_id: &str,
+    session_id: &str,
+    artifact_type: &str,
+    status: &str,
+    source_span_refs: &[String],
+    payload_json: &str,
+    error_message: &str,
+    schema_version: &str,
+) -> Result<(), String> {
+    let source_refs_json =
+        serde_json::to_string(source_span_refs).unwrap_or_else(|_| "[]".to_string());
+    connection
+        .execute(
+            r#"
+            INSERT INTO semantic_artifacts (
+              id,
+              session_id,
+              artifact_type,
+              status,
+              provider,
+              model_name,
+              schema_version,
+              source_span_refs,
+              payload_json,
+              error_message,
+              created_at,
+              updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT(id) DO UPDATE SET
+              status = excluded.status,
+              provider = excluded.provider,
+              model_name = excluded.model_name,
+              schema_version = excluded.schema_version,
+              source_span_refs = excluded.source_span_refs,
+              payload_json = excluded.payload_json,
+              error_message = excluded.error_message,
+              updated_at = CURRENT_TIMESTAMP
+            "#,
+            params![
+                artifact_id,
+                session_id,
+                artifact_type,
+                status,
+                minimax_m3::PROVIDER_ID,
+                minimax_m3::DEFAULT_MODEL_NAME,
+                schema_version,
+                source_refs_json,
+                payload_json,
+                error_message,
+            ],
+        )
+        .map_err(|error| format!("写入语义产物失败: {error}"))?;
     Ok(())
 }
 
@@ -1451,7 +1637,9 @@ fn parse_all_artifact_payload<T: serde::de::DeserializeOwned>(
 ) -> Vec<T> {
     artifacts
         .iter()
-        .filter(|artifact| artifact.artifact_type == artifact_type && artifact.status == "succeeded")
+        .filter(|artifact| {
+            artifact.artifact_type == artifact_type && artifact.status == "succeeded"
+        })
         .filter_map(|artifact| serde_json::from_str::<T>(artifact.payload_json.as_str()).ok())
         .collect()
 }
@@ -1518,7 +1706,11 @@ fn next_research_artifact_id(connection: &Connection, session_id: &str) -> Resul
             |row| row.get::<_, i64>(0),
         )
         .map_err(|error| format!("计算研究草稿版本失败: {error}"))?;
-    Ok(format!("semantic_{}_deep_research_v{}", session_id, count + 1))
+    Ok(format!(
+        "semantic_{}_deep_research_v{}",
+        session_id,
+        count + 1
+    ))
 }
 
 fn parse_research_from_artifact(

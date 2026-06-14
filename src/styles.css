@@ -1254,6 +1254,24 @@ button:disabled {
   align-items: start;
 }
 
+.translation-control-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(420px, auto);
+  gap: 18px;
+  align-items: end;
+}
+
+.translation-control-panel h3 {
+  margin: 4px 0 8px;
+}
+
+.translation-actions {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto auto;
+  gap: 10px;
+  align-items: end;
+}
+
 .export-main-panel {
   min-height: 620px;
 }
@@ -1337,6 +1355,39 @@ button:disabled {
 .artifact-export-row p {
   margin: 4px 0 0;
   color: var(--danger);
+}
+
+.translation-trace-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.translation-trace-list article {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-muted);
+  padding: 10px;
+}
+
+.translation-trace-list strong {
+  display: block;
+  color: var(--text-main);
+  font-size: 13px;
+}
+
+.translation-trace-list p {
+  margin: 6px 0;
+  color: var(--text-main);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.translation-trace-list span {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .archive-search-panel {
@@ -1525,6 +1576,8 @@ button:disabled {
   .archive-search-panel,
   .export-layout,
   .export-format-tabs,
+  .translation-actions,
+  .translation-control-panel,
   .mindmap-layout,
   .overview-grid,
   .provider-status-grid,

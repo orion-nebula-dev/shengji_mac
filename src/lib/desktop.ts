@@ -251,6 +251,31 @@ export interface TodoCandidatePayload {
   sourceSegmentIds: string[];
 }
 
+export interface TranscriptTranslationPayload {
+  sourceSegmentId: string;
+  speakerLabel: string;
+  startMs: number;
+  endMs: number;
+  originalText: string;
+  translatedText: string;
+}
+
+export interface SummaryTranslationPayload {
+  sourceArtifactType: string;
+  originalTitle: string;
+  translatedTitle: string;
+  originalBasis: string;
+  translatedBasis: string;
+  translatedBullets: string[];
+}
+
+export interface TranslationArtifactPayload {
+  targetLanguage: string;
+  transcriptTranslations: TranscriptTranslationPayload[];
+  summaryTranslation: SummaryTranslationPayload;
+  sourceSpanRefs: string[];
+}
+
 export interface MomentArtifactPayload {
   id: string;
   title: string;
@@ -323,6 +348,7 @@ export interface MindMapExportPayload {
 
 export interface GenerateExportBundlePayload {
   formats: Array<"markdown" | "srt" | "json" | "snapshot">;
+  targetLanguages?: string[];
 }
 
 export interface ExportItemPayload {
@@ -360,6 +386,10 @@ export interface StartResearchFromSegmentPayload {
   question: string;
 }
 
+export interface GenerateTranslationPayload {
+  targetLanguage: string;
+}
+
 export interface ConvertResearchToTodoPayload {
   artifactId: string;
   researchId: string;
@@ -378,6 +408,7 @@ export interface SemanticWorkbenchPayload {
   summary: SummaryArtifactPayload;
   meetingMinutes: MeetingMinutesPayload;
   todoCandidates: TodoCandidatePayload[];
+  translations: TranslationArtifactPayload[];
   mindMap: MindMapArtifactPayload | null;
   moments: MomentArtifactPayload[];
   deepResearch: DeepResearchDraftPayload[];
@@ -759,6 +790,17 @@ export async function generateDesktopValueDiscovery(): Promise<SemanticArtifactP
 
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<SemanticArtifactPayload>("generate_value_discovery");
+}
+
+export async function generateDesktopTranslation(
+  command: GenerateTranslationPayload,
+): Promise<SemanticArtifactPayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<SemanticArtifactPayload>("generate_translation", { command });
 }
 
 export async function startDesktopResearchFromSegment(

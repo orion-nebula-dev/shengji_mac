@@ -1019,6 +1019,7 @@ pub fn run() {
             commands::semantic::toggle_mind_map_node,
             commands::semantic::export_mind_map,
             commands::semantic::generate_value_discovery,
+            commands::semantic::generate_translation,
             commands::semantic::start_research_from_segment,
             commands::semantic::convert_research_to_todo,
             commands::semantic::add_research_to_mind_map,
@@ -1711,7 +1712,11 @@ mod tests {
                 && !revision.reason_summary.trim().is_empty()
                 && !revision.source_segment_id.trim().is_empty()));
         assert!(workbench.summary.basis.contains("修正文稿"));
-        assert!(workbench.meeting_minutes.decisions.iter().any(|item| item.contains("复核")));
+        assert!(workbench
+            .meeting_minutes
+            .decisions
+            .iter()
+            .any(|item| item.contains("复核")));
         assert!(workbench.todo_candidates.iter().any(|todo| {
             todo.title.contains("复核")
                 && todo
@@ -1807,11 +1812,9 @@ mod tests {
         .expect("修正记忆应可禁用");
         assert!(!disabled.enabled);
 
-        let deleted = commands::semantic::delete_correction_pattern_payload(
-            &db_path,
-            pattern.id.as_str(),
-        )
-        .expect("修正记忆应可删除");
+        let deleted =
+            commands::semantic::delete_correction_pattern_payload(&db_path, pattern.id.as_str())
+                .expect("修正记忆应可删除");
         assert_eq!(deleted.deleted_id, pattern.id);
 
         let refreshed = commands::semantic::get_semantic_workbench_payload(&db_path)
@@ -1844,11 +1847,9 @@ mod tests {
         assert_eq!(failed.artifact_type, "summary");
         assert!(failed.error_message.contains("JSON"));
 
-        let retried = commands::semantic::retry_semantic_artifact_payload(
-            &db_path,
-            failed.id.as_str(),
-        )
-        .expect("失败语义产物应提供重试入口");
+        let retried =
+            commands::semantic::retry_semantic_artifact_payload(&db_path, failed.id.as_str())
+                .expect("失败语义产物应提供重试入口");
         assert_eq!(retried.status, "pending");
         assert!(retried.error_message.is_empty());
 
@@ -1864,8 +1865,7 @@ mod tests {
         fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
         let db_path = temp_dir.join("smart-todo.sqlite");
         let audio_path = temp_dir.join("sample-mind-map.wav");
-        fs::write(&audio_path, b"fake wav bytes for mind map")
-            .expect("应能准备本地音频文件");
+        fs::write(&audio_path, b"fake wav bytes for mind map").expect("应能准备本地音频文件");
 
         initialize_database(&db_path).expect("应能初始化数据库");
         commands::transcript::import_local_audio_payload(
@@ -1936,12 +1936,9 @@ mod tests {
         };
         assert!(original_after_regen.contains("复核说话人标签和时间跳转"));
 
-        let markdown = commands::semantic::export_mind_map_payload(
-            &db_path,
-            edited.id.as_str(),
-            "markdown",
-        )
-        .expect("应能导出 Markdown 脑图");
+        let markdown =
+            commands::semantic::export_mind_map_payload(&db_path, edited.id.as_str(), "markdown")
+                .expect("应能导出 Markdown 脑图");
         assert_eq!(markdown.format, "markdown");
         assert!(markdown.content.contains("# 语义脑图"));
         assert!(markdown.content.contains("来源"));
@@ -1982,29 +1979,31 @@ mod tests {
             .expect("v0.9 应能生成 Moment artifact");
         assert_eq!(moment_artifact.artifact_type, "moment");
         assert_eq!(moment_artifact.schema_version, "v0.9");
-        let moments =
-            serde_json::from_str::<Vec<domain::artifact::MomentDto>>(
-                moment_artifact.payload_json.as_str(),
-            )
-            .expect("moment payload 应符合契约");
+        let moments = serde_json::from_str::<Vec<domain::artifact::MomentDto>>(
+            moment_artifact.payload_json.as_str(),
+        )
+        .expect("moment payload 应符合契约");
         assert!(
             (3..=10).contains(&moments.len()),
             "Moment 数量应在 3-10 个之间，实际为 {}",
             moments.len()
         );
-        assert!(moments.iter().all(|moment| moment.start_ms <= moment.end_ms));
-        assert!(moments.iter().all(|moment| !moment.source_span_refs.is_empty()));
-        assert!(moments.iter().any(|moment| moment.moment_type == "decision"));
+        assert!(moments
+            .iter()
+            .all(|moment| moment.start_ms <= moment.end_ms));
+        assert!(moments
+            .iter()
+            .all(|moment| !moment.source_span_refs.is_empty()));
+        assert!(moments
+            .iter()
+            .any(|moment| moment.moment_type == "decision"));
         assert!(moments.iter().any(|moment| moment.moment_type == "risk"));
 
         let workbench = commands::semantic::get_semantic_workbench_payload(&db_path)
             .expect("v0.9 工作台应能读取 Moment 和研究草稿");
         assert_eq!(workbench.moments.len(), moments.len());
         assert!(!workbench.deep_research.is_empty(), "应生成研究草稿");
-        let auto_research = workbench
-            .deep_research
-            .first()
-            .expect("应存在自动研究草稿");
+        let auto_research = workbench.deep_research.first().expect("应存在自动研究草稿");
         assert!(!auto_research.question.trim().is_empty());
         assert!(!auto_research.background.trim().is_empty());
         assert!(!auto_research.hypotheses.is_empty());
@@ -2024,11 +2023,10 @@ mod tests {
         )
         .expect("应能从转写片段发起研究");
         assert_eq!(research_artifact.artifact_type, "deep_research");
-        let research =
-            serde_json::from_str::<domain::artifact::DeepResearchDraftDto>(
-                research_artifact.payload_json.as_str(),
-            )
-            .expect("deep_research payload 应符合契约");
+        let research = serde_json::from_str::<domain::artifact::DeepResearchDraftDto>(
+            research_artifact.payload_json.as_str(),
+        )
+        .expect("deep_research payload 应符合契约");
         assert!(research
             .source_span_refs
             .contains(&source_revision.source_segment_id));
@@ -2057,11 +2055,10 @@ mod tests {
         )
         .expect("研究草稿应能转成脑图节点");
         assert_eq!(mind_map_artifact.artifact_type, "mind_map");
-        let mind_map =
-            serde_json::from_str::<domain::artifact::MindMapDto>(
-                mind_map_artifact.payload_json.as_str(),
-            )
-            .expect("追加研究节点后的 mind_map payload 应符合契约");
+        let mind_map = serde_json::from_str::<domain::artifact::MindMapDto>(
+            mind_map_artifact.payload_json.as_str(),
+        )
+        .expect("追加研究节点后的 mind_map payload 应符合契约");
         assert!(mind_map.edited, "追加研究节点应生成编辑版脑图");
         assert!(mind_map
             .nodes
@@ -2080,8 +2077,7 @@ mod tests {
         fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
         let db_path = temp_dir.join("smart-todo.sqlite");
         let audio_path = temp_dir.join("sample-export.wav");
-        fs::write(&audio_path, b"fake wav bytes for export")
-            .expect("应能准备本地音频文件");
+        fs::write(&audio_path, b"fake wav bytes for export").expect("应能准备本地音频文件");
 
         initialize_database(&db_path).expect("应能初始化数据库");
         commands::transcript::import_local_audio_payload(
@@ -2091,10 +2087,8 @@ mod tests {
         .expect("应能准备 v1.0 导出输入");
         commands::semantic::generate_semantic_workbench_payload(&db_path)
             .expect("应能生成语义工作台");
-        commands::semantic::generate_mind_map_payload(&db_path)
-            .expect("应能生成脑图");
-        commands::semantic::generate_value_discovery_payload(&db_path)
-            .expect("应能生成价值发现");
+        commands::semantic::generate_mind_map_payload(&db_path).expect("应能生成脑图");
+        commands::semantic::generate_value_discovery_payload(&db_path).expect("应能生成价值发现");
 
         let bundle = commands::export::generate_export_bundle_payload(
             &db_path,
@@ -2105,6 +2099,7 @@ mod tests {
                     "json".into(),
                     "snapshot".into(),
                 ],
+                target_languages: Vec::new(),
             },
         )
         .expect("v1.0 应能生成完整导出包");
@@ -2132,10 +2127,7 @@ mod tests {
         assert!(json_value["transcriptSegments"].is_array());
         assert!(json_value["semanticArtifacts"].is_array());
 
-        let snapshot = bundle
-            .snapshot
-            .as_ref()
-            .expect("应生成本地分享快照");
+        let snapshot = bundle.snapshot.as_ref().expect("应生成本地分享快照");
         assert!(snapshot.html.contains("<!doctype html>"));
         assert!(snapshot.html.contains("声记分享快照"));
         assert!(
@@ -2145,9 +2137,135 @@ mod tests {
 
         let connection = open_connection(&db_path).expect("应能打开测试数据库");
         let export_count: i64 = connection
-            .query_row("SELECT COUNT(1) FROM external_exports", [], |row| row.get(0))
+            .query_row("SELECT COUNT(1) FROM external_exports", [], |row| {
+                row.get(0)
+            })
             .expect("应能读取导出记录");
         assert_eq!(export_count, 4);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_generate_v11_translation_and_multilingual_export_without_overwriting_summary() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "shengji-v11-translation-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        let audio_path = temp_dir.join("sample-translation.wav");
+        fs::write(&audio_path, b"fake wav bytes for translation").expect("应能准备本地音频文件");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        commands::transcript::import_local_audio_payload(
+            &db_path,
+            audio_path.to_string_lossy().as_ref(),
+        )
+        .expect("应能准备 v1.1 翻译输入");
+        commands::semantic::generate_semantic_workbench_payload(&db_path)
+            .expect("应能生成基础语义工作台");
+
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let original_summary_payload: String = connection
+            .query_row(
+                "SELECT payload_json FROM semantic_artifacts WHERE artifact_type = 'summary' ORDER BY datetime(created_at) DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("应能读取原始摘要产物");
+        drop(connection);
+
+        let translation = commands::semantic::generate_translation_payload(
+            &db_path,
+            domain::artifact::GenerateTranslationCommand {
+                target_language: "en-US".into(),
+            },
+        )
+        .expect("v1.1 应能生成翻译产物");
+
+        assert_eq!(translation.artifact_type, "translation");
+        assert_eq!(translation.status, "succeeded");
+        assert_eq!(translation.schema_version, "v1.1");
+
+        let payload: serde_json::Value = serde_json::from_str(translation.payload_json.as_str())
+            .expect("translation payload 应可解析");
+        assert_eq!(payload["targetLanguage"], "en-US");
+        assert!(payload["transcriptTranslations"].is_array());
+        assert!(payload["transcriptTranslations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["sourceSegmentId"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("transcript_")
+                && item["translatedText"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("[en-US]")));
+        assert_eq!(
+            payload["summaryTranslation"]["sourceArtifactType"],
+            "summary"
+        );
+        assert!(payload["summaryTranslation"]["translatedTitle"]
+            .as_str()
+            .unwrap_or("")
+            .contains("[en-US]"));
+
+        let connection = open_connection(&db_path).expect("应能重新打开测试数据库");
+        let refreshed_summary_payload: String = connection
+            .query_row(
+                "SELECT payload_json FROM semantic_artifacts WHERE artifact_type = 'summary' ORDER BY datetime(created_at) DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("应能读取翻译后的摘要产物");
+        assert_eq!(
+            refreshed_summary_payload, original_summary_payload,
+            "摘要翻译不应覆盖原始摘要"
+        );
+        drop(connection);
+
+        let bundle = commands::export::generate_export_bundle_payload(
+            &db_path,
+            domain::export::GenerateExportBundleCommand {
+                formats: vec!["markdown".into(), "json".into(), "snapshot".into()],
+                target_languages: vec!["en-US".into()],
+            },
+        )
+        .expect("v1.1 应能生成多语言导出包");
+
+        assert!(bundle.items.iter().any(|item| {
+            item.format == "markdown_en-US"
+                && item.file_name.contains("en-US")
+                && item.content.contains("# ShengJi Multilingual Export")
+                && item.content.contains("Transcript Translation")
+        }));
+        let multilingual_json = bundle
+            .items
+            .iter()
+            .find(|item| item.format == "json_en-US")
+            .expect("应包含多语言 JSON 导出");
+        let multilingual_value: serde_json::Value =
+            serde_json::from_str(multilingual_json.content.as_str()).expect("多语言 JSON 应可解析");
+        assert_eq!(multilingual_value["targetLanguage"], "en-US");
+        assert!(multilingual_value["translations"]["transcriptTranslations"].is_array());
+        assert!(bundle
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .html
+            .contains("Multilingual"));
+        assert!(
+            !bundle
+                .snapshot
+                .as_ref()
+                .unwrap()
+                .html
+                .contains(temp_dir.to_string_lossy().as_ref()),
+            "多语言快照不应暴露完整本地路径"
+        );
 
         let _ = fs::remove_dir_all(temp_dir);
     }
@@ -2206,8 +2324,8 @@ mod tests {
             .iter()
             .any(|source| source.starts_with("transcript_")));
 
-        let refreshed = commands::todo::list_todo_candidates_payload(&db_path)
-            .expect("应能读取候选状态");
+        let refreshed =
+            commands::todo::list_todo_candidates_payload(&db_path).expect("应能读取候选状态");
         assert!(refreshed
             .iter()
             .any(|candidate| candidate.todo_id == accepted.id && candidate.status == "accepted"));
@@ -2312,12 +2430,9 @@ mod tests {
             .iter()
             .any(|todo| todo.id == "todo_v07_completed" && todo.status == "done"));
 
-        let in_progress = commands::todo::update_todo_status_payload(
-            &db_path,
-            "todo_v07_pending",
-            "in_progress",
-        )
-        .expect("Todo 应可进入进行中");
+        let in_progress =
+            commands::todo::update_todo_status_payload(&db_path, "todo_v07_pending", "in_progress")
+                .expect("Todo 应可进入进行中");
         assert_eq!(in_progress.status, "in_progress");
 
         let done = commands::todo::update_todo_status_payload(&db_path, "todo_v07_pending", "done")
