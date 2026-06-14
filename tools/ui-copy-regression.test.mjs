@@ -3,6 +3,9 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const appSource = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+const stylesSource = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+const mockSource = readFileSync(new URL("../src/data/mock.ts", import.meta.url), "utf8");
+const storageSource = readFileSync(new URL("../src/lib/storage.ts", import.meta.url), "utf8");
 
 function extractFunctionBody(name) {
   const start = appSource.indexOf(`function ${name}`);
@@ -63,4 +66,18 @@ test("hash routes stay synchronized after the initial page load", () => {
   assert.match(appSource, /window\.history\.replaceState\(null,\s*"",\s*nextHash\)/);
   assert.match(appSource, /window\.addEventListener\("hashchange",\s*handleHashChange\)/);
   assert.match(appSource, /window\.removeEventListener\("hashchange",\s*handleHashChange\)/);
+});
+
+test("desktop chrome uses the native app frame and exposes pause recording controls", () => {
+  assert.equal(appSource.includes('className="window-frame"'), false);
+  assert.equal(/traffic-lights|traffic-dot|traffic-close|traffic-minimize|traffic-maximize/.test(appSource), false);
+  assert.equal(/\.traffic-|\.window-frame/.test(stylesSource), false);
+  assert.match(appSource, /暂停录音/);
+  assert.match(appSource, /runtime\.currentSessionStatus === "collecting"/);
+  assert.match(appSource, /setSettings\(payload\.settings\)/);
+  assert.doesNotMatch(appSource, /runtimeLabel\.includes/);
+  assert.match(stylesSource, /\.chip-recording/);
+  assert.match(mockSource, /currentSessionStatus:\s*"collecting"/);
+  assert.match(storageSource, /normalizedRuntime\.runtimeLabel === "录音中"/);
+  assert.match(storageSource, /normalizedRuntime\.currentSessionStatus = "collecting"/);
 });
