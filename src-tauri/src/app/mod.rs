@@ -1,4 +1,5 @@
 pub(crate) mod query_service;
+pub(crate) mod export_service;
 pub(crate) mod semantic_service;
 pub(crate) mod settings_service;
 pub(crate) mod todo_service;
