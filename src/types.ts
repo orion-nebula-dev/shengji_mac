@@ -243,6 +243,31 @@ export interface TodoCandidate {
   sourceSegmentIds: string[];
 }
 
+export interface TranscriptTranslation {
+  sourceSegmentId: string;
+  speakerLabel: string;
+  startMs: number;
+  endMs: number;
+  originalText: string;
+  translatedText: string;
+}
+
+export interface SummaryTranslation {
+  sourceArtifactType: string;
+  originalTitle: string;
+  translatedTitle: string;
+  originalBasis: string;
+  translatedBasis: string;
+  translatedBullets: string[];
+}
+
+export interface TranslationArtifact {
+  targetLanguage: string;
+  transcriptTranslations: TranscriptTranslation[];
+  summaryTranslation: SummaryTranslation;
+  sourceSpanRefs: string[];
+}
+
 export interface MomentArtifact {
   id: string;
   title: string;
@@ -338,6 +363,7 @@ export interface SemanticWorkbench {
   summary: SummaryArtifact;
   meetingMinutes: MeetingMinutes;
   todoCandidates: TodoCandidate[];
+  translations: TranslationArtifact[];
   mindMap: MindMapArtifact | null;
   moments: MomentArtifact[];
   deepResearch: DeepResearchDraft[];

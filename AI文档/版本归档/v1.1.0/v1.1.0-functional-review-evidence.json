@@ -1,0 +1,20 @@
+{
+  "exportAssertions": {
+    "heading": true,
+    "versionKicker": true,
+    "translationControl": true,
+    "summaryTranslation": true,
+    "transcriptTranslation": true,
+    "tracePanel": true,
+    "sourceSegmentTrace": true,
+    "noPodcast": true
+  },
+  "settingsAssertions": {
+    "semanticProvider": true,
+    "noTtsProvider": true
+  },
+  "screenshots": {
+    "exportShot": "/Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/版本归档/v1.1.0/v1.1.0-functional-review-translation-export.png",
+    "settingsShot": "/Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/版本归档/v1.1.0/v1.1.0-functional-review-settings-no-tts.png"
+  }
+}
