@@ -71,6 +71,64 @@ pub(crate) struct TodoCandidateDto {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct MindMapNodeDto {
+    pub(crate) id: String,
+    pub(crate) label: String,
+    pub(crate) kind: String,
+    pub(crate) note: String,
+    pub(crate) source_span_refs: Vec<String>,
+    pub(crate) collapsed: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MindMapEdgeDto {
+    pub(crate) id: String,
+    pub(crate) from: String,
+    pub(crate) to: String,
+    pub(crate) label: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MindMapDto {
+    pub(crate) root: String,
+    pub(crate) nodes: Vec<MindMapNodeDto>,
+    pub(crate) edges: Vec<MindMapEdgeDto>,
+    pub(crate) summary: String,
+    pub(crate) source_spans: Vec<String>,
+    pub(crate) edited: bool,
+    pub(crate) version: i64,
+    pub(crate) parent_artifact_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpdateMindMapNodeCommand {
+    pub(crate) artifact_id: String,
+    pub(crate) node_id: String,
+    pub(crate) label: String,
+    pub(crate) note: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ToggleMindMapNodeCommand {
+    pub(crate) artifact_id: String,
+    pub(crate) node_id: String,
+    pub(crate) collapsed: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MindMapExportDto {
+    pub(crate) format: String,
+    pub(crate) file_name: String,
+    pub(crate) content: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct SemanticWorkbenchDto {
     pub(crate) session_id: String,
     pub(crate) recording_type: RecordingTypeDto,
@@ -79,6 +137,7 @@ pub(crate) struct SemanticWorkbenchDto {
     pub(crate) summary: SummaryDto,
     pub(crate) meeting_minutes: MeetingMinutesDto,
     pub(crate) todo_candidates: Vec<TodoCandidateDto>,
+    pub(crate) mind_map: Option<MindMapDto>,
     pub(crate) artifacts: Vec<SemanticArtifactDto>,
     pub(crate) model_invocations: Vec<ModelInvocationDto>,
 }
