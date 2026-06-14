@@ -1002,7 +1002,13 @@ pub fn run() {
             commands::transcript::get_transcript_review,
             commands::transcript::rename_speaker,
             commands::transcript::mark_transcript_segment,
-            commands::transcript::retry_transcript_job
+            commands::transcript::retry_transcript_job,
+            commands::semantic::generate_semantic_workbench,
+            commands::semantic::get_semantic_workbench,
+            commands::semantic::set_correction_pattern_enabled,
+            commands::semantic::delete_correction_pattern,
+            commands::semantic::retry_semantic_artifact,
+            commands::semantic::reject_transcript_revision
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1656,6 +1662,181 @@ mod tests {
         )
         .expect_err("达到最大重试次数后不应继续重试");
         assert!(error.contains("最大重试次数"));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_generate_v06_revision_and_semantic_artifacts_from_corrected_transcript() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "shengji-v06-semantic-workbench-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        let audio_path = temp_dir.join("sample-review.wav");
+        fs::write(&audio_path, b"fake wav bytes for semantic review")
+            .expect("应能准备本地音频文件");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        commands::transcript::import_local_audio_payload(
+            &db_path,
+            audio_path.to_string_lossy().as_ref(),
+        )
+        .expect("应能准备 v0.6 转写输入");
+
+        let workbench = commands::semantic::generate_semantic_workbench_payload(&db_path)
+            .expect("v0.6 应能生成修正文稿和结构化语义产物");
+
+        assert_eq!(workbench.recording_type.template_id, "meeting_minutes_v1");
+        assert!(!workbench.revisions.is_empty(), "应生成转写修正对照");
+        assert!(workbench
+            .revisions
+            .iter()
+            .any(|revision| revision.change_level == "meaning_affecting"
+                && !revision.reason_summary.trim().is_empty()
+                && !revision.source_segment_id.trim().is_empty()));
+        assert!(workbench.summary.basis.contains("修正文稿"));
+        assert!(workbench.meeting_minutes.decisions.iter().any(|item| item.contains("复核")));
+        assert!(workbench.todo_candidates.iter().any(|todo| {
+            todo.title.contains("复核")
+                && todo
+                    .source_segment_ids
+                    .iter()
+                    .any(|segment_id| segment_id.starts_with("transcript_"))
+        }));
+
+        let artifact_types: Vec<String> = workbench
+            .artifacts
+            .iter()
+            .map(|artifact| artifact.artifact_type.clone())
+            .collect();
+        for artifact_type in [
+            "transcript_revision",
+            "recording_type",
+            "summary",
+            "meeting_minutes",
+            "todo_extraction",
+        ] {
+            assert!(
+                artifact_types.iter().any(|value| value == artifact_type),
+                "应写入 semantic_artifacts({artifact_type})"
+            );
+        }
+        assert!(workbench
+            .model_invocations
+            .iter()
+            .any(|invocation| invocation.capability == "semantic"
+                && invocation.status == "succeeded"));
+
+        let revision_to_reject = workbench
+            .revisions
+            .iter()
+            .find(|revision| revision.change_level != "none")
+            .expect("应至少有一条可拒绝的修正");
+        assert_eq!(revision_to_reject.status, "proposed");
+        let rejected = commands::semantic::reject_transcript_revision_payload(
+            &db_path,
+            revision_to_reject.id.as_str(),
+        )
+        .expect("用户应能拒绝某条修正");
+        assert_eq!(rejected.status, "rejected");
+        let refreshed = commands::semantic::get_semantic_workbench_payload(&db_path)
+            .expect("拒绝后应能刷新工作台");
+        assert!(refreshed
+            .revisions
+            .iter()
+            .any(|revision| revision.id == rejected.id && revision.status == "rejected"));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_keep_v06_correction_memory_private_and_mutable() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "shengji-v06-correction-memory-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        let audio_path = temp_dir.join("private-customer-call.wav");
+        fs::write(&audio_path, b"fake wav bytes for correction memory")
+            .expect("应能准备本地音频文件");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        commands::transcript::import_local_audio_payload(
+            &db_path,
+            audio_path.to_string_lossy().as_ref(),
+        )
+        .expect("应能准备 v0.6 修正记忆输入");
+
+        let workbench = commands::semantic::generate_semantic_workbench_payload(&db_path)
+            .expect("应能生成修正记忆");
+        let pattern = workbench
+            .correction_patterns
+            .first()
+            .expect("应生成至少一条短语级修正记忆");
+
+        assert!(!pattern.phrase.trim().is_empty());
+        assert!(!pattern.replacement.trim().is_empty());
+        assert!(
+            !pattern.phrase.contains("已导入")
+                && !pattern.phrase.contains("private-customer-call.wav"),
+            "修正记忆不应保存完整转写稿或完整音频路径"
+        );
+
+        let disabled = commands::semantic::set_correction_pattern_enabled_payload(
+            &db_path,
+            pattern.id.as_str(),
+            false,
+        )
+        .expect("修正记忆应可禁用");
+        assert!(!disabled.enabled);
+
+        let deleted = commands::semantic::delete_correction_pattern_payload(
+            &db_path,
+            pattern.id.as_str(),
+        )
+        .expect("修正记忆应可删除");
+        assert_eq!(deleted.deleted_id, pattern.id);
+
+        let refreshed = commands::semantic::get_semantic_workbench_payload(&db_path)
+            .expect("应能读取删除后的工作台状态");
+        assert!(!refreshed
+            .correction_patterns
+            .iter()
+            .any(|candidate| candidate.id == pattern.id));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_store_v06_semantic_parse_failure_and_retry() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "shengji-v06-semantic-retry-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let failed = commands::semantic::record_semantic_parse_failure_payload(
+            &db_path,
+            "session_semantic_retry",
+            "{not-json",
+        )
+        .expect("M3 JSON 解析失败应写入 failed artifact");
+        assert_eq!(failed.status, "failed");
+        assert_eq!(failed.artifact_type, "summary");
+        assert!(failed.error_message.contains("JSON"));
+
+        let retried = commands::semantic::retry_semantic_artifact_payload(
+            &db_path,
+            failed.id.as_str(),
+        )
+        .expect("失败语义产物应提供重试入口");
+        assert_eq!(retried.status, "pending");
+        assert!(retried.error_message.is_empty());
 
         let _ = fs::remove_dir_all(temp_dir);
     }

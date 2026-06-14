@@ -555,6 +555,18 @@ pub(crate) fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
         updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
 
+      CREATE TABLE IF NOT EXISTS transcript_correction_patterns (
+        id TEXT PRIMARY KEY,
+        phrase TEXT NOT NULL,
+        replacement TEXT NOT NULL,
+        pattern_type TEXT NOT NULL,
+        scope TEXT NOT NULL DEFAULT 'local',
+        confidence REAL NOT NULL DEFAULT 0,
+        enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
       CREATE TABLE IF NOT EXISTS semantic_artifacts (
         id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL,
@@ -644,6 +656,8 @@ pub(crate) fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
         ON speaker_segments(audio_segment_id, start_ms);
       CREATE INDEX IF NOT EXISTS idx_transcript_jobs_status
         ON transcript_jobs(status);
+      CREATE INDEX IF NOT EXISTS idx_transcript_correction_patterns_enabled
+        ON transcript_correction_patterns(enabled);
       CREATE INDEX IF NOT EXISTS idx_semantic_artifacts_session_type
         ON semantic_artifacts(session_id, artifact_type);
       CREATE INDEX IF NOT EXISTS idx_semantic_artifacts_status
