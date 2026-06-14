@@ -27,7 +27,7 @@ export const defaultSettings: SettingsState = {
   asrResourceId: "volc.seedasr.auc",
   asrModelName: "bigmodel",
   asrApiKeyMasked: "sk-asr-****",
-  semanticBaseUrl: "https://api.minimax.io/v1/responses",
+  semanticBaseUrl: "https://api.minimaxi.com/v1/chat/completions",
   semanticModelName: "MiniMax-M3",
   semanticApiKeyMasked: "sk-m3-****",
   allowCloudFallback: true,
@@ -143,7 +143,7 @@ export const defaultSessions: SessionItem[] = [
 
 export const defaultRuntime: RuntimeStatus = {
   runtimeLabel: "录音中",
-  currentSessionStatus: "idle_waiting",
+  currentSessionStatus: "collecting",
   lastSliceAt: "2026-04-12 10:20:00",
   lastExtractionAt: "2026-04-12 10:20:23",
   lastExtractionSummary: "最近一次会话提取出 2 条 Todo",
