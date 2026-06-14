@@ -972,6 +972,164 @@ button:disabled {
   display: block;
 }
 
+.mindmap-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(360px, 0.95fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.mindmap-canvas-panel {
+  min-height: 640px;
+}
+
+.mindmap-canvas {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-auto-rows: minmax(92px, auto);
+  gap: 16px;
+  min-height: 520px;
+  margin-top: 14px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background:
+    linear-gradient(rgba(99, 115, 129, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(99, 115, 129, 0.08) 1px, transparent 1px),
+    rgba(255, 255, 255, 0.54);
+  background-size: 28px 28px;
+  padding: 22px;
+}
+
+.mindmap-edge-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.mindmap-edge-strip span {
+  max-width: 220px;
+  overflow: hidden;
+  border: 1px solid rgba(64, 81, 96, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 5px 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mindmap-node {
+  display: flex;
+  min-width: 0;
+  min-height: 88px;
+  flex-direction: column;
+  justify-content: space-between;
+  border: 1px solid rgba(77, 95, 112, 0.2);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--text-main);
+  box-shadow: 0 14px 30px rgba(28, 39, 50, 0.1);
+  cursor: pointer;
+  padding: 12px;
+  text-align: left;
+}
+
+.mindmap-node span {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.mindmap-node small {
+  margin-top: 10px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.mindmap-node-root {
+  grid-column: 2 / span 4;
+  min-height: 112px;
+  border-color: rgba(10, 132, 255, 0.32);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(229, 242, 255, 0.9));
+}
+
+.mindmap-node-summary {
+  grid-column: span 3;
+}
+
+.mindmap-node-decision,
+.mindmap-node-source {
+  grid-column: span 2;
+}
+
+.mindmap-node-selected {
+  border-color: #0a84ff;
+  box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.16), 0 14px 30px rgba(28, 39, 50, 0.12);
+}
+
+.mindmap-side-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.mindmap-editor {
+  display: grid;
+  gap: 12px;
+}
+
+.mindmap-editor textarea {
+  min-height: 112px;
+  resize: vertical;
+}
+
+.source-ref-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.source-ref {
+  border: 1px solid rgba(10, 132, 255, 0.26);
+  border-radius: 999px;
+  background: rgba(10, 132, 255, 0.09);
+  color: #0a66c2;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 10px;
+}
+
+.export-preview {
+  display: grid;
+  gap: 10px;
+}
+
+.export-preview strong {
+  color: var(--text-main);
+  font-size: 13px;
+}
+
+.export-preview pre {
+  max-height: 260px;
+  overflow: auto;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #17202a;
+  color: #edf6ff;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 12px;
+  white-space: pre-wrap;
+}
+
 .settings-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1097,6 +1255,7 @@ button:disabled {
   }
 
   .actions-layout,
+  .mindmap-layout,
   .overview-grid,
   .privacy-boundary-grid,
   .semantic-artifact-grid,
