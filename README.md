@@ -1,6 +1,6 @@
 # 智能 Todo
 
-一个运行在 macOS 桌面端的声记工作台，目标是把“录音 / 音频导入 -> 本地转写 -> 说话人分离 -> 转写修正 -> MiniMax M3 类型化语义理解 -> Todo / 摘要 / 脑图 / Moment / 深度研究 / 导出”串成可追溯的桌面工作流。
+一个运行在 macOS 桌面端的声记工作台，目标是把“录音 / 音频导入 -> 本地转写 -> 说话人分离 -> 转写修正 -> MiniMax M3 类型化语义理解 -> Todo / 摘要 / 脑图 / Moment / 深度研究 / 翻译 / 多语言导出”串成可追溯的桌面工作流。
 
 当前实现基于 `Tauri 2 + Rust + React + TypeScript + SQLite`，前端负责配置与结果展示，Rust 负责录音、数据库和模型调用编排。
 
@@ -17,8 +17,9 @@
 9. 支持基于修正文稿和摘要生成思维脑图，节点可编辑、折叠、追溯来源并导出 Markdown / JSON。
 10. 支持自动生成 Moment、Deep Research 草稿，并把研究结论转为 Todo 或脑图节点。
 11. 支持 v1.0 导出中心：Markdown、SRT、JSON、本地分享快照、会话归档搜索、导出记录和 provider 成本 / 隐私 / 密钥状态展示。
+12. 支持 v1.1 翻译与多语言导出：转写翻译、摘要翻译、多语言 Markdown / JSON / 快照模板和来源追溯。
 
-## v1.0 处理链路
+## v1.1 处理链路
 
 ```text
 录音开始 / 本地音频导入
@@ -33,6 +34,8 @@
 -> 确认 Todo 候选并写入 todos
 -> 生成 mind_map / moment / deep_research
 -> 在导出中心生成 Markdown / SRT / JSON / 本地分享快照
+-> 生成 translation artifact，保留转写片段和摘要来源追溯
+-> 在导出中心生成多语言 Markdown / JSON / 快照模板
 -> 写入 external_exports 形成本地导出记录
 ```
 
@@ -142,6 +145,7 @@ SQLite 数据库：
 13. [发布说明_v0.8.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v0.8.0.md>)
 14. [发布说明_v0.9.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v0.9.0.md>)
 15. [发布说明_v1.0.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v1.0.0.md>)
+16. [发布说明_v1.1.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v1.1.0.md>)
 
 过时的一期文档、旧 v2.0 PRD 和旧设计包已归档到：
 
@@ -151,12 +155,13 @@ AI文档/废纸篓/2026-06-12-旧方案归档/
 
 ## 当前边界
 
-当前为 v1.0 产品闭环版本，尚未完成：
+当前为 v1.1 多语言导出版本，尚未完成：
 
 1. 自动 30 秒滚动切片录音。
 2. 真实 Argmax local server / CLI 推理执行与模型下载器。
 3. 声纹识别与特定用户过滤。
 4. SpeakerKit 真实说话人分离推理接入。
 5. 多设备同步。
-6. 多语言导出、云端分享和外部同步。
+6. 云端分享和外部同步。
 7. 真实联网深度研究检索与外部资料引用。
+8. 播客脚本、TTS provider 和音频生成入口。
