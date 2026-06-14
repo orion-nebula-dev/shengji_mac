@@ -1,4 +1,4 @@
-export type TodoStatus = "pending" | "completed";
+export type TodoStatus = "open" | "in_progress" | "done" | "dismissed";
 export type SessionStatus =
   | "collecting"
   | "idle_waiting"
@@ -43,6 +43,27 @@ export interface TodoItem {
   createdAt: string;
   conversationSessionId: string;
   sourceText: string;
+  owner: string;
+  dueAt: string;
+  priority: "low" | "medium" | "high";
+  sourceSpanRefs: string[];
+  candidateId: string;
+}
+
+export interface TodoCandidateItem {
+  id: string;
+  sessionId: string;
+  artifactId: string;
+  title: string;
+  detail: string;
+  owner: string;
+  dueAt: string;
+  priority: "low" | "medium" | "high";
+  confidence: number;
+  status: "proposed" | "accepted" | "dismissed" | "merged";
+  sourceSpanRefs: string[];
+  sourceText: string;
+  todoId: string;
 }
 
 export interface SessionItem {
