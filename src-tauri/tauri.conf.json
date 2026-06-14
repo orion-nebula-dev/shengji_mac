@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "智能 Todo",
-  "version": "1.1.0",
-  "identifier": "com.smarttodo.desktop",
+  "productName": "声记",
+  "version": "1.1.1",
+  "identifier": "com.shengji.desktop",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:4173",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "智能 Todo",
+        "title": "声记",
         "label": "main",
         "width": 1440,
         "height": 920,
