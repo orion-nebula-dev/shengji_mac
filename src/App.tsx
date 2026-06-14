@@ -1,10 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   flushDesktopSession,
-  getLocalTodoRuntimeStatus,
+  importDesktopLocalAudio,
+  isTauriEnvironment,
   loadBootstrapData,
   loadDesktopContext,
+  loadTranscriptReview,
+  markDesktopTranscriptSegment,
   processDesktopPendingJobs,
+  renameDesktopSpeaker,
+  retryDesktopTranscriptJob,
   saveDesktopSettings,
   simulateDesktopAudioSlice,
   startDesktopRecording,
@@ -12,10 +17,11 @@ import {
   testDesktopModelConnection,
   toggleDesktopTodoStatus,
 } from "./lib/desktop";
+import { defaultTranscriptReview } from "./data/mock";
 import { getDefaultState, loadState, saveState } from "./lib/storage";
-import type { LocalRuntimeState, SessionItem, SettingsState, TodoItem } from "./types";
+import type { SessionItem, SettingsState, TodoItem, TranscriptReview } from "./types";
 
-type TabKey = "overview" | "actions" | "history" | "system" | "settings";
+type TabKey = "overview" | "actions" | "transcript" | "history" | "system" | "settings";
 
 const statusLabelMap = {
   pending: "未完成",
@@ -30,18 +36,28 @@ const sessionStatusLabelMap = {
   failed: "失败",
 } as const;
 
-const localRuntimeLabelMap = {
-  not_ready: "未就绪",
-  starting: "启动中",
-  ready: "已就绪",
-  failed: "失败",
-} as const;
-
 const extractionStatusLabelMap = {
   success: "已完成",
   failed: "失败可重试",
   pending: "等待中",
 } as const;
+
+const transcriptJobStatusLabelMap = {
+  queued: "已排队",
+  running: "转写中",
+  succeeded: "已完成",
+  failed: "失败可重试",
+  retrying: "重试中",
+} as const;
+
+function formatDuration(ms: number) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60)
+    .toString()
+    .padStart(2, "0");
+  const seconds = (totalSeconds % 60).toString().padStart(2, "0");
+  return `${minutes}:${seconds}`;
+}
 
 function getFallbackReasonText(session?: SessionItem) {
   if (!session) {
@@ -70,17 +86,14 @@ function App() {
   const [saveBanner, setSaveBanner] = useState("");
   const [testingProvider, setTestingProvider] = useState<"" | "asr" | "todo">("");
   const [lastManualFlushAt, setLastManualFlushAt] = useState(0);
-  const [localRuntime, setLocalRuntime] = useState<LocalRuntimeState>({
-    providerType: initialState.settings.todoProviderType,
-    modelVersion: initialState.settings.localTodoModelVersion,
-    runtimeStatus: initialState.settings.localTodoRuntimeStatus,
-    lastHealthCheckAt: initialState.settings.localTodoLastHealthCheckAt,
-    fallbackEnabled: initialState.settings.allowCloudFallback,
-    message:
-      initialState.settings.localTodoRuntimeStatus === "ready"
-        ? "本地 Todo 运行时已就绪"
-        : "本地 Todo 运行时未就绪",
-  });
+  const [transcriptReview, setTranscriptReview] =
+    useState<TranscriptReview>(defaultTranscriptReview);
+  const [audioImportPath, setAudioImportPath] = useState("");
+  const [selectedTranscriptSegmentId, setSelectedTranscriptSegmentId] = useState(
+    defaultTranscriptReview.segments[0]?.id ?? "",
+  );
+  const [currentPlaybackMs, setCurrentPlaybackMs] = useState(0);
+  const [speakerDrafts, setSpeakerDrafts] = useState<Record<string, string>>({});
   const [desktopContext, setDesktopContext] = useState<{
     runtime: string;
     platform: string;
@@ -116,25 +129,26 @@ function App() {
   useEffect(() => {
     let cancelled = false;
 
-    getLocalTodoRuntimeStatus()
-      .then((payload) => {
-        if (!cancelled && payload) {
-          setLocalRuntime(payload);
-          setSettings((current) => ({
-            ...current,
-            todoProviderType: payload.providerType === "embedded_local" ? "embedded_local" : current.todoProviderType,
-            localTodoModelVersion: payload.modelVersion,
-            localTodoRuntimeStatus: payload.runtimeStatus,
-            localTodoLastHealthCheckAt: payload.lastHealthCheckAt,
-          }));
+    loadTranscriptReview()
+      .then((review) => {
+        if (!review || cancelled) {
+          return;
         }
+
+        setTranscriptReview(review);
+        setSelectedTranscriptSegmentId(review.segments[0]?.id ?? "");
+        setSpeakerDrafts(
+          Object.fromEntries(review.speakers.map((speaker) => [speaker.id, speaker.label])),
+        );
       })
       .catch(() => {
         if (!cancelled) {
-          setLocalRuntime((current) => ({
-            ...current,
-            message: "当前浏览器原型模式不支持本地运行时状态查询",
-          }));
+          setTranscriptReview(defaultTranscriptReview);
+          setSpeakerDrafts(
+            Object.fromEntries(
+              defaultTranscriptReview.speakers.map((speaker) => [speaker.id, speaker.label]),
+            ),
+          );
         }
       });
 
@@ -153,17 +167,6 @@ function App() {
         }
 
         setSettings(payload.settings);
-        setLocalRuntime({
-          providerType: payload.settings.todoProviderType,
-          modelVersion: payload.settings.localTodoModelVersion,
-          runtimeStatus: payload.settings.localTodoRuntimeStatus,
-          lastHealthCheckAt: payload.settings.localTodoLastHealthCheckAt,
-          fallbackEnabled: payload.settings.allowCloudFallback,
-          message:
-            payload.settings.localTodoRuntimeStatus === "ready"
-              ? "本地 Todo 运行时已就绪"
-              : "本地 Todo 运行时未就绪",
-        });
         setTodos(payload.todos);
         setSessions(payload.sessions);
         setRuntime(payload.runtime);
@@ -172,14 +175,6 @@ function App() {
       .catch(() => {
         if (!cancelled) {
           setSettings(fallbackState.settings);
-          setLocalRuntime({
-            providerType: fallbackState.settings.todoProviderType,
-            modelVersion: fallbackState.settings.localTodoModelVersion,
-            runtimeStatus: fallbackState.settings.localTodoRuntimeStatus,
-            lastHealthCheckAt: fallbackState.settings.localTodoLastHealthCheckAt,
-            fallbackEnabled: fallbackState.settings.allowCloudFallback,
-            message: "当前为浏览器原型，本地运行时状态使用默认值",
-          });
           setTodos(fallbackState.todos);
           setSessions(fallbackState.sessions);
           setRuntime(fallbackState.runtime);
@@ -218,29 +213,12 @@ function App() {
     }));
   }
 
-  async function refreshLocalRuntime() {
-    const payload = await getLocalTodoRuntimeStatus().catch(() => null);
-    if (!payload) {
-      return;
-    }
-
-    setLocalRuntime(payload);
-    setSettings((current) => ({
-      ...current,
-      localTodoModelVersion: payload.modelVersion,
-      localTodoRuntimeStatus: payload.runtimeStatus,
-      localTodoLastHealthCheckAt: payload.lastHealthCheckAt,
-    }));
-  }
-
   async function saveSettings() {
     const persisted = await saveDesktopSettings(settings).catch(() => null);
 
     if (persisted) {
       setSettings(persisted);
     }
-
-    await refreshLocalRuntime();
 
     setSaveBanner("设置已保存，下一轮切片与提取将使用新配置。");
     window.setTimeout(() => setSaveBanner(""), 2400);
@@ -259,9 +237,6 @@ function App() {
 
     const label = provider === "asr" ? "ASR" : "Todo";
     const excerpt = result.responseExcerpt ? ` ${result.responseExcerpt}` : "";
-    if (provider === "todo") {
-      await refreshLocalRuntime();
-    }
     setSaveBanner(`${label} 测试结果：${result.message}${excerpt}`);
     window.setTimeout(() => setSaveBanner(""), 6000);
   }
@@ -376,6 +351,123 @@ function App() {
     window.setTimeout(() => setSaveBanner(""), 4000);
   }
 
+  async function handleImportAudio() {
+    if (!audioImportPath.trim()) {
+      setSaveBanner("请输入本地音频文件路径，用于 v0.5 离线评估。");
+      window.setTimeout(() => setSaveBanner(""), 2600);
+      return;
+    }
+
+    const review = await importDesktopLocalAudio(audioImportPath.trim()).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : "导入本地音频失败。";
+      setSaveBanner(message);
+      window.setTimeout(() => setSaveBanner(""), 3600);
+      return null;
+    });
+
+    if (!review) {
+      const nextReview = {
+        ...defaultTranscriptReview,
+        audio: {
+          ...defaultTranscriptReview.audio,
+          fileName: audioImportPath.trim().split("/").filter(Boolean).pop() || "local-audio.wav",
+        },
+      };
+      setTranscriptReview(nextReview);
+      setSelectedTranscriptSegmentId(nextReview.segments[0]?.id ?? "");
+      setSaveBanner("浏览器原型模式已载入本地评估样例。桌面端会读取真实路径。");
+      window.setTimeout(() => setSaveBanner(""), 3600);
+      return;
+    }
+
+    setTranscriptReview(review);
+    setSelectedTranscriptSegmentId(review.segments[0]?.id ?? "");
+    setSpeakerDrafts(Object.fromEntries(review.speakers.map((speaker) => [speaker.id, speaker.label])));
+    setSaveBanner("已导入音频并生成本地转写评估时间轴。");
+    window.setTimeout(() => setSaveBanner(""), 3600);
+  }
+
+  function jumpToTranscriptSegment(segmentId: string, startMs: number) {
+    setSelectedTranscriptSegmentId(segmentId);
+    setCurrentPlaybackMs(startMs);
+  }
+
+  async function handleRenameSpeaker(speakerId: string) {
+    const label = speakerDrafts[speakerId]?.trim();
+    if (!label) {
+      setSaveBanner("说话人名称不能为空。");
+      window.setTimeout(() => setSaveBanner(""), 2400);
+      return;
+    }
+
+    const renamed = await renameDesktopSpeaker(speakerId, label).catch(() => null);
+    setTranscriptReview((current) => ({
+      ...current,
+      speakers: current.speakers.map((speaker) =>
+        speaker.id === speakerId
+          ? { ...speaker, label, displayName: label, corrected: true }
+          : speaker,
+      ),
+      segments: current.segments.map((segment) =>
+        segment.speakerId === speakerId ? { ...segment, speakerLabel: label } : segment,
+      ),
+    }));
+
+    if (renamed) {
+      setSpeakerDrafts((current) => ({ ...current, [speakerId]: renamed.label }));
+    }
+    setSaveBanner("说话人名称已保存。");
+    window.setTimeout(() => setSaveBanner(""), 2400);
+  }
+
+  async function handleMarkTranscriptSegment(segmentId: string) {
+    const reason = "用户标注：该片段需要人工复核";
+    const marked = await markDesktopTranscriptSegment(segmentId, "manual_review", reason).catch(
+      () => null,
+    );
+
+    setTranscriptReview((current) => ({
+      ...current,
+      segments: current.segments.map((segment) =>
+        segment.id === segmentId
+          ? {
+              ...segment,
+              reviewStatus: "flagged",
+              reviewReason: marked?.reviewReason || reason,
+            }
+          : segment,
+      ),
+    }));
+    setSaveBanner("已标注错误片段。");
+    window.setTimeout(() => setSaveBanner(""), 2400);
+  }
+
+  async function handleRetryTranscriptJob(jobId: string) {
+    const retried = await retryDesktopTranscriptJob(jobId).catch(() => null);
+
+    if (isTauriEnvironment() && !retried) {
+      setSaveBanner("转写任务当前不可重试，请检查任务状态。");
+      window.setTimeout(() => setSaveBanner(""), 2400);
+      return;
+    }
+
+    setTranscriptReview((current) => ({
+      ...current,
+      jobs: current.jobs.map((job) =>
+        job.id === jobId
+          ? {
+              ...job,
+              status: "queued",
+              retryCount: retried?.retryCount ?? job.retryCount + 1,
+              errorMessage: "",
+            }
+          : job,
+      ),
+    }));
+    setSaveBanner("失败转写任务已重新排队。");
+    window.setTimeout(() => setSaveBanner(""), 2400);
+  }
+
   const pendingTodoCount = todos.filter((todo) => todo.status === "pending").length;
   const completedTodoCount = todos.filter((todo) => todo.status === "completed").length;
   const failedSessionCount = sessions.filter((session) => session.extractionStatus === "failed").length;
@@ -383,6 +475,7 @@ function App() {
   const navItems: Array<{ key: TabKey; label: string; description: string }> = [
     { key: "overview", label: "今日工作台", description: "录音与概览" },
     { key: "actions", label: "行动中心", description: "Todo 执行" },
+    { key: "transcript", label: "转写评估", description: "音频与说话人" },
     { key: "history", label: "会话日志", description: "文稿与来源" },
     { key: "system", label: "系统状态", description: "排障与运行时" },
     { key: "settings", label: "设置", description: "模型与录音" },
@@ -399,7 +492,7 @@ function App() {
           </div>
           <div className="window-title">
             <strong>声记</strong>
-            <span>本地录音与智能 Todo</span>
+            <span>语音知识与行动工作台</span>
           </div>
           <div className="titlebar-actions">
             <button className="icon-button" type="button" onClick={() => setActiveTab("history")}>
@@ -443,8 +536,8 @@ function App() {
                   <strong>{sessionStatusLabelMap[runtime.currentSessionStatus]}</strong>
                 </li>
                 <li>
-                  <span>本地模型</span>
-                  <strong>{localRuntimeLabelMap[localRuntime.runtimeStatus]}</strong>
+                  <span>语义入口</span>
+                  <strong>MiniMax M3</strong>
                 </li>
                 <li>
                   <span>失败任务</span>
@@ -660,6 +753,239 @@ function App() {
               </main>
             ) : null}
 
+            {activeTab === "transcript" ? (
+              <main className="page-stack">
+                <div className="page-heading">
+                  <div>
+                    <p className="section-kicker">Transcript Review</p>
+                    <h2>转写评估与说话人</h2>
+                  </div>
+                  <span
+                    className={`status-chip ${
+                      transcriptReview.audio.offlineAvailable ? "chip-live" : "chip-danger"
+                    }`}
+                  >
+                    {transcriptReview.audio.offlineAvailable ? "离线可用" : "需联网"}
+                  </span>
+                </div>
+
+                <section className="transcript-import-bar panel-lite">
+                  <label className="field field-wide">
+                    <span>本地音频路径</span>
+                    <input
+                      type="text"
+                      value={audioImportPath}
+                      onChange={(event) => setAudioImportPath(event.target.value)}
+                      placeholder="/Users/wwh/Audio/meeting.wav"
+                    />
+                  </label>
+                  <button className="primary-button" type="button" onClick={handleImportAudio}>
+                    导入音频
+                  </button>
+                </section>
+
+                <section className="transcript-layout">
+                  <section className="panel-lite transcript-main-panel">
+                    <div className="panel-head">
+                      <div>
+                        <p className="section-kicker">Timeline</p>
+                        <h3>{transcriptReview.audio.fileName}</h3>
+                      </div>
+                      <div className="playback-meter">
+                        <strong>{formatDuration(currentPlaybackMs)}</strong>
+                        <span>/ {formatDuration(transcriptReview.audio.durationMs)}</span>
+                      </div>
+                    </div>
+
+                    <div className="audio-state-grid">
+                      <div>
+                        <span>状态</span>
+                        <strong>{transcriptJobStatusLabelMap[transcriptReview.audio.status as keyof typeof transcriptJobStatusLabelMap] ?? transcriptReview.audio.status}</strong>
+                      </div>
+                      <div>
+                        <span>Provider</span>
+                        <strong>{transcriptReview.audio.provider}</strong>
+                      </div>
+                      <div>
+                        <span>模型</span>
+                        <strong>{transcriptReview.audio.modelName}</strong>
+                      </div>
+                    </div>
+
+                    <div className="transcript-timeline">
+                      {transcriptReview.segments.map((segment) => (
+                        <article
+                          key={segment.id}
+                          className={`transcript-segment ${
+                            selectedTranscriptSegmentId === segment.id
+                              ? "transcript-segment-active"
+                              : ""
+                          }`}
+                        >
+                          <button
+                            className="segment-jump"
+                            type="button"
+                            onClick={() =>
+                              jumpToTranscriptSegment(segment.id, segment.startMs)
+                            }
+                          >
+                            <span className="segment-time">
+                              {formatDuration(segment.startMs)} - {formatDuration(segment.endMs)}
+                            </span>
+                            <span className="speaker-pill">{segment.speakerLabel}</span>
+                          </button>
+                          <p>{segment.text}</p>
+                          <div className="segment-meta">
+                            <span>置信度 {(segment.confidence * 100).toFixed(0)}%</span>
+                            <span>{segment.provider}</span>
+                            {segment.reviewStatus === "flagged" ? (
+                              <span className="badge badge-failed">需复核</span>
+                            ) : (
+                              <span className="badge badge-completed">正常</span>
+                            )}
+                          </div>
+                          {segment.reviewReason ? (
+                            <p className="review-note">{segment.reviewReason}</p>
+                          ) : null}
+                          <button
+                            className="text-button"
+                            type="button"
+                            onClick={() => handleMarkTranscriptSegment(segment.id)}
+                          >
+                            标注错误
+                          </button>
+                        </article>
+                      ))}
+                      {transcriptReview.segments.length === 0 ? (
+                        <div className="empty-state">暂无转写时间轴，请先导入本地音频</div>
+                      ) : null}
+                    </div>
+                  </section>
+
+                  <aside className="transcript-side-stack">
+                    <section className="panel-lite">
+                      <div className="panel-head">
+                        <div>
+                          <p className="section-kicker">Speakers</p>
+                          <h3>说话人标签</h3>
+                        </div>
+                      </div>
+                      <div className="speaker-list">
+                        {transcriptReview.speakers.map((speaker) => (
+                          <article key={speaker.id} className="speaker-row">
+                            <span
+                              className="speaker-dot"
+                              style={{ backgroundColor: speaker.color }}
+                            />
+                            <label className="field">
+                              <span>{speaker.segmentCount} 个片段</span>
+                              <input
+                                type="text"
+                                value={speakerDrafts[speaker.id] ?? speaker.label}
+                                onChange={(event) =>
+                                  setSpeakerDrafts((current) => ({
+                                    ...current,
+                                    [speaker.id]: event.target.value,
+                                  }))
+                                }
+                              />
+                            </label>
+                            <button
+                              className="secondary-button"
+                              type="button"
+                              onClick={() => handleRenameSpeaker(speaker.id)}
+                            >
+                              保存
+                            </button>
+                          </article>
+                        ))}
+                        {transcriptReview.speakers.length === 0 ? (
+                          <div className="empty-state">暂无说话人</div>
+                        ) : null}
+                      </div>
+                    </section>
+
+                    <section className="panel-lite">
+                      <div className="panel-head">
+                        <div>
+                          <p className="section-kicker">Local Model</p>
+                          <h3>本地模型状态</h3>
+                        </div>
+                        <span className="status-chip">{transcriptReview.modelStatus.downloadProgress}%</span>
+                      </div>
+                      <div className="model-progress-track">
+                        <span style={{ width: `${transcriptReview.modelStatus.downloadProgress}%` }} />
+                      </div>
+                      <ul className="compact-list">
+                        <li>
+                          <span>Provider</span>
+                          <strong>{transcriptReview.modelStatus.provider}</strong>
+                        </li>
+                        <li>
+                          <span>模型</span>
+                          <strong>{transcriptReview.modelStatus.modelName}</strong>
+                        </li>
+                        <li>
+                          <span>缓存</span>
+                          <strong>{transcriptReview.modelStatus.cacheDir}</strong>
+                        </li>
+                        <li>
+                          <span>状态</span>
+                          <strong>{transcriptReview.modelStatus.downloadStatus}</strong>
+                        </li>
+                      </ul>
+                      <p className="runtime-message">
+                        {transcriptReview.modelStatus.deviceRecommendation}
+                      </p>
+                    </section>
+
+                    <section className="panel-lite">
+                      <div className="panel-head">
+                        <div>
+                          <p className="section-kicker">Jobs</p>
+                          <h3>转写任务</h3>
+                        </div>
+                      </div>
+                      <div className="job-list">
+                        {transcriptReview.jobs.map((job) => (
+                          <article key={job.id} className="job-row">
+                            <div>
+                              <strong>{job.modelName}</strong>
+                              <span>{job.provider}</span>
+                            </div>
+                            <span
+                              className={`badge ${
+                                job.status === "failed"
+                                  ? "badge-failed"
+                                  : job.status === "succeeded"
+                                    ? "badge-completed"
+                                    : "badge-waiting"
+                              }`}
+                            >
+                              {transcriptJobStatusLabelMap[job.status]}
+                            </span>
+                            {job.errorMessage ? <p>{job.errorMessage}</p> : null}
+                            {job.status === "failed" ? (
+                              <button
+                                className="secondary-button"
+                                type="button"
+                                onClick={() => handleRetryTranscriptJob(job.id)}
+                              >
+                                重试
+                              </button>
+                            ) : null}
+                          </article>
+                        ))}
+                        {transcriptReview.jobs.length === 0 ? (
+                          <div className="empty-state">暂无转写任务</div>
+                        ) : null}
+                      </div>
+                    </section>
+                  </aside>
+                </section>
+              </main>
+            ) : null}
+
             {activeTab === "history" ? (
               <main className="page-stack">
                 <div className="page-heading">
@@ -726,14 +1052,13 @@ function App() {
                     </ul>
                   </article>
                   <article className="panel-lite">
-                    <p className="section-kicker">本地 Todo 运行时</p>
+                    <p className="section-kicker">Todo 语义入口</p>
                     <ul className="compact-list">
-                      <li><span>状态</span><strong>{localRuntimeLabelMap[localRuntime.runtimeStatus]}</strong></li>
-                      <li><span>模型版本</span><strong>{localRuntime.modelVersion}</strong></li>
-                      <li><span>健康检查</span><strong>{localRuntime.lastHealthCheckAt || "暂无"}</strong></li>
-                      <li><span>云端兜底</span><strong>{localRuntime.fallbackEnabled ? "允许" : "关闭"}</strong></li>
+                      <li><span>Provider</span><strong>MiniMax M3</strong></li>
+                      <li><span>产物类型</span><strong>todo_extraction</strong></li>
+                      <li><span>状态</span><strong>语义边界已登记</strong></li>
                     </ul>
-                    <p className="runtime-message">{localRuntime.message}</p>
+                    <p className="runtime-message">{desktopContext?.modelsStatus ?? "MiniMax M3 语义入口已固定"}</p>
                   </article>
                   <article className="panel-lite system-wide">
                     <p className="section-kicker">失败与回退</p>
@@ -812,8 +1137,8 @@ function App() {
                       <label className="field">
                         <span>转写模式</span>
                         <select value={settings.asrProviderType} onChange={(event) => handleSettingsChange("asrProviderType", event.target.value as SettingsState["asrProviderType"])}>
-                          <option value="local">本地优先</option>
-                          <option value="cloud">云端模型</option>
+                          <option value="local_whisperkit">本地 WhisperKit / Argmax</option>
+                          <option value="cloud_volc">火山云端 ASR</option>
                         </select>
                       </label>
                       <label className="field"><span>提交地址</span><input type="url" value={settings.asrSubmitUrl} onChange={(event) => handleSettingsChange("asrSubmitUrl", event.target.value)} /></label>
@@ -821,11 +1146,12 @@ function App() {
                       <label className="field"><span>资源 ID</span><input type="text" value={settings.asrResourceId} onChange={(event) => handleSettingsChange("asrResourceId", event.target.value)} /></label>
                       <label className="field"><span>模型类型</span><input type="text" value={settings.asrModelName} onChange={(event) => handleSettingsChange("asrModelName", event.target.value)} /></label>
                       <label className="field field-wide"><span>API Key</span><input type="password" value={settings.asrApiKeyMasked} onChange={(event) => handleSettingsChange("asrApiKeyMasked", event.target.value)} /></label>
+                      <label className="field checkbox-field"><span>本地 ASR 不可用时允许云端兜底</span><input type="checkbox" checked={settings.allowCloudFallback} onChange={(event) => handleSettingsChange("allowCloudFallback", event.target.checked)} /></label>
                     </div>
                     <div className="runtime-hint">
                       <p className="section-kicker">本地优先策略</p>
                       <p>
-                        当前本地 ASR 尚未正式接入。开启云端兜底时会在本地 ASR 不可用后使用云端；关闭兜底时将保持纯本地并返回明确失败。
+                        当前本地 WhisperKit / Argmax 接口已进入 v0.4 边界设计，正式转写执行在 v0.5 接入。关闭兜底时不会上传音频。
                       </p>
                     </div>
                   </section>
@@ -833,8 +1159,61 @@ function App() {
                   <section className="panel-lite settings-wide">
                     <div className="panel-head">
                       <div>
-                        <p className="section-kicker">Todo 提取模型</p>
-                        <h3>本地模型与云端兜底</h3>
+                        <p className="section-kicker">语义理解与隐私边界</p>
+                        <h3>MiniMax M3 工作台基座</h3>
+                      </div>
+                      <span className="status-chip">v0.4 架构边界</span>
+                    </div>
+                    <div className="settings-grid settings-grid-three">
+                      <label className="field">
+                        <span>说话人 Provider</span>
+                        <select value={settings.speakerProviderType} onChange={(event) => handleSettingsChange("speakerProviderType", event.target.value as SettingsState["speakerProviderType"])}>
+                          <option value="local_speakerkit">本地 SpeakerKit</option>
+                        </select>
+                      </label>
+                      <label className="field">
+                        <span>语义 Provider</span>
+                        <select value={settings.semanticProviderType} onChange={(event) => handleSettingsChange("semanticProviderType", event.target.value as SettingsState["semanticProviderType"])}>
+                          <option value="minimax_m3">MiniMax M3</option>
+                        </select>
+                      </label>
+                      <label className="field">
+                        <span>导出 Provider</span>
+                        <select value={settings.exportProviderType} onChange={(event) => handleSettingsChange("exportProviderType", event.target.value as SettingsState["exportProviderType"])}>
+                          <option value="local_file">本地文件导出</option>
+                        </select>
+                      </label>
+                      <label className="field"><span>M3 调用地址</span><input type="url" value={settings.semanticBaseUrl} onChange={(event) => handleSettingsChange("semanticBaseUrl", event.target.value)} /></label>
+                      <label className="field"><span>M3 模型</span><input type="text" value={settings.semanticModelName} onChange={(event) => handleSettingsChange("semanticModelName", event.target.value)} /></label>
+                      <label className="field"><span>M3 API Key</span><input type="password" value={settings.semanticApiKeyMasked} onChange={(event) => handleSettingsChange("semanticApiKeyMasked", event.target.value)} /></label>
+                      <label className="field">
+                        <span>Embedding Provider</span>
+                        <select value={settings.embeddingProviderType} onChange={(event) => handleSettingsChange("embeddingProviderType", event.target.value as SettingsState["embeddingProviderType"])}>
+                          <option value="reserved">预留，不启用</option>
+                        </select>
+                      </label>
+                    </div>
+                    <div className="privacy-boundary-grid">
+                      <div>
+                        <strong>本地</strong>
+                        <p>音频转写与说话人分离默认留在本机，v0.5 才接入实际 Argmax local server。</p>
+                      </div>
+                      <div>
+                        <strong>云端</strong>
+                        <p>MiniMax M3 只接收转写后的文本上下文，用于摘要、Todo、脑图和研究。</p>
+                      </div>
+                      <div>
+                        <strong>预留</strong>
+                        <p>Embedding 与导出已登记 provider 边界，但 v0.4 不启用向量检索默认路径。</p>
+                      </div>
+                    </div>
+                  </section>
+
+                  <section className="panel-lite settings-wide">
+                    <div className="panel-head">
+                      <div>
+                        <p className="section-kicker">Todo 语义产物</p>
+                        <h3>MiniMax M3 候选入口</h3>
                       </div>
                       <button className="secondary-button" type="button" onClick={() => handleModelTest("todo")} disabled={testingProvider === "todo"}>
                         {testingProvider === "todo" ? "测试中..." : "测试连接"}
@@ -844,22 +1223,16 @@ function App() {
                       <label className="field">
                         <span>提取模式</span>
                         <select value={settings.todoProviderType} onChange={(event) => handleSettingsChange("todoProviderType", event.target.value as SettingsState["todoProviderType"])}>
-                          <option value="cloud">云端模型</option>
-                          <option value="embedded_local">本地优先</option>
+                          <option value="semantic_m3">MiniMax M3 语义边界</option>
                         </select>
                       </label>
-                      <label className="field"><span>调用地址</span><input type="url" value={settings.todoBaseUrl} onChange={(event) => handleSettingsChange("todoBaseUrl", event.target.value)} /></label>
-                      <label className="field"><span>模型类型</span><input type="text" value={settings.todoModelName} onChange={(event) => handleSettingsChange("todoModelName", event.target.value)} /></label>
-                      <label className="field"><span>API Key</span><input type="password" value={settings.todoApiKeyMasked} onChange={(event) => handleSettingsChange("todoApiKeyMasked", event.target.value)} /></label>
-                      <label className="field"><span>内嵌模型版本</span><input type="text" value={settings.localTodoModelVersion} onChange={(event) => handleSettingsChange("localTodoModelVersion", event.target.value)} /></label>
-                      <label className="field checkbox-field"><span>允许 ASR/Todo 失败后云端兜底</span><input type="checkbox" checked={settings.allowCloudFallback} onChange={(event) => handleSettingsChange("allowCloudFallback", event.target.checked)} /></label>
-                      <label className="field"><span>运行时状态</span><input type="text" value={localRuntimeLabelMap[settings.localTodoRuntimeStatus]} readOnly /></label>
-                      <label className="field field-wide"><span>最近健康检查</span><input type="text" value={settings.localTodoLastHealthCheckAt || "暂无"} readOnly /></label>
+                      <label className="field"><span>语义模型</span><input type="text" value={settings.semanticModelName} readOnly /></label>
+                      <label className="field field-wide"><span>产物落库</span><input type="text" value="semantic_artifacts(type='todo_extraction')" readOnly /></label>
                     </div>
                     <div className="runtime-hint">
-                      <p className="section-kicker">本地运行时</p>
-                      <p>{localRuntime.message}</p>
-                      <p>当前实现使用 Qwen3-4B Q4_K_M 与 llama.cpp 子进程；缺少 llama-cli 或 GGUF 时会显示未就绪。</p>
+                      <p className="section-kicker">语义入口</p>
+                      <p>v0.4 默认只登记 Todo 语义产物边界，实际 Todo 候选确认在 v0.7 接入。</p>
+                      <p>Todo 候选统一通过 MiniMax M3 语义链路承载，产物落库到 semantic_artifacts。</p>
                     </div>
                   </section>
                 </section>
