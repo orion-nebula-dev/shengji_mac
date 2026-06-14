@@ -71,6 +71,34 @@ pub(crate) struct TodoCandidateDto {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct MomentDto {
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) moment_type: String,
+    pub(crate) summary: String,
+    pub(crate) importance: f64,
+    pub(crate) start_ms: i64,
+    pub(crate) end_ms: i64,
+    pub(crate) source_span_refs: Vec<String>,
+    pub(crate) action_hint: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DeepResearchDraftDto {
+    pub(crate) id: String,
+    pub(crate) question: String,
+    pub(crate) background: String,
+    pub(crate) hypotheses: Vec<String>,
+    pub(crate) search_directions: Vec<String>,
+    pub(crate) next_steps: Vec<String>,
+    pub(crate) source_span_refs: Vec<String>,
+    pub(crate) converted_todo_id: String,
+    pub(crate) mind_map_node_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct MindMapNodeDto {
     pub(crate) id: String,
     pub(crate) label: String,
@@ -129,6 +157,27 @@ pub(crate) struct MindMapExportDto {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct StartResearchFromSegmentCommand {
+    pub(crate) segment_id: String,
+    pub(crate) question: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ConvertResearchToTodoCommand {
+    pub(crate) artifact_id: String,
+    pub(crate) research_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AddResearchToMindMapCommand {
+    pub(crate) artifact_id: String,
+    pub(crate) research_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct SemanticWorkbenchDto {
     pub(crate) session_id: String,
     pub(crate) recording_type: RecordingTypeDto,
@@ -138,6 +187,8 @@ pub(crate) struct SemanticWorkbenchDto {
     pub(crate) meeting_minutes: MeetingMinutesDto,
     pub(crate) todo_candidates: Vec<TodoCandidateDto>,
     pub(crate) mind_map: Option<MindMapDto>,
+    pub(crate) moments: Vec<MomentDto>,
+    pub(crate) deep_research: Vec<DeepResearchDraftDto>,
     pub(crate) artifacts: Vec<SemanticArtifactDto>,
     pub(crate) model_invocations: Vec<ModelInvocationDto>,
 }

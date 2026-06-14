@@ -2,7 +2,6 @@ use rusqlite::{params, Connection};
 
 use crate::{
     app::workspace_builder::SemanticWorkspace,
-    current_timestamp_label,
     domain::correction::{CorrectionPatternDto, DeletedCorrectionPatternDto, TranscriptRevisionDto},
 };
 
@@ -197,8 +196,4 @@ fn revise_segment_text(text: &str, index: usize) -> (String, String, String, Str
 
 pub(crate) fn revision_payload_json(revisions: &[TranscriptRevisionDto]) -> String {
     serde_json::to_string(revisions).unwrap_or_else(|_| "[]".to_string())
-}
-
-pub(crate) fn next_invocation_id(session_id: &str) -> String {
-    format!("model_invocation_{}_{}", session_id, current_timestamp_label())
 }
