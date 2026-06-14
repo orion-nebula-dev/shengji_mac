@@ -23,3 +23,11 @@ recordings/
 argmax-cli
 llama-cli
 llama-completion
+
+# API key / secret 防护：禁止将明文密钥提交到仓库
+# 凡是匹配常见 API key 模式的文件，必须使用环境变量或系统 Keychain
+*.key
+*.secret
+*key*.md
+*secret*.md
+*api*key*.md
