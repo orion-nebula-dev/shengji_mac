@@ -24,19 +24,5 @@ fn main() {
         }
     }
 
-    if std::env::var("SMART_TODO_EMBEDDED_TODO_RUNTIME")
-        .ok()
-        .as_deref()
-        == Some("1")
-    {
-        match app_lib::run_embedded_todo_runtime_once() {
-            Ok(()) => return,
-            Err(error) => {
-                eprintln!("{error}");
-                std::process::exit(1);
-            }
-        }
-    }
-
     app_lib::run();
 }
