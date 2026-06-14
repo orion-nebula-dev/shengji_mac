@@ -792,6 +792,7 @@ function App() {
     setRuntime(result.runtime);
     const payload = await loadBootstrapData().catch(() => null);
     if (payload) {
+      setSettings(payload.settings);
       setTodos(payload.todos);
       setSessions(payload.sessions);
       setRuntime(payload.runtime);
@@ -1682,16 +1683,14 @@ function App() {
       : activeNavItem.label;
   const titlebarContext =
     activeTab === "overview" ? transcriptReview.audio.fileName : activeNavItem.description;
+  const isRecordingActive = runtime.currentSessionStatus === "collecting";
+  const recordingControlLabel = isRecordingActive ? "暂停录音" : "开始录音";
+  const recordingControlAction: "start" | "stop" = isRecordingActive ? "stop" : "start";
 
   return (
     <div className="desktop-shell">
-      <div className="window-frame">
-        <header className="window-titlebar">
-          <div className="traffic-lights" aria-hidden="true">
-            <span className="traffic-dot traffic-close" />
-            <span className="traffic-dot traffic-minimize" />
-            <span className="traffic-dot traffic-maximize" />
-          </div>
+      <div className="app-frame">
+        <header className="app-toolbar">
           <div className="window-title">
             <div className="titlebar-location">
               <strong>{titlebarLocation}</strong>
@@ -1699,13 +1698,16 @@ function App() {
             </div>
           </div>
           <div className="titlebar-actions">
+            <span className={`status-chip toolbar-recording-chip ${isRecordingActive ? "chip-recording" : ""}`}>
+              {runtime.runtimeLabel}
+            </span>
             <button
               className="toolbar-button toolbar-button-primary"
               type="button"
-              title="开始录音"
-              onClick={() => handleRecordingAction("start")}
+              title={recordingControlLabel}
+              onClick={() => handleRecordingAction(recordingControlAction)}
             >
-              录音
+              {recordingControlLabel}
             </button>
             <button className="toolbar-button" type="button" title="搜索会话" onClick={() => setActiveTab("history")}>
               搜索
@@ -1729,10 +1731,14 @@ function App() {
                   <h1>声记</h1>
                 </div>
               </div>
-              <button className="primary-button sidebar-primary-action" type="button" onClick={() => handleRecordingAction("start")}>
-                新建记录
+              <button
+                className="primary-button sidebar-primary-action"
+                type="button"
+                onClick={() => handleRecordingAction(recordingControlAction)}
+              >
+                {isRecordingActive ? "暂停录音" : "新建记录"}
               </button>
-              <span className={`status-chip ${settings.recordEnabled ? "chip-live" : ""}`}>
+              <span className={`status-chip ${isRecordingActive ? "chip-recording" : ""}`}>
                 {runtime.runtimeLabel}
               </span>
             </div>
@@ -1768,6 +1774,9 @@ function App() {
                     </div>
                   </div>
                   <div className="heading-actions">
+                    <span className={`status-chip recording-header-chip ${isRecordingActive ? "chip-recording" : ""}`}>
+                      {runtime.runtimeLabel}
+                    </span>
                     <button className="secondary-button" type="button" onClick={() => setActiveTab("export")}>
                       分享
                     </button>
@@ -1777,8 +1786,12 @@ function App() {
                     <button className="secondary-button" type="button" onClick={() => setActiveTab("history")}>
                       搜索
                     </button>
-                    <button className="primary-button" type="button" onClick={() => handleRecordingAction("start")}>
-                      新建记录
+                    <button
+                      className="primary-button"
+                      type="button"
+                      onClick={() => handleRecordingAction(recordingControlAction)}
+                    >
+                      {recordingControlLabel}
                     </button>
                   </div>
                 </header>
@@ -2233,8 +2246,8 @@ function App() {
                     ))}
                   </div>
                   <span>{formatDuration(transcriptReview.audio.durationMs)}</span>
-                  <button className="round-play-button audio-dock-play" type="button" onClick={() => handleRecordingAction("stop")}>
-                    暂停
+                  <button className="audio-dock-button" type="button" onClick={() => handleRecordingAction(recordingControlAction)}>
+                    {recordingControlLabel}
                   </button>
                 </footer>
               </main>
@@ -3866,10 +3879,13 @@ function App() {
         </div>
         <footer className="window-statusbar" aria-label="运行摘要">
           <div className="statusbar-group">
-            <span className={`statusbar-item ${settings.recordEnabled ? "statusbar-live" : ""}`}>
+            <span className={`statusbar-item ${isRecordingActive ? "statusbar-recording" : ""}`}>
               <span className="status-dot" />
               录音：{runtime.runtimeLabel}
             </span>
+            <button className="statusbar-button" type="button" onClick={() => handleRecordingAction(recordingControlAction)}>
+              {recordingControlLabel}
+            </button>
             <span className="statusbar-item">
               会话：{sessionStatusLabelMap[runtime.currentSessionStatus]}
             </span>
