@@ -1,24 +1,33 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use reqwest::blocking::Client;
 use rusqlite::{params, Connection};
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::{
     fs,
-    io::{Read, Write},
     path::PathBuf,
-    process::{Command, Stdio},
     sync::{mpsc, Arc, Mutex},
     thread::{self, JoinHandle},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::Manager;
+
+mod app;
+mod commands;
+mod domain;
+mod infra;
+mod jobs;
+mod providers;
+
+use app::settings_service;
+use domain::model_test::ModelTestResult;
+use domain::session::SessionDto;
+use domain::settings::SettingsDto;
+use domain::transcript::TranscriptRecord;
+use infra::sqlite::{initialize_database, open_connection};
 
 #[derive(Clone)]
 struct AppState {
     db_path: PathBuf,
     recordings_dir: PathBuf,
-    models_dir: PathBuf,
     recorder: Arc<Mutex<Option<RecordingController>>>,
 }
 
@@ -51,213 +60,11 @@ struct RecordingSummary {
     total_energy: u64,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DesktopContext {
-    runtime: String,
-    platform: String,
-    recorder_status: String,
-    storage_status: String,
-    models_status: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct SettingsDto {
-    record_enabled: bool,
-    language: String,
-    chunk_seconds: i64,
-    idle_trigger_seconds: i64,
-    provider_mode: String,
-    asr_provider_type: String,
-    todo_provider_type: String,
-    asr_submit_url: String,
-    asr_query_url: String,
-    asr_resource_id: String,
-    asr_model_name: String,
-    asr_api_key_masked: String,
-    todo_base_url: String,
-    todo_model_name: String,
-    todo_api_key_masked: String,
-    local_todo_model_version: String,
-    allow_cloud_fallback: bool,
-    local_todo_runtime_status: String,
-    local_todo_last_health_check_at: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct TodoDto {
-    id: String,
-    title: String,
-    note: String,
-    status: String,
-    created_at: String,
-    conversation_session_id: String,
-    source_text: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct SessionDto {
-    id: String,
-    merged_text: String,
-    started_at: String,
-    ended_at: String,
-    trigger_reason: String,
-    extraction_status: String,
-    extraction_provider_used: String,
-    extraction_fallback_used: bool,
-    extraction_fallback_reason: String,
-    transcript_count: i64,
-    related_todo_ids: Vec<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct RuntimeStatusDto {
-    runtime_label: String,
-    current_session_status: String,
-    last_slice_at: String,
-    last_extraction_at: String,
-    last_extraction_summary: String,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct BootstrapData {
-    settings: SettingsDto,
-    todos: Vec<TodoDto>,
-    sessions: Vec<SessionDto>,
-    runtime: RuntimeStatusDto,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RecordingActionResult {
-    message: String,
-    runtime: RuntimeStatusDto,
-    latest_session: Option<SessionDto>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ProcessingActionResult {
-    message: String,
-    runtime: RuntimeStatusDto,
-    latest_session: Option<SessionDto>,
-    todos: Vec<TodoDto>,
-    sessions: Vec<SessionDto>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ModelTestRequest {
-    provider: String,
-    settings: SettingsDto,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ModelTestResult {
-    provider: String,
-    success: bool,
-    status_code: u16,
-    message: String,
-    response_excerpt: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LocalTodoRuntimeStatusDto {
-    provider_type: String,
-    model_version: String,
-    runtime_status: String,
-    last_health_check_at: String,
-    fallback_enabled: bool,
-    message: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct EmbeddedTodoRuntimeRequest {
-    action: String,
-    model_version: String,
-    runtime_dir: String,
-    text: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct EmbeddedTodoRuntimeTodo {
-    title: String,
-    note: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct EmbeddedTodoRuntimeResponse {
-    success: bool,
-    runtime_status: String,
-    model_version: String,
-    message: String,
-    todos: Vec<EmbeddedTodoRuntimeTodo>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-struct EmbeddedTodoManifestAsset {
-    path: String,
-    role: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-struct EmbeddedTodoManifest {
-    model_version: String,
-    runtime_type: String,
-    engine: String,
-    description: String,
-    executable_rel_path: String,
-    model_rel_path: String,
-    prompt_template_rel_path: String,
-    context_length: u32,
-    max_output_tokens: u32,
-    temperature: f32,
-    top_p: f32,
-    repeat_penalty: f32,
-    gpu_layers: i32,
-    assets: Vec<EmbeddedTodoManifestAsset>,
-}
-
-#[derive(Debug)]
-struct EmbeddedTodoRuntimeConfig {
-    executable_path: PathBuf,
-    completion_executable_path: PathBuf,
-    model_path: PathBuf,
-    prompt_template_path: PathBuf,
-    manifest: EmbeddedTodoManifest,
-}
-
-struct EmbeddedAsset {
-    relative_path: &'static str,
-    bytes: &'static [u8],
-}
-
 #[derive(Debug)]
 struct AudioSegmentRecord {
     id: String,
     file_path: String,
     trace_id: String,
-}
-
-#[derive(Debug)]
-struct TranscriptRecord {
-    id: String,
-    text: String,
-    trace_id: String,
-}
-
-fn open_connection(db_path: &PathBuf) -> Result<Connection, String> {
-    Connection::open(db_path).map_err(|error| format!("打开数据库失败: {error}"))
 }
 
 fn current_timestamp_label() -> String {
@@ -268,348 +75,17 @@ fn current_timestamp_label() -> String {
     millis.to_string()
 }
 
-fn normalize_local_todo_model_version(version: &str) -> String {
-    let trimmed = version.trim();
-    if trimmed.is_empty() || trimmed == "todo-embedded-v1" {
-        EMBEDDED_TODO_MODEL_VERSION.to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
-fn embedded_todo_model_dir(models_dir: &PathBuf, version: &str) -> PathBuf {
-    models_dir.join("todo").join(version)
-}
-
-fn embedded_todo_manifest_path(models_dir: &PathBuf, version: &str) -> PathBuf {
-    embedded_todo_model_dir(models_dir, version).join("manifest.json")
-}
-
-fn embedded_todo_assets() -> [EmbeddedAsset; 3] {
-    [
-        EmbeddedAsset {
-            relative_path: "manifest.json",
-            bytes: EMBEDDED_TODO_MANIFEST_BYTES,
-        },
-        EmbeddedAsset {
-            relative_path: "prompt_template.txt",
-            bytes: EMBEDDED_TODO_PROMPT_TEMPLATE_BYTES,
-        },
-        EmbeddedAsset {
-            relative_path: "README.txt",
-            bytes: EMBEDDED_TODO_README_BYTES,
-        },
-    ]
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    format!("{:x}", hasher.finalize())
-}
-
-fn embedded_todo_checksums_path(models_dir: &PathBuf, version: &str) -> PathBuf {
-    embedded_todo_model_dir(models_dir, version).join("checksums.sha256")
-}
-
-fn ensure_embedded_todo_runtime_files(models_dir: &PathBuf) -> Result<(), String> {
-    let model_dir = embedded_todo_model_dir(models_dir, EMBEDDED_TODO_MODEL_VERSION);
-    fs::create_dir_all(&model_dir).map_err(|error| format!("创建本地模型目录失败: {error}"))?;
-
-    let mut checksum_lines = Vec::new();
-    for asset in embedded_todo_assets() {
-        let target_path = model_dir.join(asset.relative_path);
-        let should_write = if target_path.exists() {
-            let existing =
-                fs::read(&target_path).map_err(|error| format!("读取本地模型文件失败: {error}"))?;
-            sha256_hex(&existing) != sha256_hex(asset.bytes)
-        } else {
-            true
-        };
-
-        if should_write {
-            if let Some(parent) = target_path.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|error| format!("创建本地模型子目录失败: {error}"))?;
-            }
-            fs::write(&target_path, asset.bytes)
-                .map_err(|error| format!("释放本地模型文件失败: {error}"))?;
-        }
-
-        checksum_lines.push(format!(
-            "{}  {}",
-            sha256_hex(asset.bytes),
-            asset.relative_path
-        ));
-    }
-
-    fs::write(
-        embedded_todo_checksums_path(models_dir, EMBEDDED_TODO_MODEL_VERSION),
-        checksum_lines.join("\n"),
-    )
-    .map_err(|error| format!("写入本地模型校验文件失败: {error}"))?;
-
-    let manifest = parse_embedded_todo_manifest_text(
-        std::str::from_utf8(EMBEDDED_TODO_MANIFEST_BYTES)
-            .map_err(|error| format!("解析内嵌模型清单文本失败: {error}"))?,
-    )?;
-    let executable_parent = model_dir.join(&manifest.executable_rel_path);
-    if let Some(parent) = executable_parent.parent() {
-        fs::create_dir_all(parent).map_err(|error| format!("创建 llama.cpp 目录失败: {error}"))?;
-    }
-    let model_parent = model_dir.join(&manifest.model_rel_path);
-    if let Some(parent) = model_parent.parent() {
-        fs::create_dir_all(parent).map_err(|error| format!("创建 GGUF 模型目录失败: {error}"))?;
-    }
-
-    Ok(())
-}
-
-fn verify_embedded_todo_runtime_files(
-    models_dir: &PathBuf,
-    version: &str,
-) -> Result<(), String> {
-    let model_dir = embedded_todo_model_dir(models_dir, version);
-    for asset in embedded_todo_assets() {
-        let target_path = model_dir.join(asset.relative_path);
-        if !target_path.exists() {
-            return Err(format!("缺少本地模型文件: {}", asset.relative_path));
-        }
-
-        let existing =
-            fs::read(&target_path).map_err(|error| format!("读取本地模型文件失败: {error}"))?;
-        if sha256_hex(&existing) != sha256_hex(asset.bytes) {
-            return Err(format!("本地模型文件校验失败: {}", asset.relative_path));
-        }
-    }
-
-    let checksum_path = embedded_todo_checksums_path(models_dir, version);
-    if !checksum_path.exists() {
-        return Err("缺少本地模型校验文件".to_string());
-    }
-
-    Ok(())
-}
-
-fn parse_embedded_todo_manifest_text(input: &str) -> Result<EmbeddedTodoManifest, String> {
-    serde_json::from_str::<EmbeddedTodoManifest>(input)
-        .map_err(|error| format!("解析内嵌模型清单失败: {error}"))
-}
-
-fn read_embedded_todo_manifest(
-    models_dir: &PathBuf,
-    version: &str,
-) -> Result<EmbeddedTodoManifest, String> {
-    let manifest_path = embedded_todo_manifest_path(models_dir, version);
-    let manifest_text = fs::read_to_string(&manifest_path)
-        .map_err(|error| format!("读取模型清单失败: {error}"))?;
-    parse_embedded_todo_manifest_text(&manifest_text)
-}
-
-fn resolve_runtime_override_path(env_name: &str) -> Option<PathBuf> {
-    std::env::var(env_name)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-}
-
-fn load_embedded_todo_runtime_config(
-    models_dir: &PathBuf,
-    version: &str,
-) -> Result<EmbeddedTodoRuntimeConfig, String> {
-    verify_embedded_todo_runtime_files(models_dir, version)?;
-    let runtime_dir = embedded_todo_model_dir(models_dir, version);
-    let manifest = read_embedded_todo_manifest(models_dir, version)?;
-    let executable_path = resolve_runtime_override_path("SMART_TODO_LLAMA_CLI_PATH")
-        .unwrap_or_else(|| runtime_dir.join(&manifest.executable_rel_path));
-    let completion_executable_path = executable_path
-        .parent()
-        .map(|parent| parent.join("llama-completion"))
-        .unwrap_or_else(|| PathBuf::from("llama-completion"));
-    let model_path = resolve_runtime_override_path("SMART_TODO_QWEN_GGUF_PATH")
-        .unwrap_or_else(|| runtime_dir.join(&manifest.model_rel_path));
-    let prompt_template_path = runtime_dir.join(&manifest.prompt_template_rel_path);
-
-    if !prompt_template_path.exists() {
-        return Err(format!(
-            "缺少 Prompt 模板文件: {}",
-            prompt_template_path.display()
-        ));
-    }
-    if !executable_path.exists() {
-        return Err(format!(
-            "未找到 llama.cpp 可执行文件，请放入 {} 或设置 SMART_TODO_LLAMA_CLI_PATH",
-            executable_path.display()
-        ));
-    }
-    if !completion_executable_path.exists() {
-        return Err(format!(
-            "未找到 llama-completion 可执行文件，请放入 {}",
-            completion_executable_path.display()
-        ));
-    }
-    if !model_path.exists() {
-        return Err(format!(
-            "未找到 Qwen GGUF 模型文件，请放入 {} 或设置 SMART_TODO_QWEN_GGUF_PATH",
-            model_path.display()
-        ));
-    }
-
-    Ok(EmbeddedTodoRuntimeConfig {
-        executable_path,
-        completion_executable_path,
-        model_path,
-        prompt_template_path,
-        manifest,
-    })
-}
-
-fn build_embedded_todo_prompt(template: &str, merged_text: &str) -> String {
-    template.replace("{{input_text}}", merged_text.trim())
-}
-
-fn run_command_with_timeout(
-    mut command: Command,
-    timeout_seconds: u64,
-) -> Result<std::process::Output, String> {
-    let child = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("启动外部命令失败: {error}"))?;
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        let output = child.wait_with_output();
-        let _ = tx.send(output);
-    });
-
-    match rx.recv_timeout(Duration::from_secs(timeout_seconds)) {
-        Ok(Ok(output)) => Ok(output),
-        Ok(Err(error)) => Err(format!("等待外部命令失败: {error}")),
-        Err(_) => Err(format!("外部命令执行超时（{} 秒）", timeout_seconds)),
-    }
-}
-
-fn health_check_llama_cli(config: &EmbeddedTodoRuntimeConfig) -> Result<String, String> {
-    let mut command = Command::new(&config.executable_path);
-    command.arg("--version");
-    let output = run_command_with_timeout(command, LLAMA_CLI_HEALTH_CHECK_TIMEOUT_SECONDS)?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(format!(
-            "llama.cpp 健康检查失败: {}",
-            if stderr.is_empty() {
-                "未知错误".to_string()
-            } else {
-                stderr
-            }
-        ));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    Ok(if stdout.is_empty() {
-        "llama.cpp 可执行文件已就绪".to_string()
-    } else {
-        clip_text(&stdout, 120)
-    })
-}
-
-fn parse_runtime_todos(output_text: &str) -> Result<Vec<EmbeddedTodoRuntimeTodo>, String> {
-    let items = extract_json_array(output_text)?;
-    let todos = items
-        .into_iter()
-        .filter_map(|item| {
-            let title = item.get("title")?.as_str()?.trim().to_string();
-            let note = item
-                .get("note")
-                .and_then(|entry| entry.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            if title.is_empty() {
-                return None;
-            }
-            Some(EmbeddedTodoRuntimeTodo {
-                title: clip_text(&title, 18),
-                note,
-            })
-        })
-        .collect::<Vec<_>>();
-
-    Ok(todos)
-}
-
-fn invoke_llama_cli_todo_extraction(
-    config: &EmbeddedTodoRuntimeConfig,
-    merged_text: &str,
-) -> Result<Vec<EmbeddedTodoRuntimeTodo>, String> {
-    let prompt_template = fs::read_to_string(&config.prompt_template_path)
-        .map_err(|error| format!("读取 Prompt 模板失败: {error}"))?;
-    let prompt = build_embedded_todo_prompt(&prompt_template, merged_text);
-
-    let mut command = Command::new(&config.completion_executable_path);
-    command
-        .arg("-m")
-        .arg(&config.model_path)
-        .arg("-c")
-        .arg(config.manifest.context_length.to_string())
-        .arg("-n")
-        .arg(config.manifest.max_output_tokens.to_string())
-        .arg("--temp")
-        .arg(config.manifest.temperature.to_string())
-        .arg("--top-p")
-        .arg(config.manifest.top_p.to_string())
-        .arg("--repeat-penalty")
-        .arg(config.manifest.repeat_penalty.to_string())
-        .arg("--no-conversation")
-        .arg("--no-warmup")
-        .arg("--reasoning")
-        .arg("off")
-        .arg("--simple-io")
-        .arg("-p")
-        .arg(prompt);
-
-    if config.manifest.gpu_layers >= 0 {
-        command.arg("-ngl").arg(config.manifest.gpu_layers.to_string());
-    }
-
-    let output = run_command_with_timeout(command, LLAMA_CLI_GENERATION_TIMEOUT_SECONDS)?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(format!(
-            "llama.cpp 推理失败: {}",
-            if stderr.is_empty() {
-                "未知错误".to_string()
-            } else {
-                clip_text(&stderr, 300)
-            }
-        ));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if stdout.is_empty() {
-        return Err("llama.cpp 未返回任何文本输出".to_string());
-    }
-
-    parse_runtime_todos(&stdout)
-}
-
 const HTTP_REQUEST_TIMEOUT_SECONDS: u64 = 30;
 const HTTP_MAX_RETRY_ATTEMPTS: usize = 3;
 const MANUAL_FLUSH_COOLDOWN_SECONDS: i64 = 10;
-const EMBEDDED_TODO_MODEL_VERSION: &str = "qwen3-4b-instruct-2507-q4_k_m";
-const EMBEDDED_TODO_RUNTIME_TIMEOUT_SECONDS: u64 = 60;
-const LLAMA_CLI_HEALTH_CHECK_TIMEOUT_SECONDS: u64 = 60;
-const LLAMA_CLI_GENERATION_TIMEOUT_SECONDS: u64 = 300;
-const EMBEDDED_TODO_MANIFEST_BYTES: &[u8] =
-    include_bytes!("../resources/embedded_models/todo/qwen3-4b-instruct-2507-q4_k_m/manifest.json");
-const EMBEDDED_TODO_PROMPT_TEMPLATE_BYTES: &[u8] = include_bytes!(
-    "../resources/embedded_models/todo/qwen3-4b-instruct-2507-q4_k_m/prompt_template.txt"
-);
-const EMBEDDED_TODO_README_BYTES: &[u8] =
-    include_bytes!("../resources/embedded_models/todo/qwen3-4b-instruct-2507-q4_k_m/README.txt");
-
+const DEFAULT_ASR_PROVIDER_TYPE: &str = "local_whisperkit";
+const DEFAULT_SPEAKER_PROVIDER_TYPE: &str = "local_speakerkit";
+const DEFAULT_SEMANTIC_PROVIDER_TYPE: &str = "minimax_m3";
+const DEFAULT_EMBEDDING_PROVIDER_TYPE: &str = "reserved";
+const DEFAULT_EXPORT_PROVIDER_TYPE: &str = "local_file";
+const DEFAULT_TODO_PROVIDER_TYPE: &str = "semantic_m3";
+const DEFAULT_SEMANTIC_BASE_URL: &str = "https://api.minimax.io/v1/responses";
+const DEFAULT_SEMANTIC_MODEL_NAME: &str = "MiniMax-M3";
 fn build_http_client() -> Result<Client, String> {
     Client::builder()
         .timeout(std::time::Duration::from_secs(HTTP_REQUEST_TIMEOUT_SECONDS))
@@ -628,6 +104,21 @@ fn sleep_before_retry(attempt: usize) {
 
 fn should_retry_http_status(status: u16) -> bool {
     status == 429 || status >= 500
+}
+
+fn normalize_asr_provider_type(provider_type: &str) -> String {
+    match provider_type.trim() {
+        "" | "local" | "local_whisperkit" => DEFAULT_ASR_PROVIDER_TYPE.to_string(),
+        "cloud" | "cloud_volc" => "cloud_volc".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn is_local_asr_provider(provider_type: &str) -> bool {
+    matches!(
+        normalize_asr_provider_type(provider_type).as_str(),
+        DEFAULT_ASR_PROVIDER_TYPE
+    )
 }
 
 fn is_placeholder_session_text(text: &str) -> bool {
@@ -661,907 +152,6 @@ fn ensure_manual_flush_allowed(connection: &Connection) -> Result<(), String> {
         }
     }
 
-    Ok(())
-}
-
-fn ensure_app_settings_columns(connection: &Connection) -> Result<(), String> {
-    let mut columns = Vec::new();
-    let mut statement = connection
-        .prepare("PRAGMA table_info(app_settings)")
-        .map_err(|error| format!("读取设置表结构失败: {error}"))?;
-    let rows = statement
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(|error| format!("查询设置表字段失败: {error}"))?;
-
-    for column in rows {
-        columns.push(column.map_err(|error| format!("读取设置字段失败: {error}"))?);
-    }
-
-    for (name, sql) in [
-        (
-            "asr_submit_url",
-            "ALTER TABLE app_settings ADD COLUMN asr_submit_url TEXT NOT NULL DEFAULT ''",
-        ),
-        (
-            "asr_query_url",
-            "ALTER TABLE app_settings ADD COLUMN asr_query_url TEXT NOT NULL DEFAULT ''",
-        ),
-        (
-            "asr_resource_id",
-            "ALTER TABLE app_settings ADD COLUMN asr_resource_id TEXT NOT NULL DEFAULT ''",
-        ),
-        (
-            "asr_provider_type",
-            "ALTER TABLE app_settings ADD COLUMN asr_provider_type TEXT NOT NULL DEFAULT 'local'",
-        ),
-        (
-            "todo_provider_type",
-            "ALTER TABLE app_settings ADD COLUMN todo_provider_type TEXT NOT NULL DEFAULT 'embedded_local'",
-        ),
-        (
-            "local_todo_model_version",
-            "ALTER TABLE app_settings ADD COLUMN local_todo_model_version TEXT NOT NULL DEFAULT ''",
-        ),
-        (
-            "allow_cloud_fallback",
-            "ALTER TABLE app_settings ADD COLUMN allow_cloud_fallback INTEGER NOT NULL DEFAULT 1",
-        ),
-        (
-            "local_todo_runtime_status",
-            "ALTER TABLE app_settings ADD COLUMN local_todo_runtime_status TEXT NOT NULL DEFAULT 'not_ready'",
-        ),
-        (
-            "local_todo_last_health_check_at",
-            "ALTER TABLE app_settings ADD COLUMN local_todo_last_health_check_at TEXT NOT NULL DEFAULT ''",
-        ),
-    ] {
-        if !columns.iter().any(|column| column == name) {
-            connection
-                .execute(sql, [])
-                .map_err(|error| format!("补充设置字段 {name} 失败: {error}"))?;
-        }
-    }
-
-    connection
-        .execute(
-            r#"
-            UPDATE app_settings
-            SET
-              asr_query_url = CASE
-                WHEN asr_query_url = '' THEN asr_base_url
-                ELSE asr_query_url
-              END,
-              asr_submit_url = CASE
-                WHEN asr_submit_url = '' AND asr_base_url LIKE '%/query' THEN REPLACE(asr_base_url, '/query', '/submit')
-                WHEN asr_submit_url = '' THEN asr_base_url
-                ELSE asr_submit_url
-              END,
-              asr_resource_id = CASE
-                WHEN asr_resource_id = '' THEN asr_model_name
-                ELSE asr_resource_id
-              END,
-              asr_model_name = CASE
-                WHEN asr_model_name LIKE 'volc.%' THEN 'bigmodel'
-                ELSE asr_model_name
-              END,
-              asr_provider_type = CASE
-                WHEN TRIM(asr_provider_type) = '' OR asr_provider_type = 'cloud' THEN 'local'
-                ELSE asr_provider_type
-              END,
-              todo_provider_type = CASE
-                WHEN TRIM(todo_provider_type) = '' OR todo_provider_type = 'cloud' THEN 'embedded_local'
-                ELSE todo_provider_type
-              END,
-              local_todo_model_version = CASE
-                WHEN TRIM(local_todo_model_version) = '' OR local_todo_model_version = 'todo-embedded-v1' THEN ?
-                ELSE local_todo_model_version
-              END,
-              allow_cloud_fallback = CASE
-                WHEN allow_cloud_fallback IS NULL THEN 1
-                ELSE allow_cloud_fallback
-              END,
-              local_todo_runtime_status = CASE
-                WHEN TRIM(local_todo_runtime_status) = '' THEN 'not_ready'
-                ELSE local_todo_runtime_status
-              END,
-              local_todo_last_health_check_at = CASE
-                WHEN local_todo_last_health_check_at IS NULL THEN ''
-                ELSE local_todo_last_health_check_at
-              END
-            WHERE id = 'default'
-            "#,
-            params![EMBEDDED_TODO_MODEL_VERSION],
-        )
-        .map_err(|error| format!("回填 ASR 设置字段失败: {error}"))?;
-
-    Ok(())
-}
-
-fn ensure_conversation_sessions_columns(connection: &Connection) -> Result<(), String> {
-    let mut columns = Vec::new();
-    let mut statement = connection
-        .prepare("PRAGMA table_info(conversation_sessions)")
-        .map_err(|error| format!("读取会话表结构失败: {error}"))?;
-    let rows = statement
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(|error| format!("查询会话表字段失败: {error}"))?;
-
-    for column in rows {
-        columns.push(column.map_err(|error| format!("读取会话字段失败: {error}"))?);
-    }
-
-    for (name, sql) in [
-        (
-            "extraction_provider_used",
-            "ALTER TABLE conversation_sessions ADD COLUMN extraction_provider_used TEXT NOT NULL DEFAULT ''",
-        ),
-        (
-            "extraction_fallback_used",
-            "ALTER TABLE conversation_sessions ADD COLUMN extraction_fallback_used INTEGER NOT NULL DEFAULT 0",
-        ),
-        (
-            "extraction_fallback_reason",
-            "ALTER TABLE conversation_sessions ADD COLUMN extraction_fallback_reason TEXT NOT NULL DEFAULT ''",
-        ),
-    ] {
-        if !columns.iter().any(|column| column == name) {
-            connection
-                .execute(sql, [])
-                .map_err(|error| format!("补充会话字段 {name} 失败: {error}"))?;
-        }
-    }
-
-    connection
-        .execute(
-            r#"
-            UPDATE conversation_sessions
-            SET
-              extraction_provider_used = CASE
-                WHEN TRIM(extraction_provider_used) = '' THEN 'unknown'
-                ELSE extraction_provider_used
-              END,
-              extraction_fallback_used = CASE
-                WHEN extraction_fallback_used IS NULL THEN 0
-                ELSE extraction_fallback_used
-              END,
-              extraction_fallback_reason = CASE
-                WHEN extraction_fallback_reason IS NULL THEN ''
-                ELSE extraction_fallback_reason
-              END
-            "#,
-            [],
-        )
-        .map_err(|error| format!("回填会话提取标记失败: {error}"))?;
-
-    Ok(())
-}
-
-fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
-    let parent_dir = db_path
-        .parent()
-        .ok_or_else(|| "数据库目录无效".to_string())?;
-    fs::create_dir_all(parent_dir).map_err(|error| format!("创建数据库目录失败: {error}"))?;
-
-    let connection = open_connection(db_path)?;
-    connection
-        .execute_batch(
-            r#"
-      PRAGMA foreign_keys = ON;
-
-      CREATE TABLE IF NOT EXISTS app_settings (
-        id TEXT PRIMARY KEY,
-        record_enabled INTEGER NOT NULL DEFAULT 0 CHECK (record_enabled IN (0, 1)),
-        language TEXT NOT NULL DEFAULT 'zh-CN',
-        chunk_seconds INTEGER NOT NULL DEFAULT 30 CHECK (chunk_seconds > 0),
-        idle_trigger_seconds INTEGER NOT NULL DEFAULT 20 CHECK (idle_trigger_seconds > 0),
-        provider_mode TEXT NOT NULL DEFAULT 'local' CHECK (provider_mode IN ('cloud', 'local')),
-        asr_provider_type TEXT NOT NULL DEFAULT 'local',
-        todo_provider_type TEXT NOT NULL DEFAULT 'embedded_local',
-        asr_base_url TEXT NOT NULL DEFAULT '',
-        asr_submit_url TEXT NOT NULL DEFAULT '',
-        asr_query_url TEXT NOT NULL DEFAULT '',
-        asr_resource_id TEXT NOT NULL DEFAULT '',
-        asr_model_name TEXT NOT NULL DEFAULT '',
-        asr_api_key_ref TEXT NOT NULL DEFAULT '',
-        todo_base_url TEXT NOT NULL DEFAULT '',
-        todo_model_name TEXT NOT NULL DEFAULT '',
-        todo_api_key_ref TEXT NOT NULL DEFAULT '',
-        local_todo_model_version TEXT NOT NULL DEFAULT '',
-        allow_cloud_fallback INTEGER NOT NULL DEFAULT 1 CHECK (allow_cloud_fallback IN (0, 1)),
-        local_todo_runtime_status TEXT NOT NULL DEFAULT 'not_ready',
-        local_todo_last_health_check_at TEXT NOT NULL DEFAULT '',
-        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-      );
-
-      CREATE TABLE IF NOT EXISTS audio_segments (
-        id TEXT PRIMARY KEY,
-        file_path TEXT NOT NULL,
-        started_at TEXT NOT NULL,
-        ended_at DATETIME NOT NULL,
-        duration_ms INTEGER NOT NULL DEFAULT 0,
-        sample_rate INTEGER NOT NULL DEFAULT 16000,
-        channels INTEGER NOT NULL DEFAULT 1,
-        has_effective_voice INTEGER NOT NULL DEFAULT 0 CHECK (has_effective_voice IN (0, 1)),
-        voice_energy_score REAL,
-        processing_status TEXT NOT NULL DEFAULT 'pending'
-          CHECK (processing_status IN ('pending', 'transcribed', 'failed', 'skipped')),
-        trace_id TEXT,
-        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-      );
-
-      CREATE TABLE IF NOT EXISTS conversation_sessions (
-        id TEXT PRIMARY KEY,
-        merged_text TEXT NOT NULL,
-        started_at TEXT NOT NULL,
-        ended_at TEXT NOT NULL,
-        idle_trigger_seconds INTEGER NOT NULL CHECK (idle_trigger_seconds > 0),
-        trigger_reason TEXT NOT NULL
-          CHECK (trigger_reason IN ('idle_timeout', 'manual', 'forced_flush')),
-        transcript_count INTEGER NOT NULL DEFAULT 0 CHECK (transcript_count >= 0),
-        extraction_status TEXT NOT NULL DEFAULT 'pending'
-          CHECK (extraction_status IN ('pending', 'success', 'failed')),
-        extraction_provider_used TEXT NOT NULL DEFAULT '',
-        extraction_fallback_used INTEGER NOT NULL DEFAULT 0 CHECK (extraction_fallback_used IN (0, 1)),
-        extraction_fallback_reason TEXT NOT NULL DEFAULT '',
-        trace_id TEXT,
-        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-      );
-
-      CREATE TABLE IF NOT EXISTS transcript_segments (
-        id TEXT PRIMARY KEY,
-        audio_segment_id TEXT NOT NULL,
-        conversation_session_id TEXT,
-        text TEXT NOT NULL,
-        language TEXT NOT NULL DEFAULT 'zh-CN',
-        status TEXT NOT NULL DEFAULT 'success'
-          CHECK (status IN ('pending', 'success', 'failed')),
-        provider_model_name TEXT NOT NULL DEFAULT '',
-        trace_id TEXT,
-        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (audio_segment_id) REFERENCES audio_segments(id) ON DELETE CASCADE,
-        FOREIGN KEY (conversation_session_id) REFERENCES conversation_sessions(id) ON DELETE SET NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS todos (
-        id TEXT PRIMARY KEY,
-        conversation_session_id TEXT NOT NULL,
-        title TEXT NOT NULL,
-        note TEXT NOT NULL DEFAULT '',
-        status TEXT NOT NULL DEFAULT 'pending'
-          CHECK (status IN ('pending', 'completed')),
-        created_at TEXT NOT NULL,
-        completed_at DATETIME,
-        source_text TEXT,
-        source_audio_id TEXT,
-        speaker_id TEXT,
-        extraction_model_name TEXT NOT NULL DEFAULT '',
-        trace_id TEXT,
-        updated_at DATETIME NOT NULL,
-        FOREIGN KEY (conversation_session_id) REFERENCES conversation_sessions(id) ON DELETE CASCADE
-      );
-
-      CREATE TABLE IF NOT EXISTS processing_jobs (
-        id TEXT PRIMARY KEY,
-        job_type TEXT NOT NULL
-          CHECK (job_type IN ('transcription', 'aggregation', 'todo_extraction')),
-        target_id TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'pending'
-          CHECK (status IN ('pending', 'running', 'success', 'failed')),
-        retry_count INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
-        max_retry_count INTEGER NOT NULL DEFAULT 3 CHECK (max_retry_count >= 0),
-        error_message TEXT,
-        trace_id TEXT,
-        started_at DATETIME,
-        finished_at DATETIME,
-        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_audio_segments_created_at
-        ON audio_segments(created_at DESC);
-      CREATE INDEX IF NOT EXISTS idx_conversation_sessions_created_at
-        ON conversation_sessions(created_at DESC);
-      CREATE INDEX IF NOT EXISTS idx_conversation_sessions_status
-        ON conversation_sessions(extraction_status);
-      CREATE INDEX IF NOT EXISTS idx_transcript_segments_audio_segment
-        ON transcript_segments(audio_segment_id);
-      CREATE INDEX IF NOT EXISTS idx_transcript_segments_session
-        ON transcript_segments(conversation_session_id);
-      CREATE INDEX IF NOT EXISTS idx_todos_status
-        ON todos(status);
-      CREATE INDEX IF NOT EXISTS idx_todos_created_at
-        ON todos(created_at DESC);
-      CREATE INDEX IF NOT EXISTS idx_processing_jobs_status
-        ON processing_jobs(status);
-      "#,
-        )
-        .map_err(|error| format!("初始化表结构失败: {error}"))?;
-
-    ensure_app_settings_columns(&connection)?;
-    ensure_conversation_sessions_columns(&connection)?;
-
-    connection
-        .execute(
-            r#"
-      INSERT OR IGNORE INTO app_settings (
-        id,
-        record_enabled,
-        language,
-        chunk_seconds,
-        idle_trigger_seconds,
-        provider_mode,
-        asr_provider_type,
-        todo_provider_type,
-        asr_base_url,
-        asr_submit_url,
-        asr_query_url,
-        asr_resource_id,
-        asr_model_name,
-        asr_api_key_ref,
-        todo_base_url,
-        todo_model_name,
-        todo_api_key_ref,
-        local_todo_model_version,
-        allow_cloud_fallback,
-        local_todo_runtime_status,
-        local_todo_last_health_check_at
-      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
-      "#,
-            params![
-                "default",
-                0,
-                "zh-CN",
-                30,
-                20,
-                "local",
-                "local",
-                "embedded_local",
-                "https://api.example.com/asr/query",
-                "https://api.example.com/asr/submit",
-                "https://api.example.com/asr/query",
-                "volc.seedasr.auc",
-                "bigmodel",
-                "sk-asr-****",
-                "https://api.example.com/todo",
-                "todo-model-v1",
-                "sk-todo-****",
-                EMBEDDED_TODO_MODEL_VERSION,
-                1,
-                "not_ready",
-                ""
-            ],
-        )
-        .map_err(|error| format!("初始化默认设置失败: {error}"))?;
-
-    seed_demo_data(&connection)?;
-    Ok(())
-}
-
-fn seed_demo_data(connection: &Connection) -> Result<(), String> {
-    let todo_count: i64 = connection
-        .query_row("SELECT COUNT(1) FROM todos", [], |row| row.get(0))
-        .map_err(|error| format!("读取 Todo 数量失败: {error}"))?;
-
-    if todo_count > 0 {
-        return Ok(());
-    }
-
-    let session_id = "session_seed_001";
-    connection
-        .execute(
-            r#"
-      INSERT OR IGNORE INTO conversation_sessions (
-        id,
-        merged_text,
-        started_at,
-        ended_at,
-        idle_trigger_seconds,
-        trigger_reason,
-        transcript_count,
-        extraction_status,
-        extraction_provider_used,
-        extraction_fallback_used,
-        extraction_fallback_reason,
-        trace_id
-      ) VALUES (
-        ?1,
-        '这是初始化示例会话，用于展示 Todo 工作台骨架。',
-        CURRENT_TIMESTAMP,
-        CURRENT_TIMESTAMP,
-        20,
-        'manual',
-        1,
-        'success',
-        'embedded_local',
-        0,
-        '',
-        'trace_seed_001'
-      )
-      "#,
-            params![session_id],
-        )
-        .map_err(|error| format!("初始化示例会话失败: {error}"))?;
-
-    connection
-        .execute(
-            r#"
-      INSERT OR IGNORE INTO todos (
-        id,
-        conversation_session_id,
-        title,
-        note,
-        status,
-        created_at,
-        source_text,
-        extraction_model_name,
-        trace_id,
-        updated_at
-      ) VALUES (
-        'todo_seed_001',
-        ?1,
-        '确认双模型配置',
-        '补全语音转写模型和 Todo 提取模型的 API 信息',
-        'pending',
-        CURRENT_TIMESTAMP,
-        '请把两个模型的地址、模型名和密钥都配置好。',
-        'todo-model-v1',
-        'trace_seed_001',
-        CURRENT_TIMESTAMP
-      )
-      "#,
-            params![session_id],
-        )
-        .map_err(|error| format!("初始化示例 Todo 失败: {error}"))?;
-
-    Ok(())
-}
-
-fn query_settings(connection: &Connection) -> Result<SettingsDto, String> {
-    connection
-        .query_row(
-            r#"
-      SELECT
-        record_enabled,
-        language,
-        chunk_seconds,
-        idle_trigger_seconds,
-        provider_mode,
-        asr_provider_type,
-        todo_provider_type,
-        asr_submit_url,
-        asr_query_url,
-        asr_resource_id,
-        asr_model_name,
-        asr_api_key_ref,
-        todo_base_url,
-        todo_model_name,
-        todo_api_key_ref,
-        local_todo_model_version,
-        allow_cloud_fallback,
-        local_todo_runtime_status,
-        local_todo_last_health_check_at
-      FROM app_settings
-      WHERE id = 'default'
-      "#,
-            [],
-            |row| {
-                let local_todo_model_version = normalize_local_todo_model_version(
-                    row.get::<_, String>(15)?.as_str(),
-                );
-                Ok(SettingsDto {
-                    record_enabled: row.get::<_, i64>(0)? == 1,
-                    language: row.get(1)?,
-                    chunk_seconds: row.get(2)?,
-                    idle_trigger_seconds: row.get(3)?,
-                    provider_mode: row.get(4)?,
-                    asr_provider_type: row.get(5)?,
-                    todo_provider_type: row.get(6)?,
-                    asr_submit_url: row.get(7)?,
-                    asr_query_url: row.get(8)?,
-                    asr_resource_id: row.get(9)?,
-                    asr_model_name: row.get(10)?,
-                    asr_api_key_masked: row.get(11)?,
-                    todo_base_url: row.get(12)?,
-                    todo_model_name: row.get(13)?,
-                    todo_api_key_masked: row.get(14)?,
-                    local_todo_model_version,
-                    allow_cloud_fallback: row.get::<_, i64>(16)? == 1,
-                    local_todo_runtime_status: row.get(17)?,
-                    local_todo_last_health_check_at: row.get(18)?,
-                })
-            },
-        )
-        .map_err(|error| format!("读取设置失败: {error}"))
-}
-
-fn persist_local_todo_runtime_status(
-    connection: &Connection,
-    runtime_status: &str,
-    message: &str,
-) -> Result<(), String> {
-    connection
-        .execute(
-            r#"
-            UPDATE app_settings
-            SET
-              local_todo_runtime_status = ?1,
-              local_todo_last_health_check_at = CURRENT_TIMESTAMP,
-              updated_at = CURRENT_TIMESTAMP
-            WHERE id = 'default'
-            "#,
-            params![runtime_status],
-        )
-        .map_err(|error| format!("更新本地模型状态失败: {error}"))?;
-
-    if runtime_status == "failed" {
-        log::warn!("本地 Todo 运行时不可用: {message}");
-    }
-    Ok(())
-}
-
-fn spawn_embedded_runtime_request(
-    request: &EmbeddedTodoRuntimeRequest,
-) -> Result<EmbeddedTodoRuntimeResponse, String> {
-    let executable =
-        std::env::current_exe().map_err(|error| format!("读取当前应用路径失败: {error}"))?;
-    let request_bytes =
-        serde_json::to_vec(request).map_err(|error| format!("序列化本地运行时请求失败: {error}"))?;
-
-    let mut child = Command::new(executable)
-        .env_remove("SMART_TODO_PROCESS_PENDING_ONCE")
-        .env_remove("SMART_TODO_DB_PATH")
-        .env("SMART_TODO_EMBEDDED_TODO_RUNTIME", "1")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("启动本地 Todo 子进程失败: {error}"))?;
-
-    if let Some(stdin) = child.stdin.as_mut() {
-        stdin
-            .write_all(&request_bytes)
-            .map_err(|error| format!("写入本地运行时请求失败: {error}"))?;
-    }
-
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        let output = child.wait_with_output();
-        let _ = tx.send(output);
-    });
-
-    let output = match rx.recv_timeout(Duration::from_secs(EMBEDDED_TODO_RUNTIME_TIMEOUT_SECONDS)) {
-        Ok(Ok(output)) => output,
-        Ok(Err(error)) => return Err(format!("等待本地 Todo 子进程失败: {error}")),
-        Err(_) => return Err("本地 Todo 子进程执行超时".to_string()),
-    };
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(format!(
-            "本地 Todo 子进程执行失败: {}",
-            if stderr.is_empty() {
-                "未知错误".to_string()
-            } else {
-                stderr
-            }
-        ));
-    }
-
-    serde_json::from_slice::<EmbeddedTodoRuntimeResponse>(&output.stdout)
-        .map_err(|error| format!("解析本地运行时响应失败: {error}"))
-}
-
-pub fn run_embedded_todo_runtime_once() -> Result<(), String> {
-    let mut input = String::new();
-    std::io::stdin()
-        .read_to_string(&mut input)
-        .map_err(|error| format!("读取本地运行时输入失败: {error}"))?;
-
-    let request: EmbeddedTodoRuntimeRequest =
-        serde_json::from_str(&input).map_err(|error| format!("解析本地运行时请求失败: {error}"))?;
-    let runtime_dir = PathBuf::from(request.runtime_dir.as_str());
-    let response = match request.action.as_str() {
-        "health_check" => match load_embedded_todo_runtime_config(&runtime_dir, &request.model_version)
-        {
-            Ok(config) => match health_check_llama_cli(&config) {
-                Ok(message) => EmbeddedTodoRuntimeResponse {
-                    success: true,
-                    runtime_status: "ready".into(),
-                    model_version: request.model_version,
-                    message,
-                    todos: Vec::new(),
-                },
-                Err(error) => EmbeddedTodoRuntimeResponse {
-                    success: false,
-                    runtime_status: "failed".into(),
-                    model_version: request.model_version,
-                    message: error,
-                    todos: Vec::new(),
-                },
-            },
-            Err(error) => EmbeddedTodoRuntimeResponse {
-                success: false,
-                runtime_status: "not_ready".into(),
-                model_version: request.model_version,
-                message: error,
-                todos: Vec::new(),
-            },
-        },
-        "extract_todos" => match load_embedded_todo_runtime_config(&runtime_dir, &request.model_version)
-        {
-            Ok(config) => match invoke_llama_cli_todo_extraction(&config, &request.text) {
-                Ok(todos) => EmbeddedTodoRuntimeResponse {
-                    success: true,
-                    runtime_status: "ready".into(),
-                    model_version: request.model_version,
-                    message: if todos.is_empty() {
-                        "Qwen3-4B Q4_K_M 未识别到明确待办".into()
-                    } else {
-                        format!("Qwen3-4B Q4_K_M 识别出 {} 条待办", todos.len())
-                    },
-                    todos,
-                },
-                Err(error) => EmbeddedTodoRuntimeResponse {
-                    success: false,
-                    runtime_status: "failed".into(),
-                    model_version: request.model_version,
-                    message: error,
-                    todos: Vec::new(),
-                },
-            },
-            Err(error) => EmbeddedTodoRuntimeResponse {
-                success: false,
-                runtime_status: "not_ready".into(),
-                model_version: request.model_version,
-                message: error,
-                todos: Vec::new(),
-            },
-        },
-        _ => return Err(format!("不支持的本地运行时动作: {}", request.action)),
-    };
-
-    let stdout = serde_json::to_string(&response)
-        .map_err(|error| format!("序列化本地运行时响应失败: {error}"))?;
-    println!("{stdout}");
-    Ok(())
-}
-
-fn query_local_todo_runtime_status(
-    connection: &Connection,
-    models_dir: &PathBuf,
-) -> Result<LocalTodoRuntimeStatusDto, String> {
-    let settings = query_settings(connection)?;
-    let version = normalize_local_todo_model_version(&settings.local_todo_model_version);
-    let manifest_path = embedded_todo_manifest_path(models_dir, &version);
-
-    let (runtime_status, message) = if manifest_path.exists() {
-        match verify_embedded_todo_runtime_files(models_dir, &version) {
-            Ok(()) => match spawn_embedded_runtime_request(&EmbeddedTodoRuntimeRequest {
-                action: "health_check".into(),
-                model_version: version.clone(),
-                runtime_dir: models_dir.to_string_lossy().to_string(),
-                text: String::new(),
-            }) {
-                Ok(response) if response.success => ("ready".to_string(), response.message),
-                Ok(response) => (response.runtime_status, response.message),
-                Err(error) => ("failed".to_string(), error),
-            },
-            Err(error) => ("failed".to_string(), error),
-        }
-    } else {
-        (
-            "not_ready".to_string(),
-            "未检测到本地 Todo 运行时资源，请重新初始化应用数据目录".to_string(),
-        )
-    };
-
-    persist_local_todo_runtime_status(connection, &runtime_status, &message)?;
-    let refreshed = query_settings(connection)?;
-
-    Ok(LocalTodoRuntimeStatusDto {
-        provider_type: refreshed.todo_provider_type,
-        model_version: if refreshed.local_todo_model_version.trim().is_empty() {
-            version
-        } else {
-            refreshed.local_todo_model_version
-        },
-        runtime_status,
-        last_health_check_at: refreshed.local_todo_last_health_check_at,
-        fallback_enabled: refreshed.allow_cloud_fallback,
-        message,
-    })
-}
-
-fn query_todos(connection: &Connection) -> Result<Vec<TodoDto>, String> {
-    let mut statement = connection
-        .prepare(
-            r#"
-      SELECT
-        id,
-        title,
-        note,
-        status,
-        created_at,
-        conversation_session_id,
-        IFNULL(source_text, '')
-      FROM todos
-      ORDER BY datetime(created_at) DESC, id DESC
-      "#,
-        )
-        .map_err(|error| format!("准备 Todo 查询失败: {error}"))?;
-
-    let rows = statement
-        .query_map([], |row| {
-            Ok(TodoDto {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                note: row.get(2)?,
-                status: row.get(3)?,
-                created_at: row.get(4)?,
-                conversation_session_id: row.get(5)?,
-                source_text: row.get(6)?,
-            })
-        })
-        .map_err(|error| format!("查询 Todo 失败: {error}"))?;
-
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("读取 Todo 列表失败: {error}"))
-}
-
-fn query_sessions(connection: &Connection) -> Result<Vec<SessionDto>, String> {
-    let mut statement = connection
-        .prepare(
-            r#"
-      SELECT
-        id,
-        merged_text,
-        started_at,
-        ended_at,
-        trigger_reason,
-        extraction_status,
-        extraction_provider_used,
-        extraction_fallback_used,
-        extraction_fallback_reason,
-        transcript_count
-      FROM conversation_sessions
-      ORDER BY datetime(created_at) DESC, id DESC
-      "#,
-        )
-        .map_err(|error| format!("准备会话查询失败: {error}"))?;
-
-    let session_rows = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, String>(5)?,
-                row.get::<_, String>(6)?,
-                row.get::<_, i64>(7)? == 1,
-                row.get::<_, String>(8)?,
-                row.get::<_, i64>(9)?,
-            ))
-        })
-        .map_err(|error| format!("查询会话失败: {error}"))?;
-
-    let mut sessions = Vec::new();
-    for session in session_rows {
-        let (
-            id,
-            merged_text,
-            started_at,
-            ended_at,
-            trigger_reason,
-            extraction_status,
-            extraction_provider_used,
-            extraction_fallback_used,
-            extraction_fallback_reason,
-            transcript_count,
-        ) = session.map_err(|error| format!("读取会话行失败: {error}"))?;
-
-        let mut todo_statement = connection
-            .prepare(
-                r#"
-        SELECT id
-        FROM todos
-        WHERE conversation_session_id = ?1
-        ORDER BY datetime(created_at) ASC, id ASC
-        "#,
-            )
-            .map_err(|error| format!("准备会话关联 Todo 查询失败: {error}"))?;
-
-        let todo_rows = todo_statement
-            .query_map(params![id.as_str()], |row| row.get::<_, String>(0))
-            .map_err(|error| format!("查询会话关联 Todo 失败: {error}"))?;
-
-        let related_todo_ids = todo_rows
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| format!("读取会话关联 Todo 失败: {error}"))?;
-
-        sessions.push(SessionDto {
-            id,
-            merged_text,
-            started_at,
-            ended_at,
-            trigger_reason,
-            extraction_status,
-            extraction_provider_used,
-            extraction_fallback_used,
-            extraction_fallback_reason,
-            transcript_count,
-            related_todo_ids,
-        });
-    }
-
-    Ok(sessions)
-}
-
-fn latest_session(connection: &Connection) -> Result<Option<SessionDto>, String> {
-    Ok(query_sessions(connection)?.into_iter().next())
-}
-
-fn query_runtime_status(connection: &Connection) -> Result<RuntimeStatusDto, String> {
-    let settings = query_settings(connection)?;
-    let last_slice_at: Option<String> = connection
-        .query_row(
-            "SELECT ended_at FROM audio_segments ORDER BY datetime(created_at) DESC LIMIT 1",
-            [],
-            |row| row.get(0),
-        )
-        .ok();
-
-    let last_session: Option<(String, String)> = connection
-    .query_row(
-      "SELECT ended_at, extraction_status FROM conversation_sessions ORDER BY datetime(created_at) DESC LIMIT 1",
-      [],
-      |row| Ok((row.get(0)?, row.get(1)?)),
-    )
-    .ok();
-
-    Ok(RuntimeStatusDto {
-        runtime_label: if settings.record_enabled {
-            "录音中".into()
-        } else {
-            "已暂停".into()
-        },
-        current_session_status: if settings.record_enabled {
-            "collecting".into()
-        } else if last_session
-            .as_ref()
-            .map(|(_, status)| status == "pending")
-            .unwrap_or(false)
-        {
-            "ready_for_extraction".into()
-        } else {
-            "idle_waiting".into()
-        },
-        last_slice_at: last_slice_at.unwrap_or_else(|| "暂无切片".into()),
-        last_extraction_at: last_session
-            .as_ref()
-            .map(|value| value.0.clone())
-            .unwrap_or_else(|| "暂无".into()),
-        last_extraction_summary: if let Some((_, status)) = last_session {
-            match status.as_str() {
-                "success" => "最近一次会话提取成功".to_string(),
-                "failed" => "最近一次会话提取失败，建议重试".to_string(),
-                "pending" => "最近一次会话已生成，等待后续提取".to_string(),
-                _ => "暂无会话提取记录".to_string(),
-            }
-        } else {
-            "暂无会话提取记录".to_string()
-        },
-    })
-}
-
-fn set_record_enabled(connection: &Connection, enabled: bool) -> Result<(), String> {
-    connection
-    .execute(
-      "UPDATE app_settings SET record_enabled = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = 'default'",
-      params![if enabled { 1 } else { 0 }],
-    )
-    .map_err(|error| format!("更新录音状态失败: {error}"))?;
     Ok(())
 }
 
@@ -1626,7 +216,7 @@ fn update_processing_job(
 }
 
 fn maybe_create_idle_session(connection: &Connection) -> Result<Option<SessionDto>, String> {
-    let settings = query_settings(connection)?;
+    let settings = settings_service::load_settings(connection)?;
     let latest_segment: Option<(String, String)> = connection
         .query_row(
             r#"
@@ -1682,7 +272,7 @@ fn maybe_create_idle_session(connection: &Connection) -> Result<Option<SessionDt
         .map_err(|error| format!("创建空闲触发会话失败: {error}"))?;
 
     insert_processing_job(connection, "todo_extraction", &session_id, &trace_id)?;
-    latest_session(connection)
+    app::query_service::latest_session(connection)
 }
 
 fn insert_audio_segment(
@@ -1936,117 +526,8 @@ fn is_recording(state: &AppState) -> Result<bool, String> {
         .map_err(|_| "录音状态锁定失败".to_string())
 }
 
-fn test_todo_cloud_provider(settings: &SettingsDto) -> Result<ModelTestResult, String> {
-    if settings.todo_base_url.trim().is_empty()
-        || settings.todo_model_name.trim().is_empty()
-        || settings.todo_api_key_masked.trim().is_empty()
-    {
-        return Ok(ModelTestResult {
-            provider: "todo".into(),
-            success: false,
-            status_code: 0,
-            message: "Todo 提取模型配置不完整".into(),
-            response_excerpt: "".into(),
-        });
-    }
-
-    let client = build_http_client()?;
-    let response = client
-        .post(settings.todo_base_url.trim())
-        .bearer_auth(settings.todo_api_key_masked.trim())
-        .json(&serde_json::json!({
-            "model": settings.todo_model_name.trim(),
-            "input": "请只回复ok"
-        }))
-        .send()
-        .map_err(|error| format!("Todo 模型测试请求失败: {error}"))?;
-
-    let status_code = response.status().as_u16();
-    let body = response
-        .text()
-        .unwrap_or_else(|_| "读取响应正文失败".to_string());
-
-    Ok(ModelTestResult {
-        provider: "todo".into(),
-        success: status_code / 100 == 2,
-        status_code,
-        message: if status_code / 100 == 2 {
-            "Todo 提取模型测试成功".into()
-        } else {
-            format!("Todo 提取模型测试失败，HTTP {status_code}")
-        },
-        response_excerpt: clip_text(&body, 400),
-    })
-}
-
-fn test_todo_embedded_provider(
-    settings: &SettingsDto,
-    state: &AppState,
-) -> Result<ModelTestResult, String> {
-    let connection = open_connection(&state.db_path)?;
-    let runtime = query_local_todo_runtime_status(&connection, &state.models_dir)?;
-    let success = runtime.runtime_status == "ready";
-
-    Ok(ModelTestResult {
-        provider: "todo".into(),
-        success,
-        status_code: if success { 200 } else { 503 },
-        message: if success {
-            format!(
-                "本地 Todo 运行时测试成功，当前版本 {}",
-                normalize_local_todo_model_version(&settings.local_todo_model_version)
-            )
-        } else {
-            runtime.message
-        },
-        response_excerpt: "".into(),
-    })
-}
-
-fn extract_output_text(value: &serde_json::Value) -> String {
-    let mut parts = Vec::new();
-    if let Some(output) = value.get("output").and_then(|entry| entry.as_array()) {
-        for item in output {
-            if item.get("type").and_then(|entry| entry.as_str()) == Some("message") {
-                if let Some(content) = item.get("content").and_then(|entry| entry.as_array()) {
-                    for part in content {
-                        if let Some(text) = part.get("text").and_then(|entry| entry.as_str()) {
-                            parts.push(text.to_string());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    parts.join("\n")
-}
-
-fn extract_json_array(input: &str) -> Result<Vec<serde_json::Value>, String> {
-    if let Ok(value) = serde_json::from_str::<Vec<serde_json::Value>>(input) {
-        return Ok(value);
-    }
-
-    let starts = input.match_indices('[').map(|(idx, _)| idx).collect::<Vec<_>>();
-    let ends = input.match_indices(']').map(|(idx, _)| idx).collect::<Vec<_>>();
-
-    for start in starts.iter().rev() {
-        for end in ends.iter().rev() {
-            if end < start {
-                continue;
-            }
-
-            let candidate = &input[*start..=*end];
-            if let Ok(value) = serde_json::from_str::<Vec<serde_json::Value>>(candidate) {
-                return Ok(value);
-            }
-        }
-    }
-
-    Err("无法从模型响应中解析 Todo JSON 数组".to_string())
-}
-
 fn transcribe_audio_file(settings: &SettingsDto, file_path: &str) -> Result<String, String> {
-    if settings.asr_provider_type == "local" {
+    if is_local_asr_provider(&settings.asr_provider_type) {
         let message = "本地 ASR 尚未接入，无法执行纯本地语音转写";
         if !settings.allow_cloud_fallback {
             return Err(message.to_string());
@@ -2189,272 +670,8 @@ fn create_session_from_transcript(
     Ok(session_id)
 }
 
-fn request_cloud_todo_extraction(
-    settings: &SettingsDto,
-    merged_text: &str,
-) -> Result<Vec<serde_json::Value>, String> {
-    let client = build_http_client()?;
-    let mut last_error = String::new();
-    let body = loop {
-        let mut should_break = true;
-        let mut response_body = String::new();
-
-        for attempt in 1..=HTTP_MAX_RETRY_ATTEMPTS {
-            let response = client
-                .post(settings.todo_base_url.trim())
-                .bearer_auth(settings.todo_api_key_masked.trim())
-                .json(&serde_json::json!({
-                    "model": settings.todo_model_name.trim(),
-                    "input": [
-                        {
-                            "role": "system",
-                            "content": "你是 Todo 提取助手。请从给定中文文稿中提取 todos，严格只返回 JSON 数组。每个元素包含 title 和 note 两个字符串字段，不要输出任何额外文字。没有待办时返回 []。"
-                        },
-                        {
-                            "role": "user",
-                            "content": format!("请从下面文稿中提取 Todo：\n{merged_text}")
-                        }
-                    ]
-                }))
-                .send();
-
-            let response = match response {
-                Ok(response) => response,
-                Err(error) => {
-                    last_error = format!("调用 Todo 提取模型失败: {error}");
-                    if attempt < HTTP_MAX_RETRY_ATTEMPTS {
-                        sleep_before_retry(attempt);
-                        continue;
-                    }
-                    break;
-                }
-            };
-
-            let status = response.status().as_u16();
-            response_body = response
-                .text()
-                .unwrap_or_else(|_| "读取 Todo 模型响应失败".to_string());
-            if status / 100 == 2 {
-                should_break = false;
-                break;
-            }
-
-            last_error = format!(
-                "Todo 提取模型返回 HTTP {status}: {}",
-                clip_text(&response_body, 300)
-            );
-            if should_retry_http_status(status) && attempt < HTTP_MAX_RETRY_ATTEMPTS {
-                sleep_before_retry(attempt);
-                continue;
-            }
-            break;
-        }
-
-        if should_break {
-            return Err(last_error);
-        }
-        break response_body;
-    };
-
-    let payload: serde_json::Value =
-        serde_json::from_str(&body).map_err(|error| format!("解析 Todo 模型响应失败: {error}"))?;
-    let output_text = extract_output_text(&payload);
-    extract_json_array(&output_text)
-}
-
-fn request_embedded_todo_extraction(
-    settings: &SettingsDto,
-    models_dir: &PathBuf,
-    merged_text: &str,
-) -> Result<Vec<serde_json::Value>, String> {
-    let response = spawn_embedded_runtime_request(&EmbeddedTodoRuntimeRequest {
-        action: "extract_todos".into(),
-        model_version: normalize_local_todo_model_version(&settings.local_todo_model_version),
-        runtime_dir: models_dir.to_string_lossy().to_string(),
-        text: merged_text.to_string(),
-    })?;
-
-    if !response.success {
-        return Err(response.message);
-    }
-
-    Ok(response
-        .todos
-        .into_iter()
-        .map(|item| {
-            serde_json::json!({
-                "title": item.title,
-                "note": item.note
-            })
-        })
-        .collect::<Vec<_>>())
-}
-
-fn generate_todos_for_session(
-    connection: &Connection,
-    settings: &SettingsDto,
-    models_dir: &PathBuf,
-    session_id: &str,
-) -> Result<usize, String> {
-    let (merged_text, trigger_reason, transcript_count): (String, String, i64) = connection
-        .query_row(
-            "SELECT merged_text, trigger_reason, transcript_count FROM conversation_sessions WHERE id = ?1",
-            params![session_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .map_err(|error| format!("读取会话文稿失败: {error}"))?;
-
-    let merged_text = merged_text.trim().to_string();
-    if merged_text.is_empty()
-        || (transcript_count == 0
-            && (trigger_reason == "manual" || is_placeholder_session_text(&merged_text)))
-    {
-        connection
-            .execute(
-                "UPDATE conversation_sessions SET extraction_status = 'success', extraction_provider_used = 'skipped', extraction_fallback_used = 0 WHERE id = ?1",
-                params![session_id],
-            )
-            .map_err(|error| format!("更新空会话状态失败: {error}"))?;
-        return Ok(0);
-    }
-
-    let (todos, extraction_model_name, extraction_provider_used, extraction_fallback_used, extraction_fallback_reason) =
-        if settings.todo_provider_type == "embedded_local" {
-        match request_embedded_todo_extraction(settings, models_dir, &merged_text) {
-            Ok(local_items) if !local_items.is_empty() => {
-                (
-                    local_items,
-                    normalize_local_todo_model_version(&settings.local_todo_model_version),
-                    "embedded_local".to_string(),
-                    false,
-                    "".to_string(),
-                )
-            }
-            Ok(local_items) => {
-                if !settings.allow_cloud_fallback
-                    || settings.todo_base_url.trim().is_empty()
-                    || settings.todo_model_name.trim().is_empty()
-                    || settings.todo_api_key_masked.trim().is_empty()
-                {
-                    (
-                        local_items,
-                        normalize_local_todo_model_version(&settings.local_todo_model_version),
-                        "embedded_local".to_string(),
-                        false,
-                        "".to_string(),
-                    )
-                } else {
-                    (
-                        request_cloud_todo_extraction(settings, &merged_text)?,
-                        settings.todo_model_name.clone(),
-                        "cloud".to_string(),
-                        true,
-                        "本地提取结果为空，已使用云端兜底".to_string(),
-                    )
-                }
-            }
-            Err(error) => {
-                if !settings.allow_cloud_fallback
-                    || settings.todo_base_url.trim().is_empty()
-                    || settings.todo_model_name.trim().is_empty()
-                    || settings.todo_api_key_masked.trim().is_empty()
-                {
-                    return Err(error);
-                }
-
-                log::warn!("本地 Todo 子进程提取失败，使用云端 Provider 兜底: {error}");
-                (
-                    request_cloud_todo_extraction(settings, &merged_text)?,
-                    settings.todo_model_name.clone(),
-                    "cloud".to_string(),
-                    true,
-                    format!("本地提取失败后使用云端兜底：{}", clip_text(&error, 120)),
-                )
-            }
-        }
-    } else {
-        (
-            request_cloud_todo_extraction(settings, &merged_text)?,
-            settings.todo_model_name.clone(),
-            "cloud".to_string(),
-            false,
-            "".to_string(),
-        )
-    };
-
-    connection
-        .execute(
-            "DELETE FROM todos WHERE conversation_session_id = ?1",
-            params![session_id],
-        )
-        .map_err(|error| format!("清理旧 Todo 失败: {error}"))?;
-
-    let mut inserted = 0_usize;
-    for (index, item) in todos.into_iter().enumerate() {
-        let title = item
-            .get("title")
-            .and_then(|entry| entry.as_str())
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        let note = item
-            .get("note")
-            .and_then(|entry| entry.as_str())
-            .unwrap_or("")
-            .trim()
-            .to_string();
-
-        if title.is_empty() {
-            continue;
-        }
-
-        connection
-            .execute(
-                r#"
-                INSERT INTO todos (
-                  id,
-                  conversation_session_id,
-                  title,
-                  note,
-                  status,
-                  created_at,
-                  source_text,
-                  extraction_model_name,
-                  trace_id,
-                  updated_at
-                ) VALUES (?1, ?2, ?3, ?4, 'pending', CURRENT_TIMESTAMP, ?5, ?6, ?7, CURRENT_TIMESTAMP)
-                "#,
-                params![
-                    format!("todo_generated_{}_{}", current_timestamp_label(), index),
-                    session_id,
-                    title,
-                    note,
-                    merged_text,
-                    extraction_model_name.as_str(),
-                    format!("trace_todo_{}_{}", session_id, index)
-                ],
-            )
-            .map_err(|error| format!("写入 Todo 失败: {error}"))?;
-        inserted += 1;
-    }
-
-    connection
-        .execute(
-            "UPDATE conversation_sessions SET extraction_status = 'success', extraction_provider_used = ?1, extraction_fallback_used = ?2, extraction_fallback_reason = ?3 WHERE id = ?4",
-            params![
-                extraction_provider_used,
-                if extraction_fallback_used { 1 } else { 0 },
-                extraction_fallback_reason,
-                session_id
-            ],
-        )
-        .map_err(|error| format!("更新会话提取状态失败: {error}"))?;
-
-    Ok(inserted)
-}
-
-fn process_pending_jobs_internal(connection: &Connection, models_dir: &PathBuf) -> Result<String, String> {
-    let settings = query_settings(connection)?;
+fn process_pending_jobs_internal(connection: &Connection) -> Result<String, String> {
+    let settings = settings_service::load_settings(connection)?;
     let mut summary = Vec::new();
 
     let mut transcription_statement = connection
@@ -2593,7 +810,7 @@ fn process_pending_jobs_internal(connection: &Connection, models_dir: &PathBuf) 
             job.map_err(|error| format!("读取 Todo 提取任务失败: {error}"))?;
         update_processing_job(connection, &job_id, "running", None)?;
 
-        match generate_todos_for_session(connection, &settings, models_dir, &session_id) {
+        match jobs::todo_extraction::generate_for_session(connection, &settings, &session_id) {
             Ok(count) => {
                 update_processing_job(connection, &job_id, "success", None)?;
                 summary.push(format!("已从会话 {session_id} 生成 {count} 条 Todo"));
@@ -2603,7 +820,7 @@ fn process_pending_jobs_internal(connection: &Connection, models_dir: &PathBuf) 
                     .execute(
                         "UPDATE conversation_sessions SET extraction_status = 'failed', extraction_provider_used = ?1, extraction_fallback_used = ?2, extraction_fallback_reason = ?3 WHERE id = ?4",
                         params![
-                            settings.todo_provider_type.as_str(),
+                            DEFAULT_TODO_PROVIDER_TYPE,
                             0,
                             clip_text(&error, 200),
                             session_id.as_str()
@@ -2625,18 +842,13 @@ fn process_pending_jobs_internal(connection: &Connection, models_dir: &PathBuf) 
 
 pub fn process_pending_jobs_once_for_cli(db_path: &str) -> Result<String, String> {
     let db_path = PathBuf::from(db_path);
-    let models_dir = db_path
-        .parent()
-        .map(|parent| parent.join("models"))
-        .unwrap_or_else(|| PathBuf::from("models"));
     initialize_database(&db_path)?;
-    ensure_embedded_todo_runtime_files(&models_dir)?;
     let connection = open_connection(&db_path)?;
-    process_pending_jobs_internal(&connection, &models_dir)
+    process_pending_jobs_internal(&connection)
 }
 
 fn test_asr_provider(settings: &SettingsDto) -> Result<ModelTestResult, String> {
-    let local_asr_unavailable = settings.asr_provider_type == "local";
+    let local_asr_unavailable = is_local_asr_provider(&settings.asr_provider_type);
     if local_asr_unavailable && !settings.allow_cloud_fallback {
         return Ok(ModelTestResult {
             provider: "asr".into(),
@@ -2746,400 +958,6 @@ fn test_asr_provider(settings: &SettingsDto) -> Result<ModelTestResult, String> 
     })
 }
 
-#[tauri::command]
-fn test_model_connection(
-    payload: ModelTestRequest,
-    state: tauri::State<'_, AppState>,
-) -> Result<ModelTestResult, String> {
-    match payload.provider.as_str() {
-        "todo" => {
-            if payload.settings.todo_provider_type == "embedded_local" {
-                test_todo_embedded_provider(&payload.settings, &state)
-            } else {
-                test_todo_cloud_provider(&payload.settings)
-            }
-        }
-        "asr" => test_asr_provider(&payload.settings),
-        other => Err(format!("不支持的模型测试类型: {other}")),
-    }
-}
-
-#[tauri::command]
-fn get_local_todo_runtime_status(
-    state: tauri::State<'_, AppState>,
-) -> Result<LocalTodoRuntimeStatusDto, String> {
-    let connection = open_connection(&state.db_path)?;
-    query_local_todo_runtime_status(&connection, &state.models_dir)
-}
-
-#[tauri::command]
-fn get_desktop_context(state: tauri::State<'_, AppState>) -> Result<DesktopContext, String> {
-    let recording = is_recording(&state)?;
-    let connection = open_connection(&state.db_path)?;
-    let runtime = query_local_todo_runtime_status(&connection, &state.models_dir)?;
-
-    Ok(DesktopContext {
-        runtime: "tauri".into(),
-        platform: std::env::consts::OS.into(),
-        recorder_status: if recording {
-            "真实麦克风录音中".into()
-        } else {
-            "录音已停止，可启动真实麦克风录音".into()
-        },
-        storage_status: "SQLite 已接入 settings / audio_segments / sessions / todos".into(),
-        models_status: runtime.message,
-    })
-}
-
-#[tauri::command]
-fn get_bootstrap_data(state: tauri::State<'_, AppState>) -> Result<BootstrapData, String> {
-    let connection = open_connection(&state.db_path)?;
-    Ok(BootstrapData {
-        settings: query_settings(&connection)?,
-        todos: query_todos(&connection)?,
-        sessions: query_sessions(&connection)?,
-        runtime: query_runtime_status(&connection)?,
-    })
-}
-
-#[tauri::command]
-fn save_settings(
-    payload: SettingsDto,
-    state: tauri::State<'_, AppState>,
-) -> Result<SettingsDto, String> {
-    let connection = open_connection(&state.db_path)?;
-    connection
-        .execute(
-            r#"
-      UPDATE app_settings
-      SET
-        record_enabled = ?1,
-        language = ?2,
-        chunk_seconds = ?3,
-        idle_trigger_seconds = ?4,
-        provider_mode = ?5,
-        asr_provider_type = ?6,
-        todo_provider_type = ?7,
-        asr_base_url = ?8,
-        asr_submit_url = ?9,
-        asr_query_url = ?10,
-        asr_resource_id = ?11,
-        asr_model_name = ?12,
-        asr_api_key_ref = ?13,
-        todo_base_url = ?14,
-        todo_model_name = ?15,
-        todo_api_key_ref = ?16,
-        local_todo_model_version = ?17,
-        allow_cloud_fallback = ?18,
-        local_todo_runtime_status = ?19,
-        local_todo_last_health_check_at = ?20,
-        updated_at = CURRENT_TIMESTAMP
-      WHERE id = 'default'
-      "#,
-            params![
-                if payload.record_enabled { 1 } else { 0 },
-                payload.language,
-                payload.chunk_seconds,
-                payload.idle_trigger_seconds,
-                payload.provider_mode,
-                payload.asr_provider_type,
-                payload.todo_provider_type,
-                payload.asr_submit_url,
-                payload.asr_submit_url,
-                payload.asr_query_url,
-                payload.asr_resource_id,
-                payload.asr_model_name,
-                payload.asr_api_key_masked,
-                payload.todo_base_url,
-                payload.todo_model_name,
-                payload.todo_api_key_masked,
-                payload.local_todo_model_version,
-                if payload.allow_cloud_fallback { 1 } else { 0 },
-                payload.local_todo_runtime_status,
-                payload.local_todo_last_health_check_at,
-            ],
-        )
-        .map_err(|error| format!("保存设置失败: {error}"))?;
-
-    query_settings(&connection)
-}
-
-#[tauri::command]
-fn toggle_todo_status(
-    todo_id: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<TodoDto, String> {
-    let connection = open_connection(&state.db_path)?;
-
-    let current_status: String = connection
-        .query_row(
-            "SELECT status FROM todos WHERE id = ?1",
-            params![todo_id.as_str()],
-            |row| row.get(0),
-        )
-        .map_err(|error| format!("读取 Todo 状态失败: {error}"))?;
-
-    let next_status = if current_status == "pending" {
-        "completed"
-    } else {
-        "pending"
-    };
-
-    connection
-        .execute(
-            r#"
-      UPDATE todos
-      SET
-        status = ?1,
-        completed_at = CASE WHEN ?1 = 'completed' THEN CURRENT_TIMESTAMP ELSE NULL END,
-        updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?2
-      "#,
-            params![next_status, todo_id.as_str()],
-        )
-        .map_err(|error| format!("更新 Todo 状态失败: {error}"))?;
-
-    connection
-        .query_row(
-            r#"
-      SELECT
-        id,
-        title,
-        note,
-        status,
-        created_at,
-        conversation_session_id,
-        IFNULL(source_text, '')
-      FROM todos
-      WHERE id = ?1
-      "#,
-            params![todo_id.as_str()],
-            |row| {
-                Ok(TodoDto {
-                    id: row.get(0)?,
-                    title: row.get(1)?,
-                    note: row.get(2)?,
-                    status: row.get(3)?,
-                    created_at: row.get(4)?,
-                    conversation_session_id: row.get(5)?,
-                    source_text: row.get(6)?,
-                })
-            },
-        )
-        .map_err(|error| format!("读取更新后的 Todo 失败: {error}"))
-}
-
-#[tauri::command]
-fn flush_current_session(state: tauri::State<'_, AppState>) -> Result<SessionDto, String> {
-    let connection = open_connection(&state.db_path)?;
-    ensure_manual_flush_allowed(&connection)?;
-    let timestamp = current_timestamp_label();
-    let session_id = format!("session_manual_{timestamp}");
-    let trace_id = format!("trace_manual_{timestamp}");
-    let merged_text = "手动刷新会话，当前未绑定真实转写文稿。".to_string();
-
-    connection
-    .execute(
-      r#"
-      INSERT INTO conversation_sessions (
-        id,
-        merged_text,
-        started_at,
-        ended_at,
-        idle_trigger_seconds,
-        trigger_reason,
-        transcript_count,
-        extraction_status,
-        extraction_provider_used,
-        extraction_fallback_used,
-        extraction_fallback_reason,
-        trace_id,
-        created_at
-      ) VALUES (?1, ?2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 20, 'manual', 0, 'pending', 'pending', 0, '', ?3, CURRENT_TIMESTAMP)
-      "#,
-      params![session_id.as_str(), merged_text.as_str(), trace_id.as_str()],
-    )
-    .map_err(|error| format!("写入手动会话失败: {error}"))?;
-    insert_processing_job(&connection, "todo_extraction", &session_id, &trace_id)?;
-    let _ = process_pending_jobs_internal(&connection, &state.models_dir)?;
-
-    latest_session(&connection)?.ok_or_else(|| "未找到刚创建的会话".to_string())
-}
-
-#[tauri::command]
-fn process_pending_jobs(
-    state: tauri::State<'_, AppState>,
-) -> Result<ProcessingActionResult, String> {
-    let connection = open_connection(&state.db_path)?;
-    let message = process_pending_jobs_internal(&connection, &state.models_dir)?;
-    Ok(ProcessingActionResult {
-        message,
-        runtime: query_runtime_status(&connection)?,
-        latest_session: latest_session(&connection)?,
-        todos: query_todos(&connection)?,
-        sessions: query_sessions(&connection)?,
-    })
-}
-
-#[tauri::command]
-fn start_recording(state: tauri::State<'_, AppState>) -> Result<RecordingActionResult, String> {
-    let mut recorder_guard = state
-        .recorder
-        .lock()
-        .map_err(|_| "录音状态锁定失败".to_string())?;
-    if recorder_guard.is_some() {
-        let connection = open_connection(&state.db_path)?;
-        return Ok(RecordingActionResult {
-            message: "录音已在进行中".into(),
-            runtime: query_runtime_status(&connection)?,
-            latest_session: latest_session(&connection)?,
-        });
-    }
-
-    let controller = spawn_recording_controller(state.recordings_dir.clone())?;
-    let connection = open_connection(&state.db_path)?;
-    set_record_enabled(&connection, true)?;
-    *recorder_guard = Some(controller);
-
-    Ok(RecordingActionResult {
-        message: "已启动真实麦克风录音".into(),
-        runtime: query_runtime_status(&connection)?,
-        latest_session: latest_session(&connection)?,
-    })
-}
-
-#[tauri::command]
-fn stop_recording(state: tauri::State<'_, AppState>) -> Result<RecordingActionResult, String> {
-    let controller = state
-        .recorder
-        .lock()
-        .map_err(|_| "录音状态锁定失败".to_string())?
-        .take();
-
-    let Some(controller) = controller else {
-        let connection = open_connection(&state.db_path)?;
-        return Ok(RecordingActionResult {
-            message: "当前没有进行中的录音".into(),
-            runtime: query_runtime_status(&connection)?,
-            latest_session: latest_session(&connection)?,
-        });
-    };
-
-    controller
-        .stop_tx
-        .send(RecorderControl::Stop)
-        .map_err(|error| format!("发送停止录音指令失败: {error}"))?;
-    let result = controller
-        .join_handle
-        .join()
-        .map_err(|_| "录音线程异常退出".to_string())??;
-
-    let connection = open_connection(&state.db_path)?;
-    insert_audio_segment(
-        &connection,
-        &result.file_path,
-        &result.started_at_label,
-        result.duration_ms,
-        result.sample_rate,
-        result.channels,
-        result.summary.total_energy,
-        result.summary.sample_count,
-        &result.trace_id,
-    )?;
-    set_record_enabled(&connection, false)?;
-    let processing_summary = process_pending_jobs_internal(&connection, &state.models_dir)?;
-
-    Ok(RecordingActionResult {
-        message: format!(
-            "录音已停止，已保存本地 WAV 文件：{}。{}",
-            result.file_path.to_string_lossy(),
-            processing_summary
-        ),
-        runtime: query_runtime_status(&connection)?,
-        latest_session: latest_session(&connection)?,
-    })
-}
-
-#[tauri::command]
-fn simulate_audio_slice(
-    has_effective_voice: bool,
-    state: tauri::State<'_, AppState>,
-) -> Result<RecordingActionResult, String> {
-    let connection = open_connection(&state.db_path)?;
-    let settings = query_settings(&connection)?;
-    let timestamp = current_timestamp_label();
-    let segment_id = format!("audio_sim_{timestamp}");
-    let trace_id = format!("trace_sim_{timestamp}");
-
-    connection
-        .execute(
-            r#"
-      INSERT INTO audio_segments (
-        id,
-        file_path,
-        started_at,
-        ended_at,
-        duration_ms,
-        sample_rate,
-        channels,
-        has_effective_voice,
-        voice_energy_score,
-        processing_status,
-        trace_id,
-        created_at
-      ) VALUES (
-        ?1,
-        ?2,
-        CURRENT_TIMESTAMP,
-        CURRENT_TIMESTAMP,
-        ?3,
-        16000,
-        1,
-        ?4,
-        ?5,
-        ?6,
-        ?7,
-        CURRENT_TIMESTAMP
-      )
-      "#,
-            params![
-                segment_id.as_str(),
-                format!("/mock/{segment_id}.wav"),
-                settings.chunk_seconds * 1000,
-                if has_effective_voice { 1 } else { 0 },
-                if has_effective_voice { 0.82 } else { 0.05 },
-                if has_effective_voice {
-                    "transcribed"
-                } else {
-                    "skipped"
-                },
-                trace_id.as_str()
-            ],
-        )
-        .map_err(|error| format!("写入模拟切片失败: {error}"))?;
-
-    if has_effective_voice {
-        insert_processing_job(&connection, "transcription", &segment_id, &trace_id)?;
-    }
-
-    let latest_session = if has_effective_voice {
-        None
-    } else {
-        maybe_create_idle_session(&connection)?
-    };
-    let processing_summary = process_pending_jobs_internal(&connection, &state.models_dir)?;
-
-    Ok(RecordingActionResult {
-        message: if has_effective_voice {
-            format!("已写入一条有效录音切片。{processing_summary}")
-        } else {
-            format!("已写入一条静默切片，并检查空闲触发会话。{processing_summary}")
-        },
-        runtime: query_runtime_status(&connection)?,
-        latest_session,
-    })
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -3149,17 +967,14 @@ pub fn run() {
                 .app_data_dir()
                 .map_err(|error| format!("解析应用数据目录失败: {error}"))?;
             let recordings_dir = app_data_dir.join("recordings");
-            let models_dir = app_data_dir.join("models");
             let db_path = app_data_dir.join("smart-todo.sqlite");
 
             initialize_database(&db_path)?;
             fs::create_dir_all(&recordings_dir)
                 .map_err(|error| format!("创建录音目录失败: {error}"))?;
-            ensure_embedded_todo_runtime_files(&models_dir)?;
             app.manage(AppState {
                 db_path,
                 recordings_dir,
-                models_dir,
                 recorder: Arc::new(Mutex::new(None)),
             });
 
@@ -3173,17 +988,21 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            get_desktop_context,
-            get_bootstrap_data,
-            save_settings,
-            test_model_connection,
-            get_local_todo_runtime_status,
-            toggle_todo_status,
-            flush_current_session,
-            process_pending_jobs,
-            start_recording,
-            stop_recording,
-            simulate_audio_slice
+            commands::desktop_context::get_desktop_context,
+            commands::bootstrap::get_bootstrap_data,
+            commands::settings::save_settings,
+            commands::model_test::test_model_connection,
+            commands::todo::toggle_todo_status,
+            commands::session::flush_current_session,
+            commands::jobs::process_pending_jobs,
+            commands::recording::start_recording,
+            commands::recording::stop_recording,
+            commands::recording::simulate_audio_slice,
+            commands::transcript::import_local_audio,
+            commands::transcript::get_transcript_review,
+            commands::transcript::rename_speaker,
+            commands::transcript::mark_transcript_segment,
+            commands::transcript::retry_transcript_job
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -3194,57 +1013,1706 @@ mod tests {
     use super::*;
 
     #[test]
-    fn should_build_embedded_prompt_with_input_text() {
-        let template = "前文\n{{input_text}}\n后文";
-        let prompt = build_embedded_todo_prompt(template, "  今天联系客户并发送报价  ");
-        assert!(prompt.contains("今天联系客户并发送报价"));
-        assert!(!prompt.contains("{{input_text}}"));
-    }
-
-    #[test]
-    fn should_parse_runtime_todos_from_wrapped_json_output() {
-        let output = "思考略\n[{\"title\":\"联系客户发送报价并确认税率\",\"note\":\"今天下午联系客户并发送报价，确认税率口径。\"}]";
-        let todos = parse_runtime_todos(output).expect("应能解析 JSON 数组");
-        assert_eq!(todos.len(), 1);
-        assert_eq!(todos[0].title, "联系客户发送报价并确认税率");
-        assert!(todos[0].note.contains("确认税率"));
-    }
-
-    #[test]
-    fn should_extract_last_valid_json_array_from_prompt_echo_output() {
-        let output = "示例输出：\n[{\"title\":\"示例任务\",\"note\":\"示例说明\"}]\n待处理文稿：\n今天下班前把合同发给小李。\n\n[{\"title\":\"给小李发送合同\",\"note\":\"今天下班前把合同发给小李。\"}] [end of text]";
-        let todos = parse_runtime_todos(output).expect("应能从回显提示词中提取最后一个 JSON 数组");
-        assert_eq!(todos.len(), 1);
-        assert_eq!(todos[0].title, "给小李发送合同");
-        assert_eq!(todos[0].note, "今天下班前把合同发给小李。");
-    }
-
-    #[test]
-    fn should_parse_embedded_manifest_text() {
-        let manifest = parse_embedded_todo_manifest_text(
-            std::str::from_utf8(EMBEDDED_TODO_MANIFEST_BYTES).expect("内嵌清单应为 UTF-8"),
-        )
-        .expect("应能解析内嵌清单");
-        assert_eq!(manifest.model_version, EMBEDDED_TODO_MODEL_VERSION);
-        assert_eq!(manifest.engine, "llama.cpp");
-        assert_eq!(manifest.prompt_template_rel_path, "prompt_template.txt");
-    }
-
-    #[test]
-    fn should_report_not_ready_when_llama_cli_or_gguf_missing() {
+    fn should_initialize_v04_provider_and_semantic_schema() {
         let temp_dir = std::env::temp_dir().join(format!(
-            "smart-todo-runtime-test-{}",
+            "smart-todo-v04-schema-test-{}",
             current_timestamp_label()
         ));
-        ensure_embedded_todo_runtime_files(&temp_dir).expect("应能释放内嵌模型清单");
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
 
-        let error = load_embedded_todo_runtime_config(&temp_dir, EMBEDDED_TODO_MODEL_VERSION)
-            .expect_err("缺少 llama-cli 和 GGUF 时不应进入 ready");
-        assert!(
-            error.contains("llama.cpp") || error.contains("GGUF"),
-            "错误信息应明确指出缺失的运行时资源，实际为: {error}"
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let settings = settings_service::load_settings(&connection).expect("应能读取默认设置");
+
+        assert_eq!(settings.asr_provider_type, "local_whisperkit");
+        assert_eq!(settings.speaker_provider_type, "local_speakerkit");
+        assert_eq!(settings.todo_provider_type, DEFAULT_TODO_PROVIDER_TYPE);
+        assert_eq!(settings.semantic_provider_type, "minimax_m3");
+        assert_eq!(settings.embedding_provider_type, "reserved");
+        assert_eq!(settings.export_provider_type, "local_file");
+        assert_eq!(settings.semantic_base_url, DEFAULT_SEMANTIC_BASE_URL);
+        assert_eq!(settings.semantic_model_name, "MiniMax-M3");
+
+        for (table, required_columns) in [
+            (
+                "semantic_artifacts",
+                vec![
+                    "id",
+                    "session_id",
+                    "artifact_type",
+                    "status",
+                    "provider",
+                    "model_name",
+                    "schema_version",
+                    "source_span_refs",
+                    "payload_json",
+                    "error_message",
+                ],
+            ),
+            (
+                "model_invocations",
+                vec![
+                    "id",
+                    "provider",
+                    "model_name",
+                    "capability",
+                    "status",
+                    "request_summary",
+                    "response_summary",
+                    "input_tokens",
+                    "output_tokens",
+                    "duration_ms",
+                    "estimated_cost_microunits",
+                    "currency",
+                    "error_message",
+                    "started_at",
+                    "finished_at",
+                ],
+            ),
+        ] {
+            let columns = table_columns(&connection, table);
+            for required_column in required_columns {
+                assert!(
+                    columns.iter().any(|column| column == required_column),
+                    "{table} 应包含字段 {required_column}，实际字段为 {columns:?}"
+                );
+            }
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_allow_all_minimax_m3_artifact_types_in_semantic_artifacts() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-artifact-type-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let session_id = "session_minimax_artifact_types";
+        connection
+            .execute(
+                r#"
+                INSERT INTO conversation_sessions (
+                  id,
+                  merged_text,
+                  started_at,
+                  ended_at,
+                  idle_trigger_seconds,
+                  trigger_reason,
+                  transcript_count,
+                  extraction_status,
+                  extraction_provider_used,
+                  extraction_fallback_used,
+                  extraction_fallback_reason,
+                  trace_id,
+                  created_at
+                ) VALUES (?1, '测试 MiniMax M3 artifact 类型落库。', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 20, 'manual', 1, 'pending', 'pending', 0, '', 'trace_minimax_artifact_types', CURRENT_TIMESTAMP)
+                "#,
+                params![session_id],
+            )
+            .expect("应能准备测试会话");
+
+        for artifact_type in providers::semantic::minimax_m3::SUPPORTED_ARTIFACT_TYPES {
+            connection
+                .execute(
+                    r#"
+                    INSERT INTO semantic_artifacts (
+                      id,
+                      session_id,
+                      artifact_type,
+                      status,
+                      provider,
+                      model_name,
+                      schema_version,
+                      source_span_refs,
+                      payload_json
+                    ) VALUES (?1, ?2, ?3, 'pending', ?4, ?5, 'v0.4', '[]', '{}')
+                    "#,
+                    params![
+                        format!("artifact_{artifact_type}"),
+                        session_id,
+                        artifact_type,
+                        providers::semantic::minimax_m3::PROVIDER_ID,
+                        providers::semantic::minimax_m3::DEFAULT_MODEL_NAME,
+                    ],
+                )
+                .unwrap_or_else(|error| {
+                    panic!("semantic_artifacts 应允许 MiniMax M3 artifact_type={artifact_type}: {error}")
+                });
+        }
+
+        let inserted_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(1) FROM semantic_artifacts WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .expect("应能统计 artifact 数量");
+        assert_eq!(
+            inserted_count as usize,
+            providers::semantic::minimax_m3::SUPPORTED_ARTIFACT_TYPES.len()
         );
 
         let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_migrate_semantic_artifact_type_constraint_to_minimax_contract() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-artifact-migration-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        {
+            let connection = open_connection(&db_path).expect("应能打开旧库测试数据库");
+            connection
+                .execute_batch(
+                    r#"
+                    CREATE TABLE semantic_artifacts (
+                      id TEXT PRIMARY KEY,
+                      session_id TEXT NOT NULL,
+                      artifact_type TEXT NOT NULL
+                        CHECK (artifact_type IN ('summary', 'todo_extraction', 'mind_map', 'moment', 'deep_research', 'translation')),
+                      status TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending', 'running', 'succeeded', 'failed')),
+                      provider TEXT NOT NULL,
+                      model_name TEXT NOT NULL,
+                      schema_version TEXT NOT NULL DEFAULT 'v0.4',
+                      source_span_refs TEXT NOT NULL DEFAULT '[]',
+                      payload_json TEXT NOT NULL DEFAULT '{}',
+                      error_message TEXT NOT NULL DEFAULT '',
+                      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    );
+
+                    INSERT INTO semantic_artifacts (
+                      id,
+                      session_id,
+                      artifact_type,
+                      status,
+                      provider,
+                      model_name,
+                      schema_version,
+                      source_span_refs,
+                      payload_json
+                    ) VALUES (
+                      'legacy_summary_artifact',
+                      'legacy_session',
+                      'summary',
+                      'pending',
+                      'minimax_m3',
+                      'MiniMax-M3',
+                      'v0.4',
+                      '[]',
+                      '{}'
+                    ),
+                    (
+                      'legacy_translation_artifact',
+                      'legacy_session',
+                      'translation',
+                      'pending',
+                      'minimax_m3',
+                      'MiniMax-M3',
+                      'v0.4',
+                      '[]',
+                      '{}'
+                    );
+                    "#,
+                )
+                .expect("应能创建旧 semantic_artifacts 表");
+        }
+
+        initialize_database(&db_path).expect("应能迁移旧 semantic_artifacts 类型约束");
+        let connection = open_connection(&db_path).expect("应能打开迁移后的数据库");
+        connection
+            .execute(
+                r#"
+                INSERT OR IGNORE INTO conversation_sessions (
+                  id,
+                  merged_text,
+                  started_at,
+                  ended_at,
+                  idle_trigger_seconds,
+                  trigger_reason,
+                  transcript_count,
+                  extraction_status,
+                  extraction_provider_used,
+                  extraction_fallback_used,
+                  extraction_fallback_reason,
+                  trace_id,
+                  created_at
+                ) VALUES ('legacy_session', '旧会话', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 20, 'manual', 1, 'pending', 'pending', 0, '', 'trace_legacy_session', CURRENT_TIMESTAMP)
+                "#,
+                [],
+            )
+            .expect("应能准备迁移后父会话");
+        connection
+            .execute(
+                r#"
+                INSERT INTO semantic_artifacts (
+                  id,
+                  session_id,
+                  artifact_type,
+                  status,
+                  provider,
+                  model_name,
+                  schema_version,
+                  source_span_refs,
+                  payload_json
+                ) VALUES ('new_transcript_revision_artifact', 'legacy_session', 'transcript_revision', 'pending', 'minimax_m3', 'MiniMax-M3', 'v0.4', '[]', '{}')
+                "#,
+                [],
+            )
+            .expect("迁移后应允许 transcript_revision");
+
+        let legacy_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(1) FROM semantic_artifacts WHERE id = 'legacy_summary_artifact'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("应能查询迁移前 artifact");
+        assert_eq!(legacy_count, 1);
+
+        let legacy_translation_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(1) FROM semantic_artifacts WHERE id = 'legacy_translation_artifact'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("应能查询迁移前 translation artifact");
+        assert_eq!(legacy_translation_count, 1);
+
+        let index_count: i64 = connection
+            .query_row(
+                r#"
+                SELECT COUNT(1)
+                FROM sqlite_master
+                WHERE type = 'index'
+                  AND name IN ('idx_semantic_artifacts_session_type', 'idx_semantic_artifacts_status')
+                "#,
+                [],
+                |row| row.get(0),
+            )
+            .expect("应能查询迁移后的索引");
+        assert_eq!(index_count, 2);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_initialize_missing_settings_columns_with_v04_provider_defaults() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-settings-columns-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        {
+            let connection = open_connection(&db_path).expect("应能打开缺列测试数据库");
+            connection
+                .execute_batch(
+                    r#"
+                    CREATE TABLE app_settings (
+                        id TEXT PRIMARY KEY,
+                        record_enabled INTEGER NOT NULL DEFAULT 0,
+                        language TEXT NOT NULL DEFAULT 'zh-CN',
+                        chunk_seconds INTEGER NOT NULL DEFAULT 30,
+                        idle_trigger_seconds INTEGER NOT NULL DEFAULT 20,
+                        provider_mode TEXT NOT NULL DEFAULT 'local',
+                        asr_provider_type TEXT NOT NULL DEFAULT 'local'
+                    );
+
+                    INSERT INTO app_settings (
+                        id,
+                        record_enabled,
+                        language,
+                        chunk_seconds,
+                        idle_trigger_seconds,
+                        provider_mode,
+                        asr_provider_type
+                    ) VALUES (
+                        'default',
+                        0,
+                        'zh-CN',
+                        30,
+                        20,
+                        'local',
+                        'local'
+                    );
+                    "#,
+                )
+                .expect("应能准备缺失 v0.4 列的设置表");
+        }
+
+        initialize_database(&db_path).expect("应能补齐 v0.4 设置列");
+        let connection = open_connection(&db_path).expect("应能打开补齐后的数据库");
+        let settings = settings_service::load_settings(&connection).expect("应能读取补齐后的设置");
+
+        assert_eq!(settings.asr_provider_type, "local_whisperkit");
+        assert_eq!(settings.speaker_provider_type, "local_speakerkit");
+        assert_eq!(settings.todo_provider_type, DEFAULT_TODO_PROVIDER_TYPE);
+        assert_eq!(settings.semantic_provider_type, "minimax_m3");
+        assert_eq!(settings.semantic_base_url, DEFAULT_SEMANTIC_BASE_URL);
+        assert_eq!(settings.semantic_model_name, DEFAULT_SEMANTIC_MODEL_NAME);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_clamp_existing_unsupported_semantic_provider_during_database_init() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-semantic-provider-migration-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        {
+            let connection = open_connection(&db_path).expect("应能打开测试数据库");
+            connection
+                .execute(
+                    "UPDATE app_settings SET semantic_provider_type = 'unsupported_semantic_provider' WHERE id = 'default'",
+                    [],
+                )
+                .expect("应能模拟旧语义 provider 持久化值");
+        }
+
+        initialize_database(&db_path).expect("再次初始化应收敛旧语义 provider");
+        let connection = open_connection(&db_path).expect("应能打开迁移后的数据库");
+        let persisted: String = connection
+            .query_row(
+                "SELECT semantic_provider_type FROM app_settings WHERE id = 'default'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("应能读取迁移后的语义 provider");
+
+        assert_eq!(persisted, DEFAULT_SEMANTIC_PROVIDER_TYPE);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_expose_sqlite_infra_database_boundary() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-sqlite-infra-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        infra::sqlite::initialize_database(&db_path).expect("infra sqlite 应能初始化数据库");
+        let connection =
+            infra::sqlite::open_connection(&db_path).expect("infra sqlite 应能打开数据库");
+        let settings = settings_service::load_settings(&connection).expect("应能读取默认设置");
+
+        assert_eq!(settings.asr_provider_type, DEFAULT_ASR_PROVIDER_TYPE);
+        assert_eq!(
+            settings.semantic_provider_type,
+            DEFAULT_SEMANTIC_PROVIDER_TYPE
+        );
+        assert!(
+            table_columns(&connection, "semantic_artifacts")
+                .iter()
+                .any(|column| column == "artifact_type"),
+            "infra sqlite 初始化应创建 semantic_artifacts 表"
+        );
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_expose_settings_service_boundary() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-settings-service-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let mut settings = app::settings_service::load_settings(&connection)
+            .expect("settings service 应能读取设置");
+
+        settings.language = "en-US".into();
+        settings.semantic_model_name = "MiniMax-M3-Service-Test".into();
+        app::settings_service::save_settings(&connection, &settings)
+            .expect("settings service 应能保存设置");
+
+        let persisted = app::settings_service::load_settings(&connection)
+            .expect("settings service 应能回读设置");
+        assert_eq!(persisted.language, "en-US");
+        assert_eq!(persisted.semantic_model_name, "MiniMax-M3-Service-Test");
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_expose_query_service_boundary() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-query-service-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+
+        let todos =
+            app::query_service::query_todos(&connection).expect("query service 应能读取 Todo 列表");
+        let sessions = app::query_service::query_sessions(&connection)
+            .expect("query service 应能读取会话列表");
+        let runtime = app::query_service::query_runtime_status(&connection)
+            .expect("query service 应能读取运行状态");
+
+        assert!(!todos.is_empty(), "query service 应返回 demo Todo");
+        assert!(!sessions.is_empty(), "query service 应返回 demo session");
+        assert!(!runtime.runtime_label.trim().is_empty());
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_import_local_audio_and_generate_v05_timeline() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "shengji-v05-transcript-evaluation-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        let audio_path = temp_dir.join("sample-meeting.wav");
+        fs::write(&audio_path, b"fake wav bytes for local evaluation")
+            .expect("应能准备本地音频文件");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let result = commands::transcript::import_local_audio_payload(
+            &db_path,
+            audio_path.to_string_lossy().as_ref(),
+        )
+        .expect("v0.5 应能导入本地音频并生成离线评估时间轴");
+
+        assert_eq!(result.audio.status, "succeeded");
+        assert!(!result.segments.is_empty(), "应生成时间轴转写片段");
+        assert!(
+            result
+                .segments
+                .iter()
+                .all(|segment| segment.end_ms > segment.start_ms),
+            "每个转写片段都应有可跳转时间范围"
+        );
+        assert!(
+            result
+                .speakers
+                .iter()
+                .any(|speaker| speaker.label == "Speaker 1"),
+            "应生成默认 speaker label"
+        );
+        assert!(result.model_status.offline_available);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_rename_speaker_and_mark_transcript_segment() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "shengji-v05-speaker-rename-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        let audio_path = temp_dir.join("sample-standup.wav");
+        fs::write(&audio_path, b"fake wav bytes for speaker evaluation")
+            .expect("应能准备本地音频文件");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let result = commands::transcript::import_local_audio_payload(
+            &db_path,
+            audio_path.to_string_lossy().as_ref(),
+        )
+        .expect("应能准备 speaker 测试数据");
+        let speaker_id = result.speakers[0].id.clone();
+        let segment_id = result.segments[0].id.clone();
+
+        let renamed = commands::transcript::rename_speaker_payload(
+            &db_path,
+            speaker_id.as_str(),
+            "产品负责人",
+        )
+        .expect("speaker label 应可重命名并持久化");
+        assert_eq!(renamed.label, "产品负责人");
+
+        let marked = commands::transcript::mark_transcript_segment_payload(
+            &db_path,
+            segment_id.as_str(),
+            "speaker",
+            "说话人需要人工复核",
+        )
+        .expect("转写片段应支持错误标注");
+        assert_eq!(marked.review_status, "flagged");
+        assert_eq!(marked.review_reason, "说话人需要人工复核");
+
+        let refreshed = commands::transcript::get_transcript_review_payload(&db_path)
+            .expect("应能读取更新后的转写评估状态");
+        assert!(refreshed
+            .speakers
+            .iter()
+            .any(|speaker| speaker.label == "产品负责人"));
+        assert!(refreshed
+            .segments
+            .iter()
+            .any(|segment| segment.id == segment_id && segment.review_status == "flagged"));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_retry_failed_transcript_job() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "shengji-v05-transcript-retry-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        connection
+            .execute(
+                r#"
+                INSERT INTO transcript_jobs (
+                  id,
+                  audio_segment_id,
+                  status,
+                  retry_count,
+                  max_retry_count,
+                  error_message,
+                  provider,
+                  model_name,
+                  created_at
+                ) VALUES ('transcript_job_failed_retry', 'missing_audio_for_retry', 'failed', 1, 3, '本地模型未就绪', 'local_whisperkit', 'large-v3-turbo', CURRENT_TIMESTAMP)
+                "#,
+                [],
+            )
+            .expect("应能准备失败转写任务");
+
+        let retried = commands::transcript::retry_transcript_job_payload(
+            &db_path,
+            "transcript_job_failed_retry",
+        )
+        .expect("失败转写任务应可重试");
+        assert_eq!(retried.status, "queued");
+        assert_eq!(retried.retry_count, 2);
+        assert!(retried.error_message.is_empty());
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_reject_transcript_job_retry_after_max_attempts() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "shengji-v05-transcript-retry-limit-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        connection
+            .execute(
+                r#"
+                INSERT INTO transcript_jobs (
+                  id,
+                  audio_segment_id,
+                  status,
+                  retry_count,
+                  max_retry_count,
+                  error_message,
+                  provider,
+                  model_name,
+                  created_at
+                ) VALUES ('transcript_job_retry_exhausted', 'missing_audio_for_retry', 'failed', 3, 3, '本地模型未就绪', 'local_whisperkit', 'large-v3-turbo', CURRENT_TIMESTAMP)
+                "#,
+                [],
+            )
+            .expect("应能准备达到重试上限的失败任务");
+
+        let error = commands::transcript::retry_transcript_job_payload(
+            &db_path,
+            "transcript_job_retry_exhausted",
+        )
+        .expect_err("达到最大重试次数后不应继续重试");
+        assert!(error.contains("最大重试次数"));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_register_semantic_todo_artifact_by_default() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-semantic-todo-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let settings = settings_service::load_settings(&connection).expect("应能读取默认设置");
+        let session_id = "session_semantic_todo_test";
+
+        connection
+            .execute(
+                r#"
+                INSERT INTO conversation_sessions (
+                  id,
+                  merged_text,
+                  started_at,
+                  ended_at,
+                  idle_trigger_seconds,
+                  trigger_reason,
+                  transcript_count,
+                  extraction_status,
+                  extraction_provider_used,
+                  extraction_fallback_used,
+                  extraction_fallback_reason,
+                  trace_id,
+                  created_at
+                ) VALUES (?1, '下午联系客户并同步合同状态。', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 20, 'manual', 1, 'pending', 'pending', 0, '', 'trace_semantic_todo_test', CURRENT_TIMESTAMP)
+                "#,
+                params![session_id],
+            )
+            .expect("应能准备测试会话");
+
+        let inserted =
+            jobs::todo_extraction::generate_for_session(&connection, &settings, session_id)
+                .expect("默认 Todo 路径应登记语义产物边界");
+        assert_eq!(inserted, 0);
+
+        let artifact: (String, String, String, String) = connection
+            .query_row(
+                "SELECT provider, model_name, status, payload_json FROM semantic_artifacts WHERE session_id = ?1 AND artifact_type = 'todo_extraction'",
+                params![session_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("应登记 Todo 语义产物");
+        assert_eq!(artifact.0, DEFAULT_SEMANTIC_PROVIDER_TYPE);
+        assert_eq!(artifact.1, DEFAULT_SEMANTIC_MODEL_NAME);
+        assert_eq!(artifact.2, "pending");
+        assert!(artifact.3.contains("v0.4_semantic_provider"));
+
+        let todo_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(1) FROM todos WHERE conversation_session_id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .expect("应能查询 Todo 数量");
+        assert_eq!(todo_count, 0);
+
+        let provider_used: String = connection
+            .query_row(
+                "SELECT extraction_provider_used FROM conversation_sessions WHERE id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .expect("应能读取会话 provider");
+        assert_eq!(provider_used, DEFAULT_SEMANTIC_PROVIDER_TYPE);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_expose_todo_extraction_job_boundary() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-jobs-boundary-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let settings = settings_service::load_settings(&connection).expect("应能读取默认设置");
+        let session_id = "session_jobs_boundary_test";
+
+        connection
+            .execute(
+                r#"
+                INSERT INTO conversation_sessions (
+                  id,
+                  merged_text,
+                  started_at,
+                  ended_at,
+                  idle_trigger_seconds,
+                  trigger_reason,
+                  transcript_count,
+                  extraction_status,
+                  extraction_provider_used,
+                  extraction_fallback_used,
+                  extraction_fallback_reason,
+                  trace_id,
+                  created_at
+                ) VALUES (?1, '明天复盘架构拆分计划并同步风险。', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 20, 'forced_flush', 1, 'pending', 'pending', 0, '', 'trace_jobs_boundary_test', CURRENT_TIMESTAMP)
+                "#,
+                params![session_id],
+            )
+            .expect("应能准备测试会话");
+
+        let inserted =
+            jobs::todo_extraction::generate_for_session(&connection, &settings, session_id)
+                .expect("jobs todo_extraction 应能登记语义产物边界");
+        assert_eq!(inserted, 0);
+
+        let artifact_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(1) FROM semantic_artifacts WHERE session_id = ?1 AND artifact_type = 'todo_extraction' AND provider = ?2",
+                params![session_id, DEFAULT_SEMANTIC_PROVIDER_TYPE],
+                |row| row.get(0),
+            )
+            .expect("应能查询 Todo 语义产物");
+        assert_eq!(artifact_count, 1);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_skip_placeholder_manual_session_in_todo_extraction_job() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-jobs-skip-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let settings = settings_service::load_settings(&connection).expect("应能读取默认设置");
+        let session_id = "session_jobs_skip_test";
+
+        connection
+            .execute(
+                r#"
+                INSERT INTO conversation_sessions (
+                  id,
+                  merged_text,
+                  started_at,
+                  ended_at,
+                  idle_trigger_seconds,
+                  trigger_reason,
+                  transcript_count,
+                  extraction_status,
+                  extraction_provider_used,
+                  extraction_fallback_used,
+                  extraction_fallback_reason,
+                  trace_id,
+                  created_at
+                ) VALUES (?1, '手动刷新会话，当前未绑定真实转写文稿。', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 20, 'manual', 0, 'pending', 'pending', 0, '', 'trace_jobs_skip_test', CURRENT_TIMESTAMP)
+                "#,
+                params![session_id],
+            )
+            .expect("应能准备手动占位会话");
+
+        let inserted =
+            jobs::todo_extraction::generate_for_session(&connection, &settings, session_id)
+                .expect("jobs todo_extraction 应跳过占位会话");
+        assert_eq!(inserted, 0);
+
+        let artifact_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(1) FROM semantic_artifacts WHERE session_id = ?1 AND artifact_type = 'todo_extraction'",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .expect("应能查询 Todo 语义产物数量");
+        assert_eq!(artifact_count, 0);
+
+        let provider_used: String = connection
+            .query_row(
+                "SELECT extraction_provider_used FROM conversation_sessions WHERE id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .expect("应能读取会话提取 provider");
+        assert_eq!(provider_used, "skipped");
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_replace_existing_todo_extraction_artifact_for_session() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-jobs-replace-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let settings = settings_service::load_settings(&connection).expect("应能读取默认设置");
+        let session_id = "session_jobs_replace_test";
+
+        connection
+            .execute(
+                r#"
+                INSERT INTO conversation_sessions (
+                  id,
+                  merged_text,
+                  started_at,
+                  ended_at,
+                  idle_trigger_seconds,
+                  trigger_reason,
+                  transcript_count,
+                  extraction_status,
+                  extraction_provider_used,
+                  extraction_fallback_used,
+                  extraction_fallback_reason,
+                  trace_id,
+                  created_at
+                ) VALUES (?1, '请安排复盘会议并同步会议纪要。', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 20, 'forced_flush', 1, 'pending', 'pending', 0, '', 'trace_jobs_replace_test', CURRENT_TIMESTAMP)
+                "#,
+                params![session_id],
+            )
+            .expect("应能准备可提取会话");
+
+        jobs::todo_extraction::generate_for_session(&connection, &settings, session_id)
+            .expect("首次应登记 Todo 语义产物");
+        jobs::todo_extraction::generate_for_session(&connection, &settings, session_id)
+            .expect("再次登记应替换已有 Todo 语义产物");
+
+        let artifact_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(1) FROM semantic_artifacts WHERE session_id = ?1 AND artifact_type = 'todo_extraction'",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .expect("应能查询 Todo 语义产物数量");
+        assert_eq!(artifact_count, 1);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_persist_v04_provider_settings_round_trip() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-settings-roundtrip-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let mut settings = settings_service::load_settings(&connection).expect("应能读取默认设置");
+
+        settings.asr_provider_type = "cloud_volc".into();
+        settings.todo_provider_type = DEFAULT_TODO_PROVIDER_TYPE.into();
+        settings.semantic_base_url = "https://m3.example.test/v1/responses".into();
+        settings.semantic_model_name = "MiniMax-M3-Test".into();
+        settings.semantic_api_key_masked = "sk-test-****".into();
+        settings.export_provider_type = "local_file".into();
+
+        settings_service::save_settings(&connection, &settings).expect("应能保存 v0.4 设置");
+        let persisted = settings_service::load_settings(&connection).expect("应能读取保存后的设置");
+
+        assert_eq!(persisted.asr_provider_type, "cloud_volc");
+        assert_eq!(persisted.todo_provider_type, DEFAULT_TODO_PROVIDER_TYPE);
+        assert_eq!(
+            persisted.semantic_base_url,
+            "https://m3.example.test/v1/responses"
+        );
+        assert_eq!(persisted.semantic_model_name, "MiniMax-M3-Test");
+        assert_eq!(persisted.semantic_api_key_masked, "sk-test-****");
+        assert_eq!(persisted.export_provider_type, "local_file");
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_expose_model_test_command_boundary() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-model-command-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let settings = settings_service::load_settings(&connection).expect("应能读取默认设置");
+
+        let result = commands::model_test::test_model_connection_payload(
+            domain::model_test::ModelTestRequest {
+                provider: "todo".into(),
+                settings,
+            },
+        )
+        .expect("model_test command boundary 应能处理 Todo 语义入口测试");
+
+        assert!(result.success);
+        assert_eq!(result.provider, "todo");
+        assert!(result.message.contains("MiniMax M3"));
+        assert_eq!(
+            result.response_excerpt,
+            "semantic_artifacts(type='todo_extraction')"
+        );
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_guard_local_asr_model_test_without_cloud_fallback() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-model-command-asr-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let mut settings = settings_service::load_settings(&connection).expect("应能读取默认设置");
+        settings.asr_provider_type = DEFAULT_ASR_PROVIDER_TYPE.into();
+        settings.allow_cloud_fallback = false;
+
+        let result = commands::model_test::test_model_connection_payload(
+            domain::model_test::ModelTestRequest {
+                provider: "asr".into(),
+                settings,
+            },
+        )
+        .expect("model_test command boundary 应能处理本地 ASR guard");
+
+        assert!(!result.success);
+        assert_eq!(result.provider, "asr");
+        assert_eq!(result.status_code, 503);
+        assert!(result.message.contains("纯本地 ASR"));
+        assert!(result.response_excerpt.contains("不会调用云端服务"));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_reject_unknown_model_test_provider_at_command_boundary() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-model-command-unknown-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let settings = settings_service::load_settings(&connection).expect("应能读取默认设置");
+
+        let error = commands::model_test::test_model_connection_payload(
+            domain::model_test::ModelTestRequest {
+                provider: "embedding".into(),
+                settings,
+            },
+        )
+        .expect_err("未知模型测试类型应返回错误");
+
+        assert!(error.contains("不支持的模型测试类型: embedding"));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_expose_save_settings_command_boundary() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-save-settings-command-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let mut settings = settings_service::load_settings(&connection).expect("应能读取默认设置");
+        settings.language = "en-US".into();
+        settings.todo_provider_type = DEFAULT_TODO_PROVIDER_TYPE.into();
+        settings.semantic_model_name = "MiniMax-M3-Command-Test".into();
+
+        let saved = commands::settings::save_settings_payload(&db_path, settings)
+            .expect("settings command boundary 应能保存并回读设置");
+
+        assert_eq!(saved.language, "en-US");
+        assert_eq!(saved.todo_provider_type, DEFAULT_TODO_PROVIDER_TYPE);
+        assert_eq!(saved.semantic_model_name, "MiniMax-M3-Command-Test");
+
+        let persisted = settings_service::load_settings(&connection).expect("应能读取保存后的设置");
+        assert_eq!(persisted.language, "en-US");
+        assert_eq!(persisted.todo_provider_type, DEFAULT_TODO_PROVIDER_TYPE);
+        assert_eq!(persisted.semantic_model_name, "MiniMax-M3-Command-Test");
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_clamp_unsupported_provider_inputs_at_settings_command_boundary() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-settings-provider-clamp-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let mut settings = settings_service::load_settings(&connection).expect("应能读取默认设置");
+        settings.todo_provider_type = "unsupported_todo_provider".into();
+        settings.semantic_provider_type = "unsupported_semantic_provider".into();
+
+        let saved = commands::settings::save_settings_payload(&db_path, settings)
+            .expect("settings command boundary 应收敛不支持的 provider 输入");
+
+        assert_eq!(saved.todo_provider_type, DEFAULT_TODO_PROVIDER_TYPE);
+        assert_eq!(saved.semantic_provider_type, DEFAULT_SEMANTIC_PROVIDER_TYPE);
+
+        let persisted: (String, String) = connection
+            .query_row(
+                "SELECT todo_provider_type, semantic_provider_type FROM app_settings WHERE id = 'default'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("应能读取持久化 provider 设置");
+        assert_eq!(persisted.0, DEFAULT_TODO_PROVIDER_TYPE);
+        assert_eq!(persisted.1, DEFAULT_SEMANTIC_PROVIDER_TYPE);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_expose_desktop_context_command_boundary() {
+        let provider_count = providers::provider_catalog().len();
+        let context = commands::desktop_context::build_desktop_context(false, provider_count);
+
+        assert_eq!(context.runtime, "tauri");
+        assert_eq!(context.platform, std::env::consts::OS);
+        assert!(context.recorder_status.contains("录音已停止"));
+        assert!(context
+            .storage_status
+            .contains(&format!("{provider_count} 个 provider")));
+        assert!(context.models_status.contains("MiniMax M3"));
+        assert!(context.models_status.contains("semantic_m3"));
+
+        let recording_context =
+            commands::desktop_context::build_desktop_context(true, provider_count);
+        assert!(recording_context.recorder_status.contains("录音中"));
+    }
+
+    #[test]
+    fn should_expose_bootstrap_command_boundary() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-bootstrap-command-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+
+        let bootstrap = commands::bootstrap::get_bootstrap_data_payload(&db_path)
+            .expect("bootstrap command boundary 应能读取启动数据");
+
+        assert_eq!(
+            bootstrap.settings.todo_provider_type,
+            DEFAULT_TODO_PROVIDER_TYPE
+        );
+        assert_eq!(bootstrap.settings.semantic_provider_type, "minimax_m3");
+        assert!(
+            !bootstrap.todos.is_empty(),
+            "bootstrap 应返回 demo Todo 以支撑前端首屏"
+        );
+        assert!(
+            !bootstrap.sessions.is_empty(),
+            "bootstrap 应返回 demo session 以支撑前端首屏"
+        );
+        assert!(
+            bootstrap.runtime.last_extraction_summary.contains("会话")
+                || bootstrap.runtime.last_extraction_summary.contains("暂无")
+        );
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_expose_todo_status_command_boundary() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-todo-command-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+
+        let completed = commands::todo::toggle_todo_status_payload(&db_path, "todo_seed_001")
+            .expect("todo command boundary 应能完成 Todo");
+        assert_eq!(completed.id, "todo_seed_001");
+        assert_eq!(completed.status, "completed");
+
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let completed_at: Option<String> = connection
+            .query_row(
+                "SELECT completed_at FROM todos WHERE id = 'todo_seed_001'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("应能读取完成时间");
+        assert!(completed_at.is_some(), "完成 Todo 时应写入 completed_at");
+
+        let reopened = commands::todo::toggle_todo_status_payload(&db_path, "todo_seed_001")
+            .expect("todo command boundary 应能重新打开 Todo");
+        assert_eq!(reopened.id, "todo_seed_001");
+        assert_eq!(reopened.status, "pending");
+
+        let reopened_completed_at: Option<String> = connection
+            .query_row(
+                "SELECT completed_at FROM todos WHERE id = 'todo_seed_001'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("应能读取重新打开后的完成时间");
+        assert!(
+            reopened_completed_at.is_none(),
+            "重新打开 Todo 时应清空 completed_at"
+        );
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_expose_pending_jobs_command_boundary() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-jobs-command-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+
+        let result = commands::jobs::process_pending_jobs_payload(&db_path)
+            .expect("jobs command boundary 应能返回处理结果");
+
+        assert_eq!(result.message, "暂无待处理任务");
+        assert!(result.latest_session.is_some());
+        assert!(
+            !result.todos.is_empty(),
+            "jobs command 应返回 Todo 列表以刷新前端状态"
+        );
+        assert!(
+            !result.sessions.is_empty(),
+            "jobs command 应返回会话列表以刷新前端状态"
+        );
+        assert!(!result.runtime.runtime_label.trim().is_empty());
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_expose_flush_session_command_boundary() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-session-command-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        connection
+            .execute(
+                "UPDATE conversation_sessions SET created_at = datetime('now', '-20 seconds') WHERE trigger_reason = 'manual'",
+                [],
+            )
+            .expect("应能让示例手动会话离开冷却窗口");
+
+        let session = commands::session::flush_current_session_payload(&db_path)
+            .expect("session command boundary 应能手动刷新当前会话");
+
+        assert_eq!(session.trigger_reason, "manual");
+        assert_eq!(session.extraction_status, "success");
+        assert_eq!(session.extraction_provider_used, "skipped");
+        assert!(
+            session.merged_text.contains("手动刷新会话"),
+            "手动刷新应创建可见的占位会话"
+        );
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_expose_simulate_audio_slice_command_boundary() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-recording-command-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+
+        let result = commands::recording::simulate_audio_slice_payload(&db_path, true)
+            .expect("recording command boundary 应能写入模拟有效切片");
+
+        assert!(result.message.contains("有效录音切片"));
+        assert!(result.latest_session.is_none());
+        assert!(!result.runtime.runtime_label.trim().is_empty());
+
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let pending_transcription_jobs: i64 = connection
+            .query_row(
+                "SELECT COUNT(1) FROM processing_jobs WHERE job_type = 'transcription'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("应能读取转写任务数量");
+        assert_eq!(pending_transcription_jobs, 1);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_expose_stop_recording_command_boundary_when_idle() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-stop-recording-command-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        let recordings_dir = temp_dir.join("recordings");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        fs::create_dir_all(&recordings_dir).expect("应能创建测试录音目录");
+        let state = AppState {
+            db_path,
+            recordings_dir,
+            recorder: Arc::new(Mutex::new(None)),
+        };
+
+        let result = commands::recording::stop_recording_payload(&state)
+            .expect("recording command boundary 应能处理空闲停止录音");
+
+        assert_eq!(result.message, "当前没有进行中的录音");
+        assert!(result.latest_session.is_some());
+        assert!(!result.runtime.runtime_label.trim().is_empty());
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_expose_start_recording_command_boundary_when_already_recording() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v04-start-recording-command-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        let recordings_dir = temp_dir.join("recordings");
+        let (stop_tx, _stop_rx) = mpsc::channel::<RecorderControl>();
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        fs::create_dir_all(&recordings_dir).expect("应能创建测试录音目录");
+        let state = AppState {
+            db_path,
+            recordings_dir,
+            recorder: Arc::new(Mutex::new(Some(RecordingController {
+                stop_tx,
+                join_handle: thread::spawn(|| Err("测试占位录音线程不应被 join".into())),
+            }))),
+        };
+
+        let result = commands::recording::start_recording_payload(&state)
+            .expect("recording command boundary 应能处理重复开始录音");
+
+        assert_eq!(result.message, "录音已在进行中");
+        assert!(result.latest_session.is_some());
+        assert!(!result.runtime.runtime_label.trim().is_empty());
+        assert!(
+            state.recorder.lock().expect("应能读取录音状态").is_some(),
+            "重复开始录音不应清空已有 recorder"
+        );
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_expose_v04_provider_module_boundaries() {
+        let asr_descriptor = providers::asr::local_whisperkit::descriptor();
+        assert_eq!(asr_descriptor.id, "local_whisperkit");
+        assert_eq!(
+            asr_descriptor.capability,
+            domain::provider::ProviderCapability::Asr
+        );
+        assert_eq!(
+            asr_descriptor.locality,
+            domain::provider::ProviderLocality::Local
+        );
+        assert!(
+            asr_descriptor.privacy_boundary.contains("音频默认留在本机"),
+            "本地 ASR provider 必须声明本地隐私边界"
+        );
+        assert_eq!(
+            providers::asr::local_whisperkit::LocalWhisperKitProvider::default().provider_id(),
+            "local_whisperkit"
+        );
+
+        let speaker_descriptor = providers::speaker::local_speakerkit::descriptor();
+        assert_eq!(speaker_descriptor.id, "local_speakerkit");
+        assert_eq!(
+            speaker_descriptor.capability,
+            domain::provider::ProviderCapability::Speaker
+        );
+        assert_eq!(
+            providers::speaker::local_speakerkit::LocalSpeakerKitProvider::default().provider_id(),
+            "local_speakerkit"
+        );
+
+        let semantic_descriptor = providers::semantic::minimax_m3::descriptor();
+        assert_eq!(semantic_descriptor.id, "minimax_m3");
+        assert_eq!(
+            semantic_descriptor.capability,
+            domain::provider::ProviderCapability::Semantic
+        );
+        assert_eq!(
+            providers::semantic::minimax_m3::DEFAULT_MODEL_NAME,
+            DEFAULT_SEMANTIC_MODEL_NAME
+        );
+        assert_eq!(
+            providers::semantic::minimax_m3::MAX_CONTEXT_TOKENS,
+            1_000_000
+        );
+    }
+
+    #[test]
+    fn should_expose_v04_provider_catalog() {
+        let catalog = providers::provider_catalog();
+
+        for expected_provider in [
+            "local_whisperkit",
+            "local_speakerkit",
+            "minimax_m3",
+            "reserved",
+            "local_file",
+        ] {
+            assert!(
+                catalog
+                    .iter()
+                    .any(|provider| provider.id == expected_provider),
+                "provider catalog 应包含 {expected_provider}，实际为 {catalog:?}"
+            );
+        }
+
+        assert!(
+            catalog.iter().any(|provider| provider.capability
+                == domain::provider::ProviderCapability::Semantic
+                && provider.privacy_boundary.contains("云端语义理解")),
+            "MiniMax M3 语义 provider 必须声明云端隐私边界"
+        );
+    }
+
+    #[test]
+    fn should_expose_todo_domain_dto_contract() {
+        let todo = domain::todo::TodoDto {
+            id: "todo_domain_contract".into(),
+            title: "同步 v0.4 domain 边界".into(),
+            note: "Todo DTO 应从 lib.rs 迁入 domain::todo".into(),
+            status: "pending".into(),
+            created_at: "2026-06-13 12:00:00".into(),
+            conversation_session_id: "session_domain_contract".into(),
+            source_text: "请同步 v0.4 domain 边界".into(),
+        };
+
+        let payload = serde_json::to_value(&todo).expect("Todo domain DTO 应可序列化");
+
+        assert_eq!(payload["id"], "todo_domain_contract");
+        assert_eq!(payload["conversationSessionId"], "session_domain_contract");
+        assert!(payload.get("conversation_session_id").is_none());
+    }
+
+    #[test]
+    fn should_expose_session_domain_dto_contract() {
+        let session = domain::session::SessionDto {
+            id: "session_domain_contract".into(),
+            merged_text: "同步 v0.4 session domain 边界".into(),
+            started_at: "2026-06-14 09:00:00".into(),
+            ended_at: "2026-06-14 09:05:00".into(),
+            trigger_reason: "manual".into(),
+            extraction_status: "success".into(),
+            extraction_provider_used: "minimax_m3".into(),
+            extraction_fallback_used: false,
+            extraction_fallback_reason: "".into(),
+            transcript_count: 1,
+            related_todo_ids: vec!["todo_domain_contract".into()],
+        };
+
+        let payload = serde_json::to_value(&session).expect("Session domain DTO 应可序列化");
+
+        assert_eq!(payload["id"], "session_domain_contract");
+        assert_eq!(payload["relatedTodoIds"][0], "todo_domain_contract");
+        assert!(payload.get("related_todo_ids").is_none());
+    }
+
+    #[test]
+    fn should_expose_runtime_domain_dto_contract() {
+        let runtime = domain::runtime::RuntimeStatusDto {
+            runtime_label: "Tauri + SQLite".into(),
+            current_session_status: "collecting".into(),
+            last_slice_at: "2026-06-14 10:00:00".into(),
+            last_extraction_at: "2026-06-14 10:01:00".into(),
+            last_extraction_summary: "最近一次提取成功".into(),
+        };
+
+        let payload = serde_json::to_value(&runtime).expect("Runtime domain DTO 应可序列化");
+
+        assert_eq!(payload["runtimeLabel"], "Tauri + SQLite");
+        assert_eq!(payload["currentSessionStatus"], "collecting");
+        assert!(payload.get("runtime_label").is_none());
+    }
+
+    #[test]
+    fn should_expose_settings_domain_dto_contract() {
+        let settings = domain::settings::SettingsDto {
+            record_enabled: true,
+            language: "zh-CN".into(),
+            chunk_seconds: 30,
+            idle_trigger_seconds: 20,
+            provider_mode: "local".into(),
+            asr_provider_type: "local_whisperkit".into(),
+            speaker_provider_type: "local_speakerkit".into(),
+            todo_provider_type: "semantic_m3".into(),
+            semantic_provider_type: "minimax_m3".into(),
+            embedding_provider_type: "reserved".into(),
+            export_provider_type: "local_file".into(),
+            asr_submit_url: "https://asr.example.test/submit".into(),
+            asr_query_url: "https://asr.example.test/query".into(),
+            asr_resource_id: "resource-test".into(),
+            asr_model_name: "asr-test".into(),
+            asr_api_key_masked: "asr-key-****".into(),
+            semantic_base_url: "https://api.minimax.io/v1/responses".into(),
+            semantic_model_name: "MiniMax-M3".into(),
+            semantic_api_key_masked: "semantic-key-****".into(),
+            allow_cloud_fallback: false,
+        };
+
+        let payload = serde_json::to_value(&settings).expect("Settings domain DTO 应可序列化");
+
+        assert_eq!(payload["recordEnabled"], true);
+        assert_eq!(payload["semanticProviderType"], "minimax_m3");
+        assert_eq!(payload["semanticModelName"], "MiniMax-M3");
+        assert!(payload.get("record_enabled").is_none());
+    }
+
+    #[test]
+    fn should_expose_model_test_domain_dto_contract() {
+        let request = domain::model_test::ModelTestRequest {
+            provider: "todo".into(),
+            settings: domain::settings::SettingsDto {
+                record_enabled: false,
+                language: "zh-CN".into(),
+                chunk_seconds: 30,
+                idle_trigger_seconds: 20,
+                provider_mode: "local".into(),
+                asr_provider_type: "local_whisperkit".into(),
+                speaker_provider_type: "local_speakerkit".into(),
+                todo_provider_type: "semantic_m3".into(),
+                semantic_provider_type: "minimax_m3".into(),
+                embedding_provider_type: "reserved".into(),
+                export_provider_type: "local_file".into(),
+                asr_submit_url: "".into(),
+                asr_query_url: "".into(),
+                asr_resource_id: "".into(),
+                asr_model_name: "".into(),
+                asr_api_key_masked: "".into(),
+                semantic_base_url: "https://api.minimax.io/v1/responses".into(),
+                semantic_model_name: "MiniMax-M3".into(),
+                semantic_api_key_masked: "".into(),
+                allow_cloud_fallback: false,
+            },
+        };
+        let result = domain::model_test::ModelTestResult {
+            provider: "todo".into(),
+            success: true,
+            status_code: 0,
+            message: "MiniMax M3 语义 Todo 边界已登记".into(),
+            response_excerpt: "semantic_artifacts(type='todo_extraction')".into(),
+        };
+
+        let request_payload =
+            serde_json::to_value(&request).expect("ModelTest request DTO 应可序列化");
+        let result_payload =
+            serde_json::to_value(&result).expect("ModelTest result DTO 应可序列化");
+
+        assert_eq!(request_payload["provider"], "todo");
+        assert_eq!(
+            request_payload["settings"]["semanticProviderType"],
+            "minimax_m3"
+        );
+        assert_eq!(result_payload["statusCode"], 0);
+        assert!(result_payload.get("status_code").is_none());
+    }
+
+    #[test]
+    fn should_expose_desktop_context_domain_dto_contract() {
+        let context = domain::desktop::DesktopContext {
+            runtime: "tauri".into(),
+            platform: "macos".into(),
+            recorder_status: "录音已停止，可启动真实麦克风录音".into(),
+            storage_status: "SQLite 已接入".into(),
+            models_status: "Todo 语义入口已固定为 MiniMax M3".into(),
+        };
+
+        let payload = serde_json::to_value(&context).expect("DesktopContext domain DTO 应可序列化");
+
+        assert_eq!(payload["runtime"], "tauri");
+        assert_eq!(
+            payload["recorderStatus"],
+            "录音已停止，可启动真实麦克风录音"
+        );
+        assert!(payload.get("recorder_status").is_none());
+    }
+
+    #[test]
+    fn should_expose_bootstrap_domain_dto_contract() {
+        let bootstrap = domain::bootstrap::BootstrapData {
+            settings: domain::settings::SettingsDto {
+                record_enabled: false,
+                language: "zh-CN".into(),
+                chunk_seconds: 30,
+                idle_trigger_seconds: 20,
+                provider_mode: "local".into(),
+                asr_provider_type: "local_whisperkit".into(),
+                speaker_provider_type: "local_speakerkit".into(),
+                todo_provider_type: "semantic_m3".into(),
+                semantic_provider_type: "minimax_m3".into(),
+                embedding_provider_type: "reserved".into(),
+                export_provider_type: "local_file".into(),
+                asr_submit_url: "".into(),
+                asr_query_url: "".into(),
+                asr_resource_id: "".into(),
+                asr_model_name: "".into(),
+                asr_api_key_masked: "".into(),
+                semantic_base_url: "https://api.minimax.io/v1/responses".into(),
+                semantic_model_name: "MiniMax-M3".into(),
+                semantic_api_key_masked: "".into(),
+                allow_cloud_fallback: false,
+            },
+            todos: Vec::new(),
+            sessions: Vec::new(),
+            runtime: domain::runtime::RuntimeStatusDto {
+                runtime_label: "已暂停".into(),
+                current_session_status: "idle_waiting".into(),
+                last_slice_at: "暂无切片".into(),
+                last_extraction_at: "暂无".into(),
+                last_extraction_summary: "暂无会话提取记录".into(),
+            },
+        };
+
+        let payload = serde_json::to_value(&bootstrap).expect("Bootstrap domain DTO 应可序列化");
+
+        assert_eq!(payload["settings"]["semanticProviderType"], "minimax_m3");
+        assert!(payload["todos"]
+            .as_array()
+            .expect("todos 应为数组")
+            .is_empty());
+        assert_eq!(payload["runtime"]["runtimeLabel"], "已暂停");
+        assert!(payload.get("runtime_label").is_none());
+    }
+
+    #[test]
+    fn should_expose_recording_action_domain_dto_contract() {
+        let result = domain::recording::RecordingActionResult {
+            message: "录音已在进行中".into(),
+            runtime: domain::runtime::RuntimeStatusDto {
+                runtime_label: "录音中".into(),
+                current_session_status: "collecting".into(),
+                last_slice_at: "暂无切片".into(),
+                last_extraction_at: "暂无".into(),
+                last_extraction_summary: "暂无会话提取记录".into(),
+            },
+            latest_session: None,
+        };
+
+        let payload =
+            serde_json::to_value(&result).expect("RecordingActionResult domain DTO 应可序列化");
+
+        assert_eq!(payload["message"], "录音已在进行中");
+        assert_eq!(payload["runtime"]["runtimeLabel"], "录音中");
+        assert!(payload["latestSession"].is_null());
+        assert!(payload.get("latest_session").is_none());
+    }
+
+    #[test]
+    fn should_expose_processing_action_domain_dto_contract() {
+        let result = domain::processing::ProcessingActionResult {
+            message: "暂无待处理任务".into(),
+            runtime: domain::runtime::RuntimeStatusDto {
+                runtime_label: "已暂停".into(),
+                current_session_status: "idle_waiting".into(),
+                last_slice_at: "暂无切片".into(),
+                last_extraction_at: "暂无".into(),
+                last_extraction_summary: "暂无会话提取记录".into(),
+            },
+            latest_session: None,
+            todos: Vec::new(),
+            sessions: Vec::new(),
+        };
+
+        let payload =
+            serde_json::to_value(&result).expect("ProcessingActionResult domain DTO 应可序列化");
+
+        assert_eq!(payload["message"], "暂无待处理任务");
+        assert_eq!(payload["runtime"]["runtimeLabel"], "已暂停");
+        assert!(payload["latestSession"].is_null());
+        assert!(payload["todos"]
+            .as_array()
+            .expect("todos 应为数组")
+            .is_empty());
+        assert!(payload.get("latest_session").is_none());
+    }
+
+    #[test]
+    fn should_expose_transcript_domain_record_contract() {
+        let transcript = domain::transcript::TranscriptRecord {
+            id: "transcript_domain_contract".into(),
+            text: "请把转写记录移动到 domain::transcript".into(),
+            trace_id: "trace_transcript_domain_contract".into(),
+        };
+
+        assert_eq!(transcript.id, "transcript_domain_contract");
+        assert_eq!(transcript.trace_id, "trace_transcript_domain_contract");
+        assert!(
+            format!("{transcript:?}").contains("transcript_domain_contract"),
+            "TranscriptRecord 应保留 Debug 能力，便于测试和诊断"
+        );
+    }
+
+    fn table_columns(connection: &Connection, table_name: &str) -> Vec<String> {
+        let mut statement = connection
+            .prepare(&format!("PRAGMA table_info({table_name})"))
+            .expect("应能读取表结构");
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("应能查询表字段");
+
+        rows.collect::<Result<Vec<_>, _>>()
+            .expect("应能读取字段列表")
     }
 }
