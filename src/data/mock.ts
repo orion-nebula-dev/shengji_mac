@@ -27,7 +27,7 @@ export const defaultSettings: SettingsState = {
   asrResourceId: "volc.seedasr.auc",
   asrModelName: "bigmodel",
   asrApiKeyMasked: "sk-asr-****",
-  semanticBaseUrl: "https://api.minimax.io/v1/responses",
+  semanticBaseUrl: "https://api.minimaxi.com/v1/chat/completions",
   semanticModelName: "MiniMax-M3",
   semanticApiKeyMasked: "sk-m3-****",
   allowCloudFallback: true,

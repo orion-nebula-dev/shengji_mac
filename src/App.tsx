@@ -40,6 +40,7 @@ import {
 } from "./lib/desktop";
 import { defaultExportBundle, defaultSemanticWorkbench, defaultTodoCandidates, defaultTranscriptReview } from "./data/mock";
 import { getDefaultState, loadState, saveState } from "./lib/storage";
+import appIconUrl from "../src-tauri/icons/128x128.png";
 import type {
   CorrectionPattern,
   DeepResearchDraft,
@@ -70,6 +71,34 @@ type TabKey =
   | "history"
   | "system"
   | "settings";
+
+type OverviewPanelKey = "transcript" | "summary" | "todo" | "privacy";
+
+const tabKeys: TabKey[] = [
+  "overview",
+  "actions",
+  "transcript",
+  "semantic",
+  "research",
+  "mindmap",
+  "export",
+  "history",
+  "system",
+  "settings",
+];
+
+function getHashTab(): TabKey | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const hashTab = window.location.hash.replace(/^#\/?/, "");
+  return tabKeys.includes(hashTab as TabKey) ? (hashTab as TabKey) : null;
+}
+
+function getInitialTab(): TabKey {
+  return getHashTab() ?? "overview";
+}
 
 const statusLabelMap = {
   open: "待处理",
@@ -118,6 +147,14 @@ const transcriptJobStatusLabelMap = {
   failed: "失败可重试",
   retrying: "重试中",
 } as const;
+
+const appVersionLabel = "v1.1.1";
+const overviewPanelLabelMap: Record<OverviewPanelKey, string> = {
+  transcript: "转写",
+  summary: "摘要",
+  todo: "Todo",
+  privacy: "隐私边界",
+};
 
 function formatDuration(ms: number) {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
@@ -288,7 +325,8 @@ function App() {
   const manualFlushCooldownMs = 10_000;
   const initialState = useMemo(() => loadState(), []);
   const fallbackState = useMemo(() => getDefaultState(), []);
-  const [activeTab, setActiveTab] = useState<TabKey>("overview");
+  const [activeTab, setActiveTab] = useState<TabKey>(() => getInitialTab());
+  const [overviewPanel, setOverviewPanel] = useState<OverviewPanelKey>("transcript");
   const [settings, setSettings] = useState<SettingsState>(initialState.settings);
   const [todos, setTodos] = useState<TodoItem[]>(initialState.todos);
   const [sessions, setSessions] = useState<SessionItem[]>(initialState.sessions);
@@ -343,6 +381,27 @@ function App() {
   useEffect(() => {
     saveState({ settings, todos, sessions, runtime });
   }, [runtime, sessions, settings, todos]);
+
+  useEffect(() => {
+    const nextHash = `#${activeTab}`;
+
+    if (window.location.hash !== nextHash) {
+      window.history.replaceState(null, "", nextHash);
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
+    const handleHashChange = () => {
+      const hashTab = getHashTab();
+
+      if (hashTab) {
+        setActiveTab(hashTab);
+      }
+    };
+
+    window.addEventListener("hashchange", handleHashChange);
+    return () => window.removeEventListener("hashchange", handleHashChange);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -520,11 +579,14 @@ function App() {
   async function saveSettings() {
     const persisted = await saveDesktopSettings(settings).catch(() => null);
 
-    if (persisted) {
-      setSettings(persisted);
+    if (!persisted) {
+      setSaveBanner("设置未保存：桌面端持久化不可用，请在已安装应用中重试。");
+      window.setTimeout(() => setSaveBanner(""), 3600);
+      return;
     }
 
-    setSaveBanner("设置已保存，下一轮切片与提取将使用新配置。");
+    setSettings(persisted);
+    setSaveBanner("设置已保存，下一轮录音、转写与语义处理将使用新配置。");
     window.setTimeout(() => setSaveBanner(""), 2400);
   }
 
@@ -598,7 +660,7 @@ function App() {
     }
 
     setTodoCandidates(candidates ?? defaultTodoCandidates);
-    setSaveBanner("已同步 v0.6 待办候选。");
+    setSaveBanner("已同步待办候选。");
     window.setTimeout(() => setSaveBanner(""), 2400);
   }
 
@@ -763,7 +825,7 @@ function App() {
 
   async function handleImportAudio() {
     if (!audioImportPath.trim()) {
-      setSaveBanner("请输入本地音频文件路径，用于 v0.5 离线评估。");
+      setSaveBanner("请输入本地音频文件路径，用于离线转写评估。");
       window.setTimeout(() => setSaveBanner(""), 2600);
       return;
     }
@@ -890,7 +952,7 @@ function App() {
 
     if (!generated) {
       setSemanticWorkbench(defaultSemanticWorkbench);
-      setSaveBanner("浏览器原型模式已载入 v0.6 语义纪要样例。桌面端会写入 semantic_artifacts。");
+      setSaveBanner("浏览器原型模式已载入语义纪要样例。桌面端会写入 semantic_artifacts。");
       window.setTimeout(() => setSaveBanner(""), 3600);
       return;
     }
@@ -1022,7 +1084,7 @@ function App() {
 
     if (artifact) {
       applyMindMapArtifact(artifact);
-      setSaveBanner("已生成 v0.8 思维脑图。");
+      setSaveBanner("已生成思维脑图。");
       window.setTimeout(() => setSaveBanner(""), 2800);
       return;
     }
@@ -1036,7 +1098,7 @@ function App() {
       };
       const localArtifact = createLocalMindMapArtifact(semanticWorkbench, nextMindMap, false);
       applyMindMapArtifact(localArtifact);
-      setSaveBanner("浏览器原型模式已生成 v0.8 脑图样例。");
+      setSaveBanner("浏览器原型模式已生成脑图样例。");
       window.setTimeout(() => setSaveBanner(""), 2800);
     }
   }
@@ -1171,7 +1233,7 @@ function App() {
     if (!isTauriEnvironment()) {
       setExportBundle(defaultExportBundle);
       setSelectedExportFormat(defaultExportBundle.items[0]?.format ?? "markdown");
-      setSaveBanner("浏览器原型模式已载入 v1.0 导出包样例。");
+      setSaveBanner("浏览器原型模式已载入导出包样例。");
       window.setTimeout(() => setSaveBanner(""), 3200);
     }
   }
@@ -1352,7 +1414,7 @@ function App() {
           ],
         }));
       }
-      setSaveBanner("已生成 v0.9 Moment 与研究草稿。");
+      setSaveBanner("已生成 Moment 与研究草稿。");
       window.setTimeout(() => setSaveBanner(""), 3000);
       return;
     }
@@ -1360,7 +1422,7 @@ function App() {
     if (!isTauriEnvironment()) {
       setSemanticWorkbench(defaultSemanticWorkbench);
       setSelectedResearchId(defaultSemanticWorkbench.deepResearch[0]?.id ?? "");
-      setSaveBanner("浏览器原型模式已载入 v0.9 价值发现样例。");
+      setSaveBanner("浏览器原型模式已载入价值发现样例。");
       window.setTimeout(() => setSaveBanner(""), 3000);
     }
   }
@@ -1598,6 +1660,28 @@ function App() {
     { key: "system", label: "系统状态", description: "排障与运行时" },
     { key: "settings", label: "设置", description: "模型与录音" },
   ];
+  const activeNavItem = navItems.find((item) => item.key === activeTab) ?? navItems[0];
+  const overviewPanelItems: Array<{ key: OverviewPanelKey; label: string; description: string }> = [
+    { key: "transcript", label: "转写", description: "时间轴与片段" },
+    { key: "summary", label: "摘要", description: "纪要与产物" },
+    { key: "todo", label: "Todo", description: "候选与执行" },
+    { key: "privacy", label: "隐私边界", description: "本地与云端" },
+  ];
+  const selectedTranscriptSegment =
+    transcriptReview.segments.find((segment) => segment.id === selectedTranscriptSegmentId) ??
+    transcriptReview.segments[0];
+  const selectedRevision =
+    semanticWorkbench.revisions.find(
+      (revision) => revision.sourceSegmentId === selectedTranscriptSegment?.id,
+    ) ?? semanticWorkbench.revisions[0];
+  const latestArtifact = semanticWorkbench.artifacts[0];
+  const latestModelInvocation = semanticWorkbench.modelInvocations[0];
+  const titlebarLocation =
+    activeTab === "overview"
+      ? `${activeNavItem.label} / ${overviewPanelLabelMap[overviewPanel]}`
+      : activeNavItem.label;
+  const titlebarContext =
+    activeTab === "overview" ? transcriptReview.audio.fileName : activeNavItem.description;
 
   return (
     <div className="desktop-shell">
@@ -1609,14 +1693,27 @@ function App() {
             <span className="traffic-dot traffic-maximize" />
           </div>
           <div className="window-title">
-            <strong>声记</strong>
-            <span>语音知识与行动工作台</span>
+            <div className="titlebar-location">
+              <strong>{titlebarLocation}</strong>
+              <span>{titlebarContext}</span>
+            </div>
           </div>
           <div className="titlebar-actions">
-            <button className="icon-button" type="button" onClick={() => setActiveTab("history")}>
+            <button
+              className="toolbar-button toolbar-button-primary"
+              type="button"
+              title="开始录音"
+              onClick={() => handleRecordingAction("start")}
+            >
+              录音
+            </button>
+            <button className="toolbar-button" type="button" title="搜索会话" onClick={() => setActiveTab("history")}>
               搜索
             </button>
-            <button className="icon-button" type="button" onClick={() => setActiveTab("settings")}>
+            <button className="toolbar-button" type="button" title="打开转写评估" onClick={() => setActiveTab("transcript")}>
+              评估
+            </button>
+            <button className="toolbar-button" type="button" title="打开设置" onClick={() => setActiveTab("settings")}>
               设置
             </button>
           </div>
@@ -1625,8 +1722,16 @@ function App() {
         <div className="window-body">
           <aside className="sidebar">
             <div className="brand-block">
-              <p className="section-kicker">ShengJi</p>
-              <h1>今日工作流</h1>
+              <div className="brand-mark-row">
+                <img className="brand-mark" src={appIconUrl} alt="" aria-hidden="true" />
+                <div>
+                  <p className="section-kicker">ShengJi</p>
+                  <h1>声记</h1>
+                </div>
+              </div>
+              <button className="primary-button sidebar-primary-action" type="button" onClick={() => handleRecordingAction("start")}>
+                新建记录
+              </button>
               <span className={`status-chip ${settings.recordEnabled ? "chip-live" : ""}`}>
                 {runtime.runtimeLabel}
               </span>
@@ -1645,156 +1750,527 @@ function App() {
                 </button>
               ))}
             </nav>
-
-            <section className="sidebar-card">
-              <p className="section-kicker">运行摘要</p>
-              <ul className="compact-list">
-                <li>
-                  <span>会话状态</span>
-                  <strong>{sessionStatusLabelMap[runtime.currentSessionStatus]}</strong>
-                </li>
-                <li>
-                  <span>语义入口</span>
-                  <strong>MiniMax M3</strong>
-                </li>
-                <li>
-                  <span>失败任务</span>
-                  <strong>{failedSessionCount}</strong>
-                </li>
-                <li>
-                  <span>待确认候选</span>
-                  <strong>{proposedCandidateCount}</strong>
-                </li>
-              </ul>
-            </section>
           </aside>
 
           <section className="content-area">
             {saveBanner ? <div className="system-banner">{saveBanner}</div> : null}
 
             {activeTab === "overview" ? (
-              <main className="page-stack">
-                <div className="page-heading">
+              <main className="record-workbench">
+                <header className="record-header">
                   <div>
-                    <p className="section-kicker">Now / Today</p>
-                    <h2>录音状态与今日概览</h2>
+                    <p className="section-kicker">Record Workbench</p>
+                    <h2>{transcriptReview.audio.fileName}</h2>
+                    <div className="record-meta">
+                      <span>今天 10:30</span>
+                      <span>{formatDuration(transcriptReview.audio.durationMs)}</span>
+                      <span>{semanticWorkbench.recordingType.label}</span>
+                    </div>
                   </div>
                   <div className="heading-actions">
-                    <button
-                      className="primary-button"
-                      type="button"
-                      onClick={() => handleRecordingAction("start")}
-                    >
-                      启动录音
+                    <button className="secondary-button" type="button" onClick={() => setActiveTab("export")}>
+                      分享
                     </button>
-                    <button
-                      className="secondary-button"
-                      type="button"
-                      onClick={() => handleRecordingAction("stop")}
-                    >
-                      停止录音
+                    <button className="secondary-button" type="button" onClick={() => setActiveTab("export")}>
+                      导出
+                    </button>
+                    <button className="secondary-button" type="button" onClick={() => setActiveTab("history")}>
+                      搜索
+                    </button>
+                    <button className="primary-button" type="button" onClick={() => handleRecordingAction("start")}>
+                      新建记录
                     </button>
                   </div>
-                </div>
+                </header>
 
-                <section className="metrics-grid">
-                  <article className="metric-card">
-                    <span>待办</span>
-                    <strong>{pendingTodoCount}</strong>
-                    <p>等待处理的行动项</p>
-                  </article>
-                  <article className="metric-card">
-                    <span>已完成</span>
-                    <strong>{completedTodoCount}</strong>
-                    <p>已标记完成的 Todo</p>
-                  </article>
-                  <article className="metric-card">
-                    <span>最近切片</span>
-                    <strong>{runtime.lastSliceAt}</strong>
-                    <p>录音切片与会话聚合入口</p>
-                  </article>
-                  <article className="metric-card">
-                    <span>最近提取</span>
-                    <strong>{runtime.lastExtractionAt}</strong>
-                    <p>{runtime.lastExtractionSummary}</p>
-                  </article>
-                </section>
+                <nav className="record-tabs" aria-label="今日工作台分段">
+                  {overviewPanelItems.map((panel) => (
+                    <button
+                      key={panel.key}
+                      className={overviewPanel === panel.key ? "record-tab-active" : ""}
+                      type="button"
+                      onClick={() => setOverviewPanel(panel.key)}
+                    >
+                      <span>{panel.label}</span>
+                      <small>{panel.description}</small>
+                    </button>
+                  ))}
+                </nav>
 
-                <section className="overview-grid">
-                  <article className="panel-lite recording-panel">
-                    <div className="panel-head">
-                      <div>
-                        <p className="section-kicker">Recording</p>
-                        <h3>录音控制</h3>
-                      </div>
-                      <span className="status-chip chip-live">
-                        {sessionStatusLabelMap[runtime.currentSessionStatus]}
-                      </span>
-                    </div>
-                    <div className="control-grid">
-                      <button className="secondary-button" type="button" onClick={() => handleRecordingAction("effective")}>
-                        模拟有效切片
-                      </button>
-                      <button className="secondary-button" type="button" onClick={() => handleRecordingAction("silent")}>
-                        模拟静默切片
-                      </button>
-                      <button className="secondary-button" type="button" onClick={handleProcessPendingJobs}>
-                        处理待办任务
-                      </button>
-                      <button className="secondary-button" type="button" onClick={handleFlushSession}>
-                        手动刷新会话
-                      </button>
-                    </div>
-                  </article>
-
-                  <article className="panel-lite">
-                    <div className="panel-head">
-                      <div>
-                        <p className="section-kicker">Latest Session</p>
-                        <h3>上一段会话</h3>
-                      </div>
-                      <button className="text-button" type="button" onClick={() => setActiveTab("history")}>
-                        查看日志
-                      </button>
-                    </div>
-                    {latestSession ? (
-                      <div className="session-preview">
-                        <p>{latestSession.mergedText}</p>
-                        <div className="todo-meta">
-                          <span>{latestSession.startedAt}</span>
-                          <span>{extractionStatusLabelMap[latestSession.extractionStatus]}</span>
-                          <span>{latestSession.extractionProviderUsed}</span>
+                <section className={`record-layout record-layout-${overviewPanel}`}>
+                  {overviewPanel === "transcript" ? (
+                    <>
+                      <section className="transcript-card overview-main-panel">
+                        <div className="audio-strip">
+                          <button className="round-play-button" type="button" onClick={() => handleRecordingAction("start")}>
+                            播放
+                          </button>
+                          <div className="waveform" aria-hidden="true">
+                            {Array.from({ length: 46 }).map((_, index) => (
+                              <span key={index} style={{ height: `${10 + ((index * 7) % 24)}px` }} />
+                            ))}
+                          </div>
+                          <select name="overviewPlaybackSpeed" value="1x" aria-label="播放速度" onChange={() => undefined}>
+                            <option value="1x">1x</option>
+                          </select>
                         </div>
-                      </div>
-                    ) : (
-                      <div className="empty-state">暂无会话文稿</div>
-                    )}
-                  </article>
+
+                        <div className="transcript-feed">
+                          {transcriptReview.segments.slice(0, 6).map((segment) => (
+                            <article
+                              key={segment.id}
+                              className={`transcript-feed-row ${
+                                selectedTranscriptSegmentId === segment.id ? "transcript-feed-row-active" : ""
+                              }`}
+                            >
+                              <button
+                                className="feed-time"
+                                type="button"
+                                onClick={() => jumpToTranscriptSegment(segment.id, segment.startMs)}
+                              >
+                                {formatDuration(segment.startMs)}
+                              </button>
+                              <div className="speaker-avatar">{segment.speakerLabel.slice(-1)}</div>
+                              <button
+                                className="transcript-feed-copy"
+                                type="button"
+                                onClick={() => jumpToTranscriptSegment(segment.id, segment.startMs)}
+                              >
+                                <strong>{segment.speakerLabel}</strong>
+                                <p>{segment.text}</p>
+                              </button>
+                            </article>
+                          ))}
+                          {transcriptReview.segments.length === 0 ? (
+                            <div className="empty-state">暂无转写片段，请先导入或开始录音。</div>
+                          ) : null}
+                        </div>
+                      </section>
+
+                      <aside className="overview-detail-panel">
+                        <section className="panel-lite overview-timeline-detail">
+                          <div className="panel-head">
+                            <div>
+                              <p className="section-kicker">Selected Segment</p>
+                              <h3>
+                                {selectedTranscriptSegment
+                                  ? `${formatDuration(selectedTranscriptSegment.startMs)} - ${formatDuration(selectedTranscriptSegment.endMs)}`
+                                  : "暂无片段"}
+                              </h3>
+                            </div>
+                            {selectedTranscriptSegment ? (
+                              <span
+                                className={`badge ${
+                                  selectedTranscriptSegment.reviewStatus === "flagged"
+                                    ? "badge-failed"
+                                    : "badge-completed"
+                                }`}
+                              >
+                                {selectedTranscriptSegment.reviewStatus === "flagged" ? "需复核" : "正常"}
+                              </span>
+                            ) : null}
+                          </div>
+                          {selectedTranscriptSegment ? (
+                            <>
+                              <p>{selectedTranscriptSegment.text}</p>
+                              <ul className="compact-list">
+                                <li><span>说话人</span><strong>{selectedTranscriptSegment.speakerLabel}</strong></li>
+                                <li><span>置信度</span><strong>{(selectedTranscriptSegment.confidence * 100).toFixed(0)}%</strong></li>
+                                <li><span>Provider</span><strong>{selectedTranscriptSegment.provider}</strong></li>
+                                <li><span>来源 ID</span><strong>{selectedTranscriptSegment.id}</strong></li>
+                              </ul>
+                              <div className="row-actions">
+                                <button
+                                  className="secondary-button"
+                                  type="button"
+                                  onClick={() => handleMarkTranscriptSegment(selectedTranscriptSegment.id)}
+                                >
+                                  标注复核
+                                </button>
+                                <button className="secondary-button" type="button" onClick={() => setActiveTab("transcript")}>
+                                  打开评估
+                                </button>
+                              </div>
+                            </>
+                          ) : (
+                            <div className="empty-state">请选择一个转写片段。</div>
+                          )}
+                        </section>
+
+                        <section className="panel-lite overview-timeline-detail">
+                          <div className="panel-head">
+                            <div>
+                              <p className="section-kicker">Revision</p>
+                              <h3>修正入口</h3>
+                            </div>
+                            <button className="secondary-button" type="button" onClick={() => setOverviewPanel("summary")}>
+                              查看摘要
+                            </button>
+                          </div>
+                          {selectedRevision ? (
+                            <>
+                              <p>{selectedRevision.reasonSummary}</p>
+                              <div className="revision-compare overview-revision-compare">
+                                <div>
+                                  <span>原文</span>
+                                  <p>{selectedRevision.originalText}</p>
+                                </div>
+                                <div>
+                                  <span>修正文稿</span>
+                                  <p>{selectedRevision.revisedText}</p>
+                                </div>
+                              </div>
+                            </>
+                          ) : (
+                            <div className="empty-state">暂无修正文稿。</div>
+                          )}
+                        </section>
+                      </aside>
+                    </>
+                  ) : null}
+
+                  {overviewPanel === "summary" ? (
+                    <>
+                      <section className="panel-lite overview-main-panel">
+                        <div className="panel-head">
+                          <div>
+                            <p className="section-kicker">Summary</p>
+                            <h3>{semanticWorkbench.summary.title}</h3>
+                          </div>
+                          <button
+                            className="primary-button"
+                            type="button"
+                            onClick={handleGenerateSemanticWorkbench}
+                            disabled={semanticLoading}
+                          >
+                            {semanticLoading ? "生成中" : "重新生成"}
+                          </button>
+                        </div>
+                        <p className="runtime-message">{semanticWorkbench.summary.basis}</p>
+                        <ul className="semantic-list">
+                          {semanticWorkbench.summary.bullets.map((item) => (
+                            <li key={item}>{item}</li>
+                          ))}
+                        </ul>
+                        <div className="overview-section-grid">
+                          <section>
+                            <strong>决策</strong>
+                            {semanticWorkbench.meetingMinutes.decisions.map((item) => (
+                              <p key={item}>{item}</p>
+                            ))}
+                          </section>
+                          <section>
+                            <strong>风险</strong>
+                            {semanticWorkbench.meetingMinutes.risks.map((item) => (
+                              <p key={item}>{item}</p>
+                            ))}
+                          </section>
+                          <section>
+                            <strong>待确认问题</strong>
+                            {semanticWorkbench.meetingMinutes.openQuestions.map((item) => (
+                              <p key={item}>{item}</p>
+                            ))}
+                          </section>
+                        </div>
+                      </section>
+
+                      <aside className="overview-detail-panel">
+                        <section className="panel-lite">
+                          <div className="panel-head">
+                            <div>
+                              <p className="section-kicker">Artifacts</p>
+                              <h3>产物状态</h3>
+                            </div>
+                            <button className="secondary-button" type="button" onClick={() => setActiveTab("semantic")}>
+                              打开纪要
+                            </button>
+                          </div>
+                          <div className="artifact-list">
+                            {semanticWorkbench.artifacts.slice(0, 5).map((artifact) => (
+                              <article key={artifact.id} className="artifact-row">
+                                <div>
+                                  <strong>{artifact.artifactType}</strong>
+                                  <span>{artifact.modelName} · {artifact.schemaVersion}</span>
+                                </div>
+                                <span
+                                  className={`badge ${
+                                    artifact.status === "failed"
+                                      ? "badge-failed"
+                                      : artifact.status === "succeeded"
+                                        ? "badge-completed"
+                                        : "badge-waiting"
+                                  }`}
+                                >
+                                  {artifact.status}
+                                </span>
+                              </article>
+                            ))}
+                          </div>
+                        </section>
+
+                        <section className="panel-lite">
+                          <div className="panel-head">
+                            <div>
+                              <p className="section-kicker">Latest Call</p>
+                              <h3>{latestModelInvocation?.modelName ?? "暂无调用"}</h3>
+                            </div>
+                            {latestArtifact ? <span className="status-chip">{latestArtifact.provider}</span> : null}
+                          </div>
+                          {latestModelInvocation ? (
+                            <>
+                              <p className="runtime-message">{latestModelInvocation.requestSummary}</p>
+                              <p className="runtime-message">
+                                {latestModelInvocation.responseSummary || latestModelInvocation.errorMessage}
+                              </p>
+                            </>
+                          ) : (
+                            <div className="empty-state">暂无模型调用记录。</div>
+                          )}
+                        </section>
+                      </aside>
+                    </>
+                  ) : null}
+
+                  {overviewPanel === "todo" ? (
+                    <>
+                      <section className="panel-lite overview-main-panel">
+                        <div className="panel-head">
+                          <div>
+                            <p className="section-kicker">Todo Candidates</p>
+                            <h3>{proposedCandidateCount} 条待确认候选</h3>
+                          </div>
+                          <button className="secondary-button" type="button" onClick={handleSyncTodoCandidates}>
+                            同步候选
+                          </button>
+                        </div>
+                        <div className="overview-todo-list">
+                          {todoCandidates.map((candidate) => (
+                            <article key={candidate.id} className="candidate-row">
+                              <div>
+                                <div className="todo-card-header">
+                                  <h3>{candidate.title}</h3>
+                                  <span
+                                    className={`badge ${
+                                      candidate.status === "proposed"
+                                        ? "badge-pending"
+                                        : candidate.status === "accepted"
+                                          ? "badge-completed"
+                                          : "badge-waiting"
+                                    }`}
+                                  >
+                                    {candidate.status === "proposed"
+                                      ? "待确认"
+                                      : candidate.status === "accepted"
+                                        ? "已接受"
+                                        : "已忽略"}
+                                  </span>
+                                </div>
+                                <p>{candidate.detail}</p>
+                                <div className="todo-meta">
+                                  <span>{candidate.owner || "未分配"}</span>
+                                  <span>{candidate.dueAt || "无截止时间"}</span>
+                                  <span>优先级 {priorityLabelMap[candidate.priority]}</span>
+                                  <span>来源 {candidate.sourceSpanRefs.join("、") || "暂无来源"}</span>
+                                </div>
+                              </div>
+                              {candidate.status === "proposed" ? (
+                                <div className="row-actions">
+                                  <button className="primary-button" type="button" onClick={() => handleAcceptTodoCandidate(candidate)}>
+                                    接受
+                                  </button>
+                                  <button className="secondary-button" type="button" onClick={() => handleDismissTodoCandidate(candidate.id)}>
+                                    忽略
+                                  </button>
+                                </div>
+                              ) : null}
+                            </article>
+                          ))}
+                          {todoCandidates.length === 0 ? (
+                            <div className="empty-state">暂无待确认候选，请先生成语义纪要。</div>
+                          ) : null}
+                        </div>
+                      </section>
+
+                      <aside className="overview-detail-panel">
+                        <section className="panel-lite">
+                          <div className="panel-head">
+                            <div>
+                              <p className="section-kicker">Current Todo</p>
+                              <h3>{selectedTodo?.title ?? "暂无 Todo"}</h3>
+                            </div>
+                            <button className="secondary-button" type="button" onClick={() => setActiveTab("actions")}>
+                              打开行动中心
+                            </button>
+                          </div>
+                          {selectedTodo ? (
+                            <>
+                              <p className="runtime-message">{selectedTodo.note}</p>
+                              <ul className="compact-list">
+                                <li><span>状态</span><strong>{statusLabelMap[selectedTodo.status]}</strong></li>
+                                <li><span>负责人</span><strong>{selectedTodo.owner || "未分配"}</strong></li>
+                                <li><span>截止时间</span><strong>{selectedTodo.dueAt || "未设置"}</strong></li>
+                                <li><span>优先级</span><strong>{priorityLabelMap[selectedTodo.priority]}</strong></li>
+                              </ul>
+                              <div className="row-actions">
+                                <button className="secondary-button" type="button" onClick={() => handleTodoStatusChange(selectedTodo.id, "in_progress")}>
+                                  进行中
+                                </button>
+                                <button className="primary-button" type="button" onClick={() => toggleTodoStatus(selectedTodo.id)}>
+                                  {selectedTodo.status === "done" ? "重新打开" : "完成"}
+                                </button>
+                              </div>
+                            </>
+                          ) : (
+                            <div className="empty-state">暂无 Todo 数据。</div>
+                          )}
+                        </section>
+
+                        <section className="panel-lite">
+                          <div className="panel-head">
+                            <div>
+                              <p className="section-kicker">Execution</p>
+                              <h3>执行摘要</h3>
+                            </div>
+                          </div>
+                          <div className="overview-mini-grid">
+                            <div><span>待处理</span><strong>{pendingTodoCount}</strong></div>
+                            <div><span>已完成</span><strong>{completedTodoCount}</strong></div>
+                            <div><span>候选</span><strong>{proposedCandidateCount}</strong></div>
+                            <div><span>失败</span><strong>{failedSessionCount}</strong></div>
+                          </div>
+                        </section>
+                      </aside>
+                    </>
+                  ) : null}
+
+                  {overviewPanel === "privacy" ? (
+                    <>
+                      <section className="panel-lite overview-main-panel">
+                        <div className="panel-head">
+                          <div>
+                            <p className="section-kicker">Privacy Boundary</p>
+                            <h3>本地优先，云端只处理转写后文本</h3>
+                          </div>
+                          <span className="status-chip chip-live">边界清晰</span>
+                        </div>
+                        <div className="overview-privacy-grid">
+                          <section>
+                            <strong>本地</strong>
+                            <p>录音、音频路径、转写评估、说话人标签和导出文件优先留在本机。</p>
+                          </section>
+                          <section>
+                            <strong>云端</strong>
+                            <p>MiniMax M3 只接收修正后的文本上下文，用于摘要、Todo、脑图和研究。</p>
+                          </section>
+                          <section>
+                            <strong>导出</strong>
+                            <p>Markdown、SRT、JSON 和分享快照由本地 SQLite 产物生成，不上传完整路径或 API Key。</p>
+                          </section>
+                        </div>
+                        <div className="overview-section-grid">
+                          <section>
+                            <strong>录音开关</strong>
+                            <p>{settings.recordEnabled ? "环境音录制已开启。" : "环境音录制已关闭。"}</p>
+                          </section>
+                          <section>
+                            <strong>ASR 兜底</strong>
+                            <p>{settings.allowCloudFallback ? "允许本地 ASR 不可用时使用云端兜底。" : "关闭云端兜底。"}</p>
+                          </section>
+                          <section>
+                            <strong>Embedding</strong>
+                            <p>保持预留状态，不参与当前生产链路。</p>
+                          </section>
+                        </div>
+                      </section>
+
+                      <aside className="overview-detail-panel">
+                        <section className="panel-lite">
+                          <div className="panel-head">
+                            <div>
+                              <p className="section-kicker">Model & Key</p>
+                              <h3>语义服务</h3>
+                            </div>
+                            <button className="secondary-button" type="button" onClick={() => setActiveTab("settings")}>
+                              打开设置
+                            </button>
+                          </div>
+                          <ul className="compact-list">
+                            <li><span>Provider</span><strong>{settings.semanticProviderType}</strong></li>
+                            <li><span>模型</span><strong>{settings.semanticModelName}</strong></li>
+                            <li><span>Key</span><strong>{settings.semanticApiKeyMasked ? "已配置" : "未配置"}</strong></li>
+                            <li><span>入口</span><strong>semantic_artifacts</strong></li>
+                          </ul>
+                          <div className="row-actions">
+                            <button className="secondary-button" type="button" onClick={() => handleModelTest("todo")} disabled={testingProvider === "todo"}>
+                              {testingProvider === "todo" ? "测试中" : "测试 M3"}
+                            </button>
+                          </div>
+                        </section>
+
+                        <section className="panel-lite">
+                          <div className="panel-head">
+                            <div>
+                              <p className="section-kicker">Local Model</p>
+                              <h3>{transcriptReview.modelStatus.modelName}</h3>
+                            </div>
+                            <span className="status-chip">{transcriptReview.modelStatus.downloadProgress}%</span>
+                          </div>
+                          <div className="model-progress-track">
+                            <span style={{ width: `${transcriptReview.modelStatus.downloadProgress}%` }} />
+                          </div>
+                          <p className="runtime-message">{transcriptReview.modelStatus.deviceRecommendation}</p>
+                        </section>
+                      </aside>
+                    </>
+                  ) : null}
                 </section>
+
+                <footer className="audio-dock">
+                  <span>{formatDuration(currentPlaybackMs)}</span>
+                  <div className="audio-dock-wave" aria-hidden="true">
+                    {Array.from({ length: 64 }).map((_, index) => (
+                      <span key={index} style={{ height: `${4 + ((index * 5) % 18)}px` }} />
+                    ))}
+                  </div>
+                  <span>{formatDuration(transcriptReview.audio.durationMs)}</span>
+                  <button className="round-play-button audio-dock-play" type="button" onClick={() => handleRecordingAction("stop")}>
+                    暂停
+                  </button>
+                </footer>
               </main>
             ) : null}
 
             {activeTab === "actions" ? (
-              <main className="actions-layout">
-                <section className="panel-lite todo-list-panel">
+              <main className="page-stack">
+                <div className="page-heading">
+                  <div>
+                    <p className="section-kicker">Action Center</p>
+                    <h2>Todo 与候选确认</h2>
+                    <p className="page-subtitle">从语义产物确认行动项，按状态、负责人和来源片段追踪执行。</p>
+                  </div>
+                  <div className="heading-actions">
+                    <button className="secondary-button" type="button" onClick={handleSyncTodoCandidates}>
+                      同步候选
+                    </button>
+                    <input
+                      className="search-input"
+                      aria-label="搜索 Todo"
+                      name="todoSearch"
+                      placeholder="搜索标题、负责人或来源"
+                      value={keyword}
+                      onChange={(event) => setKeyword(event.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <section className="actions-layout">
+                  <section className="panel-lite todo-list-panel">
                   <div className="panel-head">
                     <div>
-                      <p className="section-kicker">Actions</p>
-                      <h2>Todo 执行中心</h2>
+                      <p className="section-kicker">Queue</p>
+                      <h2>候选与行动项</h2>
                     </div>
-                    <div className="heading-actions">
-                      <button className="secondary-button" type="button" onClick={handleSyncTodoCandidates}>
-                        同步候选
-                      </button>
-                      <input
-                        className="search-input"
-                        aria-label="搜索 Todo"
-                        name="todoSearch"
-                        placeholder="搜索标题、负责人或来源"
-                        value={keyword}
-                        onChange={(event) => setKeyword(event.target.value)}
-                      />
-                    </div>
+                    <span className="status-chip">{filteredTodos.length} 个行动项</span>
                   </div>
 
                   <section className="candidate-panel">
@@ -1967,6 +2443,7 @@ function App() {
                     <div className="empty-state">暂无 Todo 数据</div>
                   )}
                 </aside>
+                </section>
               </main>
             ) : null}
 
@@ -2345,7 +2822,7 @@ function App() {
                           <p className="section-kicker">Todo Candidates</p>
                           <h3>待办候选</h3>
                         </div>
-                        <span className="status-chip">v0.7 前不写入正式 Todo</span>
+                        <span className="status-chip">候选可进入正式 Todo</span>
                       </div>
                       <div className="todo-candidate-list">
                         {semanticWorkbench.todoCandidates.map((todo) => (
@@ -2474,7 +2951,7 @@ function App() {
               <main className="page-stack">
                 <div className="page-heading">
                   <div>
-                    <p className="section-kicker">Value Discovery / v0.9</p>
+                    <p className="section-kicker">Value Discovery</p>
                     <h2>Moment 与深度研究</h2>
                   </div>
                   <div className="heading-actions">
@@ -2711,7 +3188,7 @@ function App() {
               <main className="page-stack">
                 <div className="page-heading">
                   <div>
-                    <p className="section-kicker">MindMap / v0.8</p>
+                    <p className="section-kicker">MindMap</p>
                     <h2>思维脑图</h2>
                   </div>
                   <div className="heading-actions">
@@ -2771,7 +3248,7 @@ function App() {
                         })}
                       </div>
                     ) : (
-                      <div className="empty-state">暂无脑图，请先生成 v0.8 思维脑图。</div>
+                      <div className="empty-state">暂无脑图，请先生成思维脑图。</div>
                     )}
                   </section>
 
@@ -2883,7 +3360,7 @@ function App() {
               <main className="page-stack">
                 <div className="page-heading">
                   <div>
-                    <p className="section-kicker">Export / v1.1</p>
+                    <p className="section-kicker">Export Center</p>
                     <h2>导出中心</h2>
                   </div>
                   <div className="heading-actions">
@@ -3194,16 +3671,20 @@ function App() {
               <main className="page-stack">
                 <div className="page-heading">
                   <div>
-                    <p className="section-kicker">Settings</p>
-                    <h2>录音、模型与隐私设置</h2>
+                    <p className="section-kicker">Settings · {appVersionLabel}</p>
+                    <h2>工作台设置</h2>
+                    <p className="page-subtitle">配置语音、语义、知识与隐私边界，保持本地优先且生产可用。</p>
                   </div>
-                  <button className="primary-button" onClick={saveSettings} type="button">
-                    保存设置
-                  </button>
+                  <div className="heading-actions">
+                    <span className="status-chip chip-live">{appVersionLabel} 生产可用</span>
+                    <button className="primary-button" onClick={saveSettings} type="button">
+                      保存设置
+                    </button>
+                  </div>
                 </div>
 
                 <section className="settings-grid-wide">
-                  <section className="panel-lite">
+                  <section className="panel-lite settings-provider-card">
                     <div className="panel-head">
                       <div>
                         <p className="section-kicker">录音设置</p>
@@ -3230,12 +3711,13 @@ function App() {
                     </div>
                   </section>
 
-                  <section className="panel-lite">
+                  <section className="panel-lite settings-provider-card">
                     <div className="panel-head">
                       <div>
                         <p className="section-kicker">语音转写模型</p>
                         <h3>本地优先 ASR</h3>
                       </div>
+                      <span className="status-chip chip-live">本地运行</span>
                       <button className="secondary-button" type="button" onClick={() => handleModelTest("asr")} disabled={testingProvider === "asr"}>
                         {testingProvider === "asr" ? "测试中..." : "测试连接"}
                       </button>
@@ -3258,18 +3740,18 @@ function App() {
                     <div className="runtime-hint">
                       <p className="section-kicker">本地优先策略</p>
                       <p>
-                        当前本地 WhisperKit / Argmax 已纳入 v1.0 产品闭环。关闭兜底时不会上传音频。
+                        当前本地 WhisperKit / Argmax 已纳入生产闭环。关闭兜底时不会上传音频。
                       </p>
                     </div>
                   </section>
 
-                  <section className="panel-lite settings-wide">
+                  <section className="panel-lite settings-provider-card settings-cloud-card">
                     <div className="panel-head">
                       <div>
                         <p className="section-kicker">语义理解与隐私边界</p>
                         <h3>MiniMax M3 工作台基座</h3>
                       </div>
-                      <span className="status-chip">v1.0 产品闭环</span>
+                      <span className="status-chip chip-live">云端服务</span>
                     </div>
                     <div className="settings-grid settings-grid-three">
                       <label className="field">
@@ -3311,7 +3793,7 @@ function App() {
                       </div>
                       <div>
                         <strong>预留</strong>
-                        <p>Embedding 保持预留；本地导出已在 v1.0 启用。</p>
+                        <p>Embedding 保持预留；本地导出已在生产闭环启用。</p>
                       </div>
                     </div>
                     <div className="provider-status-grid">
@@ -3338,7 +3820,7 @@ function App() {
                     </div>
                   </section>
 
-                  <section className="panel-lite settings-wide">
+                  <section className="panel-lite settings-provider-card settings-wide">
                     <div className="panel-head">
                       <div>
                         <p className="section-kicker">Todo 语义产物</p>
@@ -3360,15 +3842,60 @@ function App() {
                     </div>
                     <div className="runtime-hint">
                       <p className="section-kicker">语义入口</p>
-                      <p>v1.0 已将 Todo 候选、纪要、脑图和导出闭环统一纳入 MiniMax M3 语义产物。</p>
+                      <p>当前生产版已将 Todo 候选、纪要、脑图和导出闭环统一纳入 MiniMax M3 语义产物。</p>
                       <p>Todo 候选统一通过 MiniMax M3 语义链路承载，产物落库到 semantic_artifacts。</p>
                     </div>
+                  </section>
+
+                  <section className="panel-lite settings-version-card">
+                    <div className="panel-head">
+                      <div>
+                        <p className="section-kicker">版本信息</p>
+                        <h3>Shengji Mac {appVersionLabel}</h3>
+                      </div>
+                      <button className="secondary-button" type="button" onClick={() => setActiveTab("system")}>
+                        检查状态
+                      </button>
+                    </div>
+                    <p>架构模式：本地优先 · 云端增强。主流程已覆盖录音、转写、修正、摘要、Todo、脑图、研究、翻译和导出。</p>
                   </section>
                 </section>
               </main>
             ) : null}
           </section>
         </div>
+        <footer className="window-statusbar" aria-label="运行摘要">
+          <div className="statusbar-group">
+            <span className={`statusbar-item ${settings.recordEnabled ? "statusbar-live" : ""}`}>
+              <span className="status-dot" />
+              录音：{runtime.runtimeLabel}
+            </span>
+            <span className="statusbar-item">
+              会话：{sessionStatusLabelMap[runtime.currentSessionStatus]}
+            </span>
+            <button className="statusbar-button" type="button" onClick={() => setActiveTab("semantic")}>
+              语义：MiniMax M3
+            </button>
+          </div>
+          <div className="statusbar-group statusbar-group-right">
+            <button
+              className={`statusbar-button ${failedSessionCount > 0 ? "statusbar-danger" : ""}`}
+              type="button"
+              onClick={() => setActiveTab("system")}
+            >
+              失败 {failedSessionCount}
+            </button>
+            <button className="statusbar-button" type="button" onClick={() => setActiveTab("actions")}>
+              候选 {proposedCandidateCount}
+            </button>
+            <span className="statusbar-item">
+              本地模型：{transcriptReview.modelStatus.offlineAvailable ? "可用" : "未就绪"}
+            </span>
+            <button className="statusbar-button statusbar-version" type="button" onClick={() => setActiveTab("settings")}>
+              {appVersionLabel}
+            </button>
+          </div>
+        </footer>
       </div>
     </div>
   );
