@@ -993,6 +993,11 @@ pub fn run() {
             commands::settings::save_settings,
             commands::model_test::test_model_connection,
             commands::todo::toggle_todo_status,
+            commands::todo::update_todo_status,
+            commands::todo::sync_todo_candidates,
+            commands::todo::list_todo_candidates,
+            commands::todo::accept_todo_candidate,
+            commands::todo::dismiss_todo_candidate,
             commands::session::flush_current_session,
             commands::jobs::process_pending_jobs,
             commands::recording::start_recording,
@@ -1842,6 +1847,186 @@ mod tests {
     }
 
     #[test]
+    fn should_accept_v07_todo_candidate_with_traceable_source() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "shengji-v07-todo-candidate-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        let audio_path = temp_dir.join("candidate-source.wav");
+        fs::write(&audio_path, b"fake wav bytes for v07 todo candidate")
+            .expect("应能准备本地音频文件");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        commands::transcript::import_local_audio_payload(
+            &db_path,
+            audio_path.to_string_lossy().as_ref(),
+        )
+        .expect("应能准备 v0.7 来源转写");
+        commands::semantic::generate_semantic_workbench_payload(&db_path)
+            .expect("应能生成 v0.6 待办候选语义产物");
+
+        let candidates = commands::todo::sync_todo_candidates_payload(&db_path)
+            .expect("v0.7 应能从 todo_extraction artifact 同步候选");
+        let candidate = candidates
+            .iter()
+            .find(|candidate| candidate.title.contains("复核"))
+            .expect("应生成可确认的待办候选");
+        assert_eq!(candidate.status, "proposed");
+        assert!(candidate
+            .source_span_refs
+            .iter()
+            .any(|source| source.starts_with("transcript_")));
+        assert!(candidate.source_text.contains("speaker label"));
+
+        let accepted = commands::todo::accept_todo_candidate_payload(
+            &db_path,
+            commands::todo::AcceptTodoCandidateCommand {
+                candidate_id: candidate.id.clone(),
+                title: "复核说话人标签与转写片段".into(),
+                detail: "确认说话人切换点和修正文稿是否准确。".into(),
+                owner: "我".into(),
+                due_at: "2026-06-15 18:00".into(),
+                priority: "high".into(),
+            },
+        )
+        .expect("用户确认后候选应进入正式 Todo");
+        assert_eq!(accepted.status, "open");
+        assert_eq!(accepted.owner, "我");
+        assert_eq!(accepted.priority, "high");
+        assert!(accepted
+            .source_span_refs
+            .iter()
+            .any(|source| source.starts_with("transcript_")));
+
+        let refreshed = commands::todo::list_todo_candidates_payload(&db_path)
+            .expect("应能读取候选状态");
+        assert!(refreshed
+            .iter()
+            .any(|candidate| candidate.todo_id == accepted.id && candidate.status == "accepted"));
+
+        let duplicate = commands::todo::accept_todo_candidate_payload(
+            &db_path,
+            commands::todo::AcceptTodoCandidateCommand {
+                candidate_id: candidate.id.clone(),
+                title: accepted.title.clone(),
+                detail: accepted.note.clone(),
+                owner: accepted.owner.clone(),
+                due_at: accepted.due_at.clone(),
+                priority: accepted.priority.clone(),
+            },
+        )
+        .expect("重复确认不应生成第二条正式 Todo");
+        assert_eq!(duplicate.id, accepted.id);
+
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let todo_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(1) FROM todos WHERE title = ?1",
+                params![accepted.title.as_str()],
+                |row| row.get(0),
+            )
+            .expect("应能查询正式 Todo 数量");
+        assert_eq!(todo_count, 1);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_migrate_v07_todo_statuses_and_persist_status_flow() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "shengji-v07-todo-status-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        let connection = open_connection(&db_path).expect("应能创建旧测试数据库");
+        connection
+            .execute_batch(
+                r#"
+                PRAGMA foreign_keys = ON;
+                CREATE TABLE conversation_sessions (
+                  id TEXT PRIMARY KEY,
+                  merged_text TEXT NOT NULL,
+                  started_at DATETIME NOT NULL,
+                  ended_at DATETIME NOT NULL,
+                  idle_trigger_seconds INTEGER NOT NULL,
+                  trigger_reason TEXT NOT NULL,
+                  transcript_count INTEGER NOT NULL,
+                  extraction_status TEXT NOT NULL,
+                  extraction_provider_used TEXT NOT NULL,
+                  extraction_fallback_used INTEGER NOT NULL,
+                  extraction_fallback_reason TEXT NOT NULL,
+                  trace_id TEXT,
+                  created_at DATETIME NOT NULL
+                );
+                CREATE TABLE todos (
+                  id TEXT PRIMARY KEY,
+                  conversation_session_id TEXT NOT NULL,
+                  title TEXT NOT NULL,
+                  note TEXT NOT NULL DEFAULT '',
+                  status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'completed')),
+                  created_at TEXT NOT NULL,
+                  completed_at DATETIME,
+                  source_text TEXT,
+                  source_audio_id TEXT,
+                  speaker_id TEXT,
+                  extraction_model_name TEXT NOT NULL DEFAULT '',
+                  trace_id TEXT,
+                  updated_at DATETIME NOT NULL
+                );
+                INSERT INTO conversation_sessions (
+                  id, merged_text, started_at, ended_at, idle_trigger_seconds, trigger_reason,
+                  transcript_count, extraction_status, extraction_provider_used,
+                  extraction_fallback_used, extraction_fallback_reason, trace_id, created_at
+                ) VALUES (
+                  'session_v07_migration', '旧 Todo 状态迁移测试', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+                  20, 'manual', 1, 'success', 'minimax_m3', 0, '', 'trace_v07_migration', CURRENT_TIMESTAMP
+                );
+                INSERT INTO todos (
+                  id, conversation_session_id, title, note, status, created_at, source_text, updated_at
+                ) VALUES
+                  ('todo_v07_pending', 'session_v07_migration', '旧未完成 Todo', '', 'pending', CURRENT_TIMESTAMP, '旧来源', CURRENT_TIMESTAMP),
+                  ('todo_v07_completed', 'session_v07_migration', '旧已完成 Todo', '', 'completed', CURRENT_TIMESTAMP, '旧来源', CURRENT_TIMESTAMP);
+                "#,
+            )
+            .expect("应能准备旧 v0.6 Todo 表");
+        drop(connection);
+
+        initialize_database(&db_path).expect("应能迁移旧 Todo 状态约束");
+        let todos = commands::bootstrap::get_bootstrap_data_payload(&db_path)
+            .expect("应能读取迁移后的启动数据")
+            .todos;
+        assert!(todos
+            .iter()
+            .any(|todo| todo.id == "todo_v07_pending" && todo.status == "open"));
+        assert!(todos
+            .iter()
+            .any(|todo| todo.id == "todo_v07_completed" && todo.status == "done"));
+
+        let in_progress = commands::todo::update_todo_status_payload(
+            &db_path,
+            "todo_v07_pending",
+            "in_progress",
+        )
+        .expect("Todo 应可进入进行中");
+        assert_eq!(in_progress.status, "in_progress");
+
+        let done = commands::todo::update_todo_status_payload(&db_path, "todo_v07_pending", "done")
+            .expect("Todo 应可标记完成");
+        assert_eq!(done.status, "done");
+
+        let dismissed =
+            commands::todo::update_todo_status_payload(&db_path, "todo_v07_pending", "dismissed")
+                .expect("Todo 应可忽略");
+        assert_eq!(dismissed.status, "dismissed");
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
     fn should_register_semantic_todo_artifact_by_default() {
         let temp_dir = std::env::temp_dir().join(format!(
             "smart-todo-v04-semantic-todo-test-{}",
@@ -2346,7 +2531,7 @@ mod tests {
         let completed = commands::todo::toggle_todo_status_payload(&db_path, "todo_seed_001")
             .expect("todo command boundary 应能完成 Todo");
         assert_eq!(completed.id, "todo_seed_001");
-        assert_eq!(completed.status, "completed");
+        assert_eq!(completed.status, "done");
 
         let connection = open_connection(&db_path).expect("应能打开测试数据库");
         let completed_at: Option<String> = connection
@@ -2361,7 +2546,7 @@ mod tests {
         let reopened = commands::todo::toggle_todo_status_payload(&db_path, "todo_seed_001")
             .expect("todo command boundary 应能重新打开 Todo");
         assert_eq!(reopened.id, "todo_seed_001");
-        assert_eq!(reopened.status, "pending");
+        assert_eq!(reopened.status, "open");
 
         let reopened_completed_at: Option<String> = connection
             .query_row(
@@ -2615,16 +2800,22 @@ mod tests {
             id: "todo_domain_contract".into(),
             title: "同步 v0.4 domain 边界".into(),
             note: "Todo DTO 应从 lib.rs 迁入 domain::todo".into(),
-            status: "pending".into(),
+            status: "open".into(),
             created_at: "2026-06-13 12:00:00".into(),
             conversation_session_id: "session_domain_contract".into(),
             source_text: "请同步 v0.4 domain 边界".into(),
+            owner: "我".into(),
+            due_at: "2026-06-15 18:00".into(),
+            priority: "medium".into(),
+            source_span_refs: vec!["transcript_domain_contract".into()],
+            candidate_id: "candidate_domain_contract".into(),
         };
 
         let payload = serde_json::to_value(&todo).expect("Todo domain DTO 应可序列化");
 
         assert_eq!(payload["id"], "todo_domain_contract");
         assert_eq!(payload["conversationSessionId"], "session_domain_contract");
+        assert_eq!(payload["sourceSpanRefs"][0], "transcript_domain_contract");
         assert!(payload.get("conversation_session_id").is_none());
     }
 

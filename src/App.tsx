@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  acceptDesktopTodoCandidate,
   deleteDesktopCorrectionPattern,
+  dismissDesktopTodoCandidate,
   flushDesktopSession,
   generateSemanticWorkbench,
   importDesktopLocalAudio,
   isTauriEnvironment,
+  listDesktopTodoCandidates,
   loadBootstrapData,
   loadDesktopContext,
   loadSemanticWorkbench,
@@ -20,10 +23,12 @@ import {
   simulateDesktopAudioSlice,
   startDesktopRecording,
   stopDesktopRecording,
+  syncDesktopTodoCandidates,
   testDesktopModelConnection,
   toggleDesktopTodoStatus,
+  updateDesktopTodoStatus,
 } from "./lib/desktop";
-import { defaultSemanticWorkbench, defaultTranscriptReview } from "./data/mock";
+import { defaultSemanticWorkbench, defaultTodoCandidates, defaultTranscriptReview } from "./data/mock";
 import { getDefaultState, loadState, saveState } from "./lib/storage";
 import type {
   CorrectionPattern,
@@ -31,7 +36,9 @@ import type {
   SemanticWorkbench,
   SessionItem,
   SettingsState,
+  TodoCandidateItem,
   TodoItem,
+  TodoStatus,
   TranscriptReview,
 } from "./types";
 
@@ -45,8 +52,16 @@ type TabKey =
   | "settings";
 
 const statusLabelMap = {
-  pending: "未完成",
-  completed: "已完成",
+  open: "待处理",
+  in_progress: "进行中",
+  done: "已完成",
+  dismissed: "已忽略",
+} as const;
+
+const priorityLabelMap = {
+  low: "低",
+  medium: "中",
+  high: "高",
 } as const;
 
 const sessionStatusLabelMap = {
@@ -102,7 +117,9 @@ function App() {
   const [sessions, setSessions] = useState<SessionItem[]>(initialState.sessions);
   const [runtime, setRuntime] = useState(initialState.runtime);
   const [selectedTodoId, setSelectedTodoId] = useState(initialState.todos[0]?.id ?? "");
-  const [filter, setFilter] = useState<"all" | "pending" | "completed">("all");
+  const [filter, setFilter] = useState<"all" | TodoStatus>("all");
+  const [todoCandidates, setTodoCandidates] =
+    useState<TodoCandidateItem[]>(defaultTodoCandidates);
   const [keyword, setKeyword] = useState("");
   const [saveBanner, setSaveBanner] = useState("");
   const [testingProvider, setTestingProvider] = useState<"" | "asr" | "todo">("");
@@ -142,6 +159,26 @@ function App() {
       .catch(() => {
         if (!cancelled) {
           setDesktopContext(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    listDesktopTodoCandidates()
+      .then((candidates) => {
+        if (!cancelled && candidates) {
+          setTodoCandidates(candidates);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setTodoCandidates(defaultTodoCandidates);
         }
       });
 
@@ -236,7 +273,7 @@ function App() {
     const matchesStatus = filter === "all" ? true : todo.status === filter;
     const matchesKeyword =
       keyword.trim().length === 0 ||
-      [todo.title, todo.note].some((field) =>
+      [todo.title, todo.note, todo.owner, todo.sourceText].some((field) =>
         field.toLowerCase().includes(keyword.trim().toLowerCase()),
       );
 
@@ -302,11 +339,117 @@ function App() {
         todo.id === todoId
           ? {
               ...todo,
-              status: todo.status === "pending" ? "completed" : "pending",
+              status: todo.status === "done" ? "open" : "done",
             }
           : todo,
       ),
     );
+  }
+
+  async function handleTodoStatusChange(todoId: string, status: TodoStatus) {
+    const updated = await updateDesktopTodoStatus(todoId, status).catch(() => null);
+    if (isTauriEnvironment() && !updated) {
+      setSaveBanner("更新 Todo 状态失败，请刷新后重试。");
+      window.setTimeout(() => setSaveBanner(""), 2400);
+      return;
+    }
+
+    setTodos((current) =>
+      current.map((todo) =>
+        todo.id === todoId
+          ? {
+              ...todo,
+              status: updated?.status ?? status,
+            }
+          : todo,
+      ),
+    );
+    setSaveBanner(`Todo 已更新为${statusLabelMap[updated?.status ?? status]}。`);
+    window.setTimeout(() => setSaveBanner(""), 2400);
+  }
+
+  async function handleSyncTodoCandidates() {
+    const candidates = await syncDesktopTodoCandidates().catch(() => null);
+    if (isTauriEnvironment() && !candidates) {
+      setSaveBanner("同步待办候选失败，请先生成语义纪要。");
+      window.setTimeout(() => setSaveBanner(""), 3000);
+      return;
+    }
+
+    setTodoCandidates(candidates ?? defaultTodoCandidates);
+    setSaveBanner("已同步 v0.6 待办候选。");
+    window.setTimeout(() => setSaveBanner(""), 2400);
+  }
+
+  async function handleAcceptTodoCandidate(candidate: TodoCandidateItem) {
+    const accepted = await acceptDesktopTodoCandidate({
+      candidateId: candidate.id,
+      title: candidate.title,
+      detail: candidate.detail,
+      owner: candidate.owner,
+      dueAt: candidate.dueAt,
+      priority: candidate.priority,
+    }).catch(() => null);
+    if (isTauriEnvironment() && !accepted) {
+      setSaveBanner("确认待办候选失败，请刷新后重试。");
+      window.setTimeout(() => setSaveBanner(""), 3000);
+      return;
+    }
+
+    const todo: TodoItem =
+      accepted ?? {
+        id: `todo_browser_${candidate.id}`,
+        title: candidate.title,
+        note: candidate.detail,
+        status: "open",
+        createdAt: new Date().toISOString().slice(0, 19).replace("T", " "),
+        conversationSessionId: candidate.sessionId,
+        sourceText: candidate.sourceText,
+        owner: candidate.owner,
+        dueAt: candidate.dueAt,
+        priority: candidate.priority,
+        sourceSpanRefs: candidate.sourceSpanRefs,
+        candidateId: candidate.id,
+      };
+    setTodos((current) =>
+      current.some((item) => item.id === todo.id) ? current : [todo, ...current],
+    );
+    setSelectedTodoId(todo.id);
+    setTodoCandidates((current) =>
+      current.map((item) =>
+        item.id === candidate.id
+          ? {
+              ...item,
+              status: "accepted",
+              todoId: todo.id,
+            }
+          : item,
+      ),
+    );
+    setSaveBanner("候选已进入正式 Todo。");
+    window.setTimeout(() => setSaveBanner(""), 2400);
+  }
+
+  async function handleDismissTodoCandidate(candidateId: string) {
+    const dismissed = await dismissDesktopTodoCandidate(candidateId).catch(() => null);
+    if (isTauriEnvironment() && !dismissed) {
+      setSaveBanner("忽略待办候选失败，请刷新后重试。");
+      window.setTimeout(() => setSaveBanner(""), 3000);
+      return;
+    }
+
+    setTodoCandidates((current) =>
+      current.map((candidate) =>
+        candidate.id === candidateId
+          ? {
+              ...candidate,
+              status: dismissed?.status ?? "dismissed",
+            }
+          : candidate,
+      ),
+    );
+    setSaveBanner("候选已忽略。");
+    window.setTimeout(() => setSaveBanner(""), 2400);
   }
 
   async function handleFlushSession() {
@@ -627,8 +770,13 @@ function App() {
     window.setTimeout(() => setSaveBanner(""), 2400);
   }
 
-  const pendingTodoCount = todos.filter((todo) => todo.status === "pending").length;
-  const completedTodoCount = todos.filter((todo) => todo.status === "completed").length;
+  const pendingTodoCount = todos.filter(
+    (todo) => todo.status === "open" || todo.status === "in_progress",
+  ).length;
+  const completedTodoCount = todos.filter((todo) => todo.status === "done").length;
+  const proposedCandidateCount = todoCandidates.filter(
+    (candidate) => candidate.status === "proposed",
+  ).length;
   const failedSessionCount = sessions.filter((session) => session.extractionStatus === "failed").length;
   const latestSession = sessions[0];
   const navItems: Array<{ key: TabKey; label: string; description: string }> = [
@@ -702,6 +850,10 @@ function App() {
                 <li>
                   <span>失败任务</span>
                   <strong>{failedSessionCount}</strong>
+                </li>
+                <li>
+                  <span>待确认候选</span>
+                  <strong>{proposedCandidateCount}</strong>
                 </li>
               </ul>
             </section>
@@ -820,23 +972,89 @@ function App() {
                       <p className="section-kicker">Actions</p>
                       <h2>Todo 执行中心</h2>
                     </div>
-                    <input
-                      className="search-input"
-                      placeholder="搜索标题或备注"
-                      value={keyword}
-                      onChange={(event) => setKeyword(event.target.value)}
-                    />
+                    <div className="heading-actions">
+                      <button className="secondary-button" type="button" onClick={handleSyncTodoCandidates}>
+                        同步候选
+                      </button>
+                      <input
+                        className="search-input"
+                        aria-label="搜索 Todo"
+                        name="todoSearch"
+                        placeholder="搜索标题、负责人或来源"
+                        value={keyword}
+                        onChange={(event) => setKeyword(event.target.value)}
+                      />
+                    </div>
                   </div>
+
+                  <section className="candidate-panel">
+                    <div className="panel-head">
+                      <div>
+                        <p className="section-kicker">Candidates</p>
+                        <h3>待确认候选</h3>
+                      </div>
+                      <span className="status-chip">{proposedCandidateCount} 条待处理</span>
+                    </div>
+                    <div className="candidate-list">
+                      {todoCandidates.map((candidate) => (
+                        <article key={candidate.id} className="candidate-row">
+                          <div>
+                            <div className="todo-card-header">
+                              <h3>{candidate.title}</h3>
+                              <span className={`badge ${candidate.status === "proposed" ? "badge-pending" : candidate.status === "accepted" ? "badge-completed" : "badge-waiting"}`}>
+                                {candidate.status === "proposed"
+                                  ? "待确认"
+                                  : candidate.status === "accepted"
+                                    ? "已接受"
+                                    : "已忽略"}
+                              </span>
+                            </div>
+                            <p>{candidate.detail}</p>
+                            <div className="todo-meta">
+                              <span>{candidate.owner || "未分配"}</span>
+                              <span>{candidate.dueAt || "无截止时间"}</span>
+                              <span>优先级 {priorityLabelMap[candidate.priority]}</span>
+                              <span>置信度 {(candidate.confidence * 100).toFixed(0)}%</span>
+                              <span>来源 {candidate.sourceSpanRefs.join("、") || "暂无来源"}</span>
+                            </div>
+                          </div>
+                          {candidate.status === "proposed" ? (
+                            <div className="row-actions">
+                              <button
+                                className="primary-button"
+                                type="button"
+                                onClick={() => handleAcceptTodoCandidate(candidate)}
+                              >
+                                接受
+                              </button>
+                              <button
+                                className="secondary-button"
+                                type="button"
+                                onClick={() => handleDismissTodoCandidate(candidate.id)}
+                              >
+                                忽略
+                              </button>
+                            </div>
+                          ) : null}
+                        </article>
+                      ))}
+                      {todoCandidates.length === 0 ? (
+                        <div className="empty-state">暂无待确认候选，请先生成语义纪要</div>
+                      ) : null}
+                    </div>
+                  </section>
                   <div className="filter-row">
                     {[
                       ["all", "全部"],
-                      ["pending", "未完成"],
-                      ["completed", "已完成"],
+                      ["open", "待处理"],
+                      ["in_progress", "进行中"],
+                      ["done", "已完成"],
+                      ["dismissed", "已忽略"],
                     ].map(([key, label]) => (
                       <button
                         key={key}
                         className={`filter-chip ${filter === key ? "filter-chip-active" : ""}`}
-                        onClick={() => setFilter(key as "all" | "pending" | "completed")}
+                        onClick={() => setFilter(key as "all" | TodoStatus)}
                         type="button"
                       >
                         {label}
@@ -853,13 +1071,15 @@ function App() {
                       >
                         <div className="todo-card-header">
                           <h3>{todo.title}</h3>
-                          <span className={`badge ${todo.status === "pending" ? "badge-pending" : "badge-completed"}`}>
+                          <span className={`badge ${todo.status === "done" ? "badge-completed" : todo.status === "dismissed" ? "badge-waiting" : "badge-pending"}`}>
                             {statusLabelMap[todo.status]}
                           </span>
                         </div>
                         <p>{todo.note}</p>
                         <div className="todo-meta">
                           <span>{todo.createdAt}</span>
+                          <span>{todo.owner || "未分配"}</span>
+                          <span>优先级 {priorityLabelMap[todo.priority]}</span>
                           <span>来源 {todo.conversationSessionId}</span>
                         </div>
                       </button>
@@ -875,23 +1095,50 @@ function App() {
                           <p className="section-kicker">Todo Detail</p>
                           <h2>{selectedTodo.title}</h2>
                         </div>
-                        <button className="primary-button" type="button" onClick={() => toggleTodoStatus(selectedTodo.id)}>
-                          切换为{selectedTodo.status === "pending" ? "已完成" : "未完成"}
-                        </button>
+                        <div className="row-actions">
+                          <button className="secondary-button" type="button" onClick={() => handleTodoStatusChange(selectedTodo.id, "in_progress")}>
+                            进行中
+                          </button>
+                          <button className="primary-button" type="button" onClick={() => toggleTodoStatus(selectedTodo.id)}>
+                            {selectedTodo.status === "done" ? "重新打开" : "完成"}
+                          </button>
+                        </div>
                       </div>
                       <div className="detail-block">
                         <label>状态</label>
-                        <span className={`badge ${selectedTodo.status === "pending" ? "badge-pending" : "badge-completed"}`}>
+                        <span className={`badge ${selectedTodo.status === "done" ? "badge-completed" : selectedTodo.status === "dismissed" ? "badge-waiting" : "badge-pending"}`}>
                           {statusLabelMap[selectedTodo.status]}
                         </span>
+                      </div>
+                      <div className="detail-block">
+                        <label>负责人 / 截止 / 优先级</label>
+                        <p>
+                          {(selectedTodo.owner || "未分配")}
+                          {" / "}
+                          {(selectedTodo.dueAt || "未设置截止时间")}
+                          {" / "}
+                          {priorityLabelMap[selectedTodo.priority]}
+                        </p>
                       </div>
                       <div className="detail-block">
                         <label>备注</label>
                         <p>{selectedTodo.note}</p>
                       </div>
                       <div className="detail-block">
+                        <label>来源片段</label>
+                        <p>{selectedTodo.sourceSpanRefs.join("、") || "暂无来源片段"}</p>
+                      </div>
+                      <div className="detail-block">
                         <label>来源文稿</label>
                         <p>{selectedTodo.sourceText}</p>
+                      </div>
+                      <div className="row-actions">
+                        <button className="secondary-button" type="button" onClick={() => handleTodoStatusChange(selectedTodo.id, "open")}>
+                          重新打开
+                        </button>
+                        <button className="secondary-button" type="button" onClick={() => handleTodoStatusChange(selectedTodo.id, "dismissed")}>
+                          忽略
+                        </button>
                       </div>
                       <div className="detail-block detail-runtime">
                         <label>提取路径</label>

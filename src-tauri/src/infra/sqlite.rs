@@ -408,6 +408,134 @@ fn ensure_semantic_artifact_type_constraint(connection: &Connection) -> Result<(
     Ok(())
 }
 
+fn ensure_todos_v07_schema(connection: &Connection) -> Result<(), String> {
+    let table_sql: Option<String> = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'todos'",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+    let Some(sql) = table_sql else {
+        return Ok(());
+    };
+
+    if sql.contains("'in_progress'") && sql.contains("candidate_id") {
+        connection
+            .execute_batch(
+                r#"
+                CREATE INDEX IF NOT EXISTS idx_todos_candidate
+                  ON todos(candidate_id);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_todos_dedup_key
+                  ON todos(dedup_key)
+                  WHERE dedup_key <> '';
+                "#,
+            )
+            .map_err(|error| format!("创建 Todo v0.7 索引失败: {error}"))?;
+        return Ok(());
+    }
+
+    connection
+        .execute_batch(
+            r#"
+            DROP INDEX IF EXISTS idx_todos_status;
+            DROP INDEX IF EXISTS idx_todos_created_at;
+            DROP INDEX IF EXISTS idx_todos_candidate;
+            DROP INDEX IF EXISTS idx_todos_dedup_key;
+            DROP TABLE IF EXISTS todos_v07_migration_source;
+            ALTER TABLE todos RENAME TO todos_v07_migration_source;
+
+            CREATE TABLE todos (
+              id TEXT PRIMARY KEY,
+              conversation_session_id TEXT NOT NULL,
+              title TEXT NOT NULL,
+              note TEXT NOT NULL DEFAULT '',
+              status TEXT NOT NULL DEFAULT 'open'
+                CHECK (status IN ('open', 'in_progress', 'done', 'dismissed')),
+              created_at TEXT NOT NULL,
+              completed_at DATETIME,
+              source_text TEXT,
+              source_audio_id TEXT,
+              speaker_id TEXT,
+              extraction_model_name TEXT NOT NULL DEFAULT '',
+              trace_id TEXT,
+              updated_at DATETIME NOT NULL,
+              owner TEXT NOT NULL DEFAULT '',
+              due_at TEXT NOT NULL DEFAULT '',
+              priority TEXT NOT NULL DEFAULT 'medium'
+                CHECK (priority IN ('low', 'medium', 'high')),
+              source_span_refs TEXT NOT NULL DEFAULT '[]',
+              candidate_id TEXT NOT NULL DEFAULT '',
+              dedup_key TEXT NOT NULL DEFAULT '',
+              FOREIGN KEY (conversation_session_id) REFERENCES conversation_sessions(id) ON DELETE CASCADE
+            );
+
+            INSERT INTO todos (
+              id,
+              conversation_session_id,
+              title,
+              note,
+              status,
+              created_at,
+              completed_at,
+              source_text,
+              source_audio_id,
+              speaker_id,
+              extraction_model_name,
+              trace_id,
+              updated_at,
+              owner,
+              due_at,
+              priority,
+              source_span_refs,
+              candidate_id,
+              dedup_key
+            )
+            SELECT
+              id,
+              conversation_session_id,
+              title,
+              note,
+              CASE status
+                WHEN 'completed' THEN 'done'
+                WHEN 'done' THEN 'done'
+                WHEN 'in_progress' THEN 'in_progress'
+                WHEN 'dismissed' THEN 'dismissed'
+                ELSE 'open'
+              END,
+              created_at,
+              completed_at,
+              source_text,
+              source_audio_id,
+              speaker_id,
+              extraction_model_name,
+              trace_id,
+              updated_at,
+              '',
+              '',
+              'medium',
+              '[]',
+              '',
+              conversation_session_id || '::' || lower(trim(title))
+            FROM todos_v07_migration_source;
+
+            DROP TABLE todos_v07_migration_source;
+            CREATE INDEX IF NOT EXISTS idx_todos_status
+              ON todos(status);
+            CREATE INDEX IF NOT EXISTS idx_todos_created_at
+              ON todos(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_todos_candidate
+              ON todos(candidate_id);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_todos_dedup_key
+              ON todos(dedup_key)
+              WHERE dedup_key <> '';
+            "#,
+        )
+        .map_err(|error| format!("迁移 Todo v0.7 表结构失败: {error}"))?;
+
+    Ok(())
+}
+
 pub(crate) fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
     let parent_dir = db_path
         .parent()
@@ -611,8 +739,8 @@ pub(crate) fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
         conversation_session_id TEXT NOT NULL,
         title TEXT NOT NULL,
         note TEXT NOT NULL DEFAULT '',
-        status TEXT NOT NULL DEFAULT 'pending'
-          CHECK (status IN ('pending', 'completed')),
+        status TEXT NOT NULL DEFAULT 'open'
+          CHECK (status IN ('open', 'in_progress', 'done', 'dismissed')),
         created_at TEXT NOT NULL,
         completed_at DATETIME,
         source_text TEXT,
@@ -621,7 +749,37 @@ pub(crate) fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
         extraction_model_name TEXT NOT NULL DEFAULT '',
         trace_id TEXT,
         updated_at DATETIME NOT NULL,
+        owner TEXT NOT NULL DEFAULT '',
+        due_at TEXT NOT NULL DEFAULT '',
+        priority TEXT NOT NULL DEFAULT 'medium'
+          CHECK (priority IN ('low', 'medium', 'high')),
+        source_span_refs TEXT NOT NULL DEFAULT '[]',
+        candidate_id TEXT NOT NULL DEFAULT '',
+        dedup_key TEXT NOT NULL DEFAULT '',
         FOREIGN KEY (conversation_session_id) REFERENCES conversation_sessions(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS todo_candidates (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        detail TEXT NOT NULL DEFAULT '',
+        owner TEXT NOT NULL DEFAULT '',
+        due_at TEXT NOT NULL DEFAULT '',
+        priority TEXT NOT NULL DEFAULT 'medium'
+          CHECK (priority IN ('low', 'medium', 'high')),
+        confidence REAL NOT NULL DEFAULT 0,
+        source_span_refs TEXT NOT NULL DEFAULT '[]',
+        source_text TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'proposed'
+          CHECK (status IN ('proposed', 'accepted', 'dismissed', 'merged')),
+        todo_id TEXT NOT NULL DEFAULT '',
+        dedup_key TEXT NOT NULL DEFAULT '',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (session_id) REFERENCES conversation_sessions(id) ON DELETE CASCADE,
+        FOREIGN KEY (artifact_id) REFERENCES semantic_artifacts(id) ON DELETE CASCADE
       );
 
       CREATE TABLE IF NOT EXISTS processing_jobs (
@@ -670,6 +828,11 @@ pub(crate) fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
         ON todos(status);
       CREATE INDEX IF NOT EXISTS idx_todos_created_at
         ON todos(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_todo_candidates_status
+        ON todo_candidates(status);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_todo_candidates_dedup_key
+        ON todo_candidates(dedup_key)
+        WHERE dedup_key <> '';
       CREATE INDEX IF NOT EXISTS idx_processing_jobs_status
         ON processing_jobs(status);
       "#,
@@ -681,6 +844,7 @@ pub(crate) fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
     ensure_semantic_artifact_type_constraint(&connection)?;
     ensure_model_invocations_columns(&connection)?;
     ensure_transcript_segments_v05_columns(&connection)?;
+    ensure_todos_v07_schema(&connection)?;
 
     connection
         .execute(
@@ -824,18 +988,30 @@ fn seed_demo_data(connection: &Connection) -> Result<(), String> {
         source_text,
         extraction_model_name,
         trace_id,
-        updated_at
+        updated_at,
+        owner,
+        due_at,
+        priority,
+        source_span_refs,
+        candidate_id,
+        dedup_key
       ) VALUES (
         'todo_seed_001',
         ?1,
         '确认 MiniMax M3 语义配置',
         '补全语音转写配置，并确认 Todo 只进入 MiniMax M3 语义产物边界',
-        'pending',
+        'open',
         CURRENT_TIMESTAMP,
         '请确认 ASR 配置和 MiniMax M3 语义入口已就绪。',
         'minimax-m3',
         'trace_seed_001',
-        CURRENT_TIMESTAMP
+        CURRENT_TIMESTAMP,
+        '',
+        '',
+        'medium',
+        '[]',
+        '',
+        'seed::确认 minimax m3 语义配置'
       )
       "#,
             params![session_id],

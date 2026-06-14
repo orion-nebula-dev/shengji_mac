@@ -508,6 +508,42 @@ button:disabled {
   margin-bottom: 12px;
 }
 
+.candidate-panel {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 12px;
+  margin-bottom: 14px;
+}
+
+.candidate-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.candidate-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+  padding: 12px;
+}
+
+.candidate-row h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.candidate-row p {
+  margin: 8px 0 0;
+  font-size: 13px;
+}
+
 .todo-card,
 .session-card {
   display: block;
