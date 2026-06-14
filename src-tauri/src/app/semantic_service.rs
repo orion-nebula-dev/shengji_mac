@@ -1,12 +1,13 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::{
     app::{transcript_revision_service, workspace_builder},
     current_timestamp_label,
     domain::{
         artifact::{
-            MeetingMinutesDto, ModelInvocationDto, RecordingTypeDto, SemanticArtifactDto,
-            SemanticWorkbenchDto, SummaryDto, TodoCandidateDto,
+            MeetingMinutesDto, MindMapDto, MindMapEdgeDto, MindMapExportDto, MindMapNodeDto,
+            ModelInvocationDto, RecordingTypeDto, SemanticArtifactDto, SemanticWorkbenchDto,
+            SummaryDto, TodoCandidateDto, ToggleMindMapNodeCommand, UpdateMindMapNodeCommand,
         },
         correction::{CorrectionPatternDto, DeletedCorrectionPatternDto, TranscriptRevisionDto},
     },
@@ -14,6 +15,7 @@ use crate::{
 };
 
 const SEMANTIC_SCHEMA_VERSION: &str = "v0.6";
+const MIND_MAP_SCHEMA_VERSION: &str = "v0.8";
 
 pub(crate) fn generate_semantic_workbench(
     connection: &Connection,
@@ -178,6 +180,7 @@ pub(crate) fn get_semantic_workbench(
             "todo_extraction",
         )
         .unwrap_or_default(),
+        mind_map: latest_mind_map_payload(connection, &session_id)?,
         artifacts,
         model_invocations: query_model_invocations(connection)?,
     })
@@ -324,6 +327,128 @@ pub(crate) fn retry_semantic_artifact(
     query_artifact_by_id(connection, artifact_id)
 }
 
+pub(crate) fn generate_mind_map(connection: &Connection) -> Result<SemanticArtifactDto, String> {
+    let session_id = latest_semantic_session_id(connection)
+        .filter(|candidate| !candidate.is_empty())
+        .ok_or_else(|| "暂无可生成脑图的语义会话".to_string())?;
+    let artifacts = query_artifacts(connection, &session_id)?;
+    let revisions = parse_artifact_payload::<Vec<TranscriptRevisionDto>>(
+        artifacts.as_slice(),
+        "transcript_revision",
+    )
+    .unwrap_or_default();
+    let summary = parse_artifact_payload::<SummaryDto>(artifacts.as_slice(), "summary")
+        .unwrap_or_else(|| SummaryDto {
+            title: "语义脑图".into(),
+            basis: "基于修正文稿和摘要生成。".into(),
+            bullets: Vec::new(),
+            source_segment_ids: revisions
+                .iter()
+                .map(|revision| revision.source_segment_id.clone())
+                .collect(),
+        });
+    let meeting_minutes = parse_artifact_payload::<MeetingMinutesDto>(
+        artifacts.as_slice(),
+        "meeting_minutes",
+    )
+    .unwrap_or_else(|| MeetingMinutesDto {
+        template_id: "meeting_minutes_v1".into(),
+        decisions: Vec::new(),
+        risks: Vec::new(),
+        open_questions: Vec::new(),
+        source_segment_ids: summary.source_segment_ids.clone(),
+    });
+
+    let mind_map = build_mind_map(&summary, &meeting_minutes, &revisions, false, 1, "");
+    let payload_json = serde_json::to_string(&mind_map)
+        .map_err(|error| format!("序列化脑图产物失败: {error}"))?;
+    let artifact_id = next_mind_map_artifact_id(connection, &session_id, false)?;
+    let source_refs = mind_map.source_spans.clone();
+    insert_artifact_with_id(
+        connection,
+        &artifact_id,
+        &session_id,
+        "mind_map",
+        "succeeded",
+        source_refs.as_slice(),
+        payload_json.as_str(),
+        "",
+        MIND_MAP_SCHEMA_VERSION,
+    )?;
+    insert_model_invocation(
+        connection,
+        &session_id,
+        "succeeded",
+        "基于修正文稿、摘要和来源索引生成 v0.8 思维脑图",
+        "生成 semantic_artifacts(type='mind_map')",
+        "",
+    )?;
+    query_artifact_by_id(connection, &artifact_id)
+}
+
+pub(crate) fn update_mind_map_node(
+    connection: &Connection,
+    command: UpdateMindMapNodeCommand,
+) -> Result<SemanticArtifactDto, String> {
+    if command.label.trim().is_empty() {
+        return Err("脑图节点标题不能为空".to_string());
+    }
+    let source_artifact = query_artifact_by_id(connection, command.artifact_id.as_str())?;
+    let mut mind_map = parse_mind_map_artifact(&source_artifact)?;
+    let node = mind_map
+        .nodes
+        .iter_mut()
+        .find(|candidate| candidate.id == command.node_id)
+        .ok_or_else(|| "未找到脑图节点".to_string())?;
+    node.label = command.label.trim().to_string();
+    node.note = command.note.trim().to_string();
+    mind_map.edited = true;
+    mind_map.version += 1;
+    mind_map.parent_artifact_id = source_artifact.id.clone();
+    insert_edited_mind_map(connection, &source_artifact, &mind_map)
+}
+
+pub(crate) fn toggle_mind_map_node(
+    connection: &Connection,
+    command: ToggleMindMapNodeCommand,
+) -> Result<SemanticArtifactDto, String> {
+    let source_artifact = query_artifact_by_id(connection, command.artifact_id.as_str())?;
+    let mut mind_map = parse_mind_map_artifact(&source_artifact)?;
+    let node = mind_map
+        .nodes
+        .iter_mut()
+        .find(|candidate| candidate.id == command.node_id)
+        .ok_or_else(|| "未找到脑图节点".to_string())?;
+    node.collapsed = command.collapsed;
+    mind_map.edited = true;
+    mind_map.version += 1;
+    mind_map.parent_artifact_id = source_artifact.id.clone();
+    insert_edited_mind_map(connection, &source_artifact, &mind_map)
+}
+
+pub(crate) fn export_mind_map(
+    connection: &Connection,
+    artifact_id: &str,
+    format: &str,
+) -> Result<MindMapExportDto, String> {
+    let artifact = query_artifact_by_id(connection, artifact_id)?;
+    let mind_map = parse_mind_map_artifact(&artifact)?;
+    match format {
+        "markdown" => Ok(MindMapExportDto {
+            format: "markdown".into(),
+            file_name: format!("{}-mind-map.md", artifact.session_id),
+            content: mind_map_to_markdown(&mind_map),
+        }),
+        "json" => Ok(MindMapExportDto {
+            format: "json".into(),
+            file_name: format!("{}-mind-map.json", artifact.session_id),
+            content: serde_json::to_string_pretty(&mind_map)
+                .map_err(|error| format!("导出脑图 JSON 失败: {error}"))?,
+        }),
+        _ => Err("脑图仅支持 markdown 或 json 导出".to_string()),
+    }
+}
+
 fn build_summary(revisions: &[TranscriptRevisionDto]) -> SummaryDto {
     let source_segment_ids = revisions
         .iter()
@@ -375,6 +500,180 @@ fn build_todo_candidates(revisions: &[TranscriptRevisionDto]) -> Vec<TodoCandida
         confidence: 0.82,
         source_segment_ids,
     }]
+}
+
+fn build_mind_map(
+    summary: &SummaryDto,
+    meeting_minutes: &MeetingMinutesDto,
+    revisions: &[TranscriptRevisionDto],
+    edited: bool,
+    version: i64,
+    parent_artifact_id: &str,
+) -> MindMapDto {
+    let mut source_spans = summary.source_segment_ids.clone();
+    for revision in revisions {
+        if !source_spans
+            .iter()
+            .any(|source| source == &revision.source_segment_id)
+        {
+            source_spans.push(revision.source_segment_id.clone());
+        }
+    }
+    if source_spans.is_empty() {
+        source_spans = meeting_minutes.source_segment_ids.clone();
+    }
+
+    let mut nodes = vec![
+        MindMapNodeDto {
+            id: "root".into(),
+            label: summary.title.clone(),
+            kind: "root".into(),
+            note: summary.basis.clone(),
+            source_span_refs: source_spans.clone(),
+            collapsed: false,
+        },
+        MindMapNodeDto {
+            id: "summary".into(),
+            label: "核心摘要".into(),
+            kind: "summary".into(),
+            note: summary.bullets.join("；"),
+            source_span_refs: summary.source_segment_ids.clone(),
+            collapsed: false,
+        },
+    ];
+
+    for (index, decision) in meeting_minutes.decisions.iter().enumerate() {
+        nodes.push(MindMapNodeDto {
+            id: format!("decision_{}", index + 1),
+            label: decision.clone(),
+            kind: "decision".into(),
+            note: "从类型化纪要决策项生成。".into(),
+            source_span_refs: meeting_minutes.source_segment_ids.clone(),
+            collapsed: false,
+        });
+    }
+
+    for revision in revisions.iter().filter(|revision| revision.change_level != "none") {
+        nodes.push(MindMapNodeDto {
+            id: format!("source_{}", revision.source_segment_id),
+            label: revision.revised_text.clone(),
+            kind: "source".into(),
+            note: revision.reason_summary.clone(),
+            source_span_refs: vec![revision.source_segment_id.clone()],
+            collapsed: false,
+        });
+    }
+
+    let mut edges = vec![MindMapEdgeDto {
+        id: "edge_root_summary".into(),
+        from: "root".into(),
+        to: "summary".into(),
+        label: "概括".into(),
+    }];
+    for node in nodes.iter().filter(|node| node.id != "root" && node.id != "summary") {
+        edges.push(MindMapEdgeDto {
+            id: format!("edge_root_{}", node.id),
+            from: "root".into(),
+            to: node.id.clone(),
+            label: match node.kind.as_str() {
+                "decision" => "决策".into(),
+                "source" => "来源".into(),
+                _ => "关联".into(),
+            },
+        });
+    }
+
+    MindMapDto {
+        root: "root".into(),
+        nodes,
+        edges,
+        summary: format!("基于修正文稿与摘要生成：{}", summary.basis),
+        source_spans,
+        edited,
+        version,
+        parent_artifact_id: parent_artifact_id.into(),
+    }
+}
+
+fn parse_mind_map_artifact(artifact: &SemanticArtifactDto) -> Result<MindMapDto, String> {
+    if artifact.artifact_type != "mind_map" {
+        return Err("该语义产物不是思维脑图".to_string());
+    }
+    serde_json::from_str::<MindMapDto>(artifact.payload_json.as_str())
+        .map_err(|error| format!("解析脑图产物失败: {error}"))
+}
+
+fn insert_edited_mind_map(
+    connection: &Connection,
+    source_artifact: &SemanticArtifactDto,
+    mind_map: &MindMapDto,
+) -> Result<SemanticArtifactDto, String> {
+    let artifact_id = next_mind_map_artifact_id(connection, &source_artifact.session_id, true)?;
+    let payload_json =
+        serde_json::to_string(mind_map).map_err(|error| format!("序列化脑图编辑失败: {error}"))?;
+    insert_artifact_with_id(
+        connection,
+        &artifact_id,
+        &source_artifact.session_id,
+        "mind_map",
+        "succeeded",
+        mind_map.source_spans.as_slice(),
+        payload_json.as_str(),
+        "",
+        MIND_MAP_SCHEMA_VERSION,
+    )?;
+    query_artifact_by_id(connection, &artifact_id)
+}
+
+fn mind_map_to_markdown(mind_map: &MindMapDto) -> String {
+    let mut lines = vec![
+        "# 语义脑图".to_string(),
+        String::new(),
+        format!("- 摘要：{}", mind_map.summary),
+        format!("- 版本：{}", mind_map.version),
+        format!(
+            "- 来源：{}",
+            if mind_map.source_spans.is_empty() {
+                "暂无来源".to_string()
+            } else {
+                mind_map.source_spans.join("、")
+            }
+        ),
+        String::new(),
+    ];
+    for node in &mind_map.nodes {
+        let marker = if node.id == mind_map.root { "##" } else { "###" };
+        lines.push(format!("{marker} {}", node.label));
+        if !node.note.trim().is_empty() {
+            lines.push(node.note.clone());
+        }
+        if !node.source_span_refs.is_empty() {
+            lines.push(format!("来源：{}", node.source_span_refs.join("、")));
+        }
+        lines.push(String::new());
+    }
+    lines.join("\n")
+}
+
+fn next_mind_map_artifact_id(
+    connection: &Connection,
+    session_id: &str,
+    edited: bool,
+) -> Result<String, String> {
+    let count = connection
+        .query_row(
+            "SELECT COUNT(1) FROM semantic_artifacts WHERE session_id = ?1 AND artifact_type = 'mind_map'",
+            params![session_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| format!("计算脑图版本失败: {error}"))?;
+    let suffix = if edited { "edited" } else { "generated" };
+    Ok(format!(
+        "semantic_{}_mind_map_{}_v{}",
+        session_id,
+        suffix,
+        count + 1
+    ))
 }
 
 fn upsert_artifact(
@@ -430,6 +729,54 @@ fn upsert_artifact(
             ],
         )
         .map_err(|error| format!("写入语义产物失败: {error}"))?;
+    Ok(())
+}
+
+fn insert_artifact_with_id(
+    connection: &Connection,
+    artifact_id: &str,
+    session_id: &str,
+    artifact_type: &str,
+    status: &str,
+    source_span_refs: &[String],
+    payload_json: &str,
+    error_message: &str,
+    schema_version: &str,
+) -> Result<(), String> {
+    let source_refs_json =
+        serde_json::to_string(source_span_refs).unwrap_or_else(|_| "[]".to_string());
+    connection
+        .execute(
+            r#"
+            INSERT INTO semantic_artifacts (
+              id,
+              session_id,
+              artifact_type,
+              status,
+              provider,
+              model_name,
+              schema_version,
+              source_span_refs,
+              payload_json,
+              error_message,
+              created_at,
+              updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            "#,
+            params![
+                artifact_id,
+                session_id,
+                artifact_type,
+                status,
+                minimax_m3::PROVIDER_ID,
+                minimax_m3::DEFAULT_MODEL_NAME,
+                schema_version,
+                source_refs_json,
+                payload_json,
+                error_message,
+            ],
+        )
+        .map_err(|error| format!("写入语义产物版本失败: {error}"))?;
     Ok(())
 }
 
@@ -621,6 +968,38 @@ fn parse_artifact_payload<T: serde::de::DeserializeOwned>(
         .iter()
         .find(|artifact| artifact.artifact_type == artifact_type && artifact.status == "succeeded")
         .and_then(|artifact| serde_json::from_str::<T>(artifact.payload_json.as_str()).ok())
+}
+
+fn latest_mind_map_payload(
+    connection: &Connection,
+    session_id: &str,
+) -> Result<Option<MindMapDto>, String> {
+    if session_id.is_empty() {
+        return Ok(None);
+    }
+    let artifact = connection
+        .query_row(
+            r#"
+            SELECT id, session_id, artifact_type, status, provider, model_name, schema_version, source_span_refs, payload_json, error_message
+            FROM semantic_artifacts
+            WHERE session_id = ?1
+              AND artifact_type = 'mind_map'
+              AND status = 'succeeded'
+            ORDER BY datetime(created_at) DESC, id DESC
+            LIMIT 1
+            "#,
+            params![session_id],
+            |row| artifact_from_row(row),
+        )
+        .optional()
+        .map_err(|error| format!("查询最新脑图失败: {error}"))?;
+
+    match artifact {
+        Some(artifact) => serde_json::from_str::<MindMapDto>(artifact.payload_json.as_str())
+            .map(Some)
+            .map_err(|error| format!("读取最新脑图失败: {error}")),
+        None => Ok(None),
+    }
 }
 
 fn default_recording_type() -> RecordingTypeDto {
