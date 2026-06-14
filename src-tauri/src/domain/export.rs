@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub(crate) struct GenerateExportBundleCommand {
     pub(crate) formats: Vec<String>,
+    #[serde(default)]
+    pub(crate) target_languages: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
