@@ -33,10 +33,40 @@ export interface TodoPayload {
   id: string;
   title: string;
   note: string;
-  status: "pending" | "completed";
+  status: "open" | "in_progress" | "done" | "dismissed";
   createdAt: string;
   conversationSessionId: string;
   sourceText: string;
+  owner: string;
+  dueAt: string;
+  priority: "low" | "medium" | "high";
+  sourceSpanRefs: string[];
+  candidateId: string;
+}
+
+export interface TodoCandidateItemPayload {
+  id: string;
+  sessionId: string;
+  artifactId: string;
+  title: string;
+  detail: string;
+  owner: string;
+  dueAt: string;
+  priority: "low" | "medium" | "high";
+  confidence: number;
+  status: "proposed" | "accepted" | "dismissed" | "merged";
+  sourceSpanRefs: string[];
+  sourceText: string;
+  todoId: string;
+}
+
+export interface AcceptTodoCandidatePayload {
+  candidateId: string;
+  title: string;
+  detail: string;
+  owner: string;
+  dueAt: string;
+  priority: "low" | "medium" | "high";
 }
 
 export interface SessionPayload {
@@ -300,6 +330,58 @@ export async function toggleDesktopTodoStatus(todoId: string): Promise<TodoPaylo
 
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<TodoPayload>("toggle_todo_status", { todoId });
+}
+
+export async function updateDesktopTodoStatus(
+  todoId: string,
+  status: TodoPayload["status"],
+): Promise<TodoPayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<TodoPayload>("update_todo_status", { todoId, status });
+}
+
+export async function syncDesktopTodoCandidates(): Promise<TodoCandidateItemPayload[] | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<TodoCandidateItemPayload[]>("sync_todo_candidates");
+}
+
+export async function listDesktopTodoCandidates(): Promise<TodoCandidateItemPayload[] | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<TodoCandidateItemPayload[]>("list_todo_candidates");
+}
+
+export async function acceptDesktopTodoCandidate(
+  command: AcceptTodoCandidatePayload,
+): Promise<TodoPayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<TodoPayload>("accept_todo_candidate", { command });
+}
+
+export async function dismissDesktopTodoCandidate(
+  candidateId: string,
+): Promise<TodoCandidateItemPayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<TodoCandidateItemPayload>("dismiss_todo_candidate", { candidateId });
 }
 
 export async function flushDesktopSession(): Promise<SessionPayload | null> {

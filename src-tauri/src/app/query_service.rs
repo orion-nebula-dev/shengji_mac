@@ -16,7 +16,12 @@ pub(crate) fn query_todos(connection: &Connection) -> Result<Vec<TodoDto>, Strin
         status,
         created_at,
         conversation_session_id,
-        IFNULL(source_text, '')
+        IFNULL(source_text, ''),
+        IFNULL(owner, ''),
+        IFNULL(due_at, ''),
+        IFNULL(priority, 'medium'),
+        IFNULL(source_span_refs, '[]'),
+        IFNULL(candidate_id, '')
       FROM todos
       ORDER BY datetime(created_at) DESC, id DESC
       "#,
@@ -25,6 +30,7 @@ pub(crate) fn query_todos(connection: &Connection) -> Result<Vec<TodoDto>, Strin
 
     let rows = statement
         .query_map([], |row| {
+            let source_refs_json: String = row.get(10)?;
             Ok(TodoDto {
                 id: row.get(0)?,
                 title: row.get(1)?,
@@ -33,6 +39,12 @@ pub(crate) fn query_todos(connection: &Connection) -> Result<Vec<TodoDto>, Strin
                 created_at: row.get(4)?,
                 conversation_session_id: row.get(5)?,
                 source_text: row.get(6)?,
+                owner: row.get(7)?,
+                due_at: row.get(8)?,
+                priority: row.get(9)?,
+                source_span_refs: serde_json::from_str::<Vec<String>>(source_refs_json.as_str())
+                    .unwrap_or_default(),
+                candidate_id: row.get(11)?,
             })
         })
         .map_err(|error| format!("查询 Todo 失败: {error}"))?;
