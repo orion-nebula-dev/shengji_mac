@@ -5,14 +5,15 @@ import {
   convertDesktopResearchToTodo,
   deleteDesktopCorrectionPattern,
   dismissDesktopTodoCandidate,
+  downloadDesktopLocalAsrModel,
   flushDesktopSession,
   exportDesktopMindMap,
+  getDesktopLocalAsrState,
   generateDesktopExportBundle,
   generateDesktopMindMap,
   generateDesktopTranslation,
   generateDesktopValueDiscovery,
   generateSemanticWorkbench,
-  importDesktopLocalAudio,
   isTauriEnvironment,
   listDesktopTodoCandidates,
   loadBootstrapData,
@@ -21,11 +22,13 @@ import {
   loadTranscriptReview,
   markDesktopTranscriptSegment,
   processDesktopPendingJobs,
+  refreshDesktopLocalAsrRuntimes,
   renameDesktopSpeaker,
   rejectDesktopTranscriptRevision,
   retryDesktopSemanticArtifact,
   retryDesktopTranscriptJob,
   saveDesktopSettings,
+  selectDesktopLocalAsrModel,
   setDesktopCorrectionPatternEnabled,
   simulateDesktopAudioSlice,
   startDesktopRecording,
@@ -38,13 +41,21 @@ import {
   updateDesktopMindMapNode,
   updateDesktopTodoStatus,
 } from "./lib/desktop";
-import { defaultExportBundle, defaultSemanticWorkbench, defaultTodoCandidates, defaultTranscriptReview } from "./data/mock";
+import {
+  defaultExportBundle,
+  defaultSemanticWorkbench,
+  defaultTodoCandidates,
+  defaultTranscriptReview,
+  mockLocalAsrState,
+} from "./data/mock";
 import { getDefaultState, loadState, saveState } from "./lib/storage";
 import type {
   CorrectionPattern,
   DeepResearchDraft,
   ExportBundle,
   ExportItem,
+  LocalAsrRuntime,
+  LocalAsrState,
   MindMapArtifact,
   MindMapExport,
   MomentArtifact,
@@ -126,6 +137,18 @@ function formatDuration(ms: number) {
     .padStart(2, "0");
   const seconds = (totalSeconds % 60).toString().padStart(2, "0");
   return `${minutes}:${seconds}`;
+}
+
+function formatLocalAsrCacheLabel(cacheDir: string) {
+  return cacheDir.trim() ? "应用模型缓存目录" : "等待模型缓存目录";
+}
+
+function formatLocalAsrRuntimeMessage(runtimeItem: LocalAsrRuntime) {
+  if (runtimeItem.available) {
+    return `${runtimeItem.version || "版本未知"} · ${runtimeItem.runtimeId}`;
+  }
+
+  return runtimeItem.errorMessage ? "未检测到，请确认已安装并在 PATH 中" : "尚未探测 runtime";
 }
 
 function getFallbackReasonText(session?: SessionItem) {
@@ -284,12 +307,23 @@ function createLocalValueArtifact(
   };
 }
 
+function normalizeLocalAsrSettings(settings: SettingsState): SettingsState {
+  return {
+    ...settings,
+    providerMode: "local",
+    asrProviderType: "local_whisperkit",
+    allowCloudFallback: false,
+  };
+}
+
 function App() {
   const manualFlushCooldownMs = 10_000;
   const initialState = useMemo(() => loadState(), []);
   const fallbackState = useMemo(() => getDefaultState(), []);
   const [activeTab, setActiveTab] = useState<TabKey>("overview");
-  const [settings, setSettings] = useState<SettingsState>(initialState.settings);
+  const [settings, setSettings] = useState<SettingsState>(
+    normalizeLocalAsrSettings(initialState.settings),
+  );
   const [todos, setTodos] = useState<TodoItem[]>(initialState.todos);
   const [sessions, setSessions] = useState<SessionItem[]>(initialState.sessions);
   const [runtime, setRuntime] = useState(initialState.runtime);
@@ -303,7 +337,7 @@ function App() {
   const [lastManualFlushAt, setLastManualFlushAt] = useState(0);
   const [transcriptReview, setTranscriptReview] =
     useState<TranscriptReview>(defaultTranscriptReview);
-  const [audioImportPath, setAudioImportPath] = useState("");
+  const [localAsrState, setLocalAsrState] = useState<LocalAsrState>(mockLocalAsrState);
   const [selectedTranscriptSegmentId, setSelectedTranscriptSegmentId] = useState(
     defaultTranscriptReview.segments[0]?.id ?? "",
   );
@@ -464,13 +498,33 @@ function App() {
   useEffect(() => {
     let cancelled = false;
 
+    getDesktopLocalAsrState()
+      .then((state) => {
+        if (!cancelled) {
+          setLocalAsrState(state ?? mockLocalAsrState);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setLocalAsrState(mockLocalAsrState);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
     loadBootstrapData()
       .then((payload) => {
         if (!payload || cancelled) {
           return;
         }
 
-        setSettings(payload.settings);
+        setSettings(normalizeLocalAsrSettings(payload.settings));
         setTodos(payload.todos);
         setSessions(payload.sessions);
         setRuntime(payload.runtime);
@@ -478,7 +532,7 @@ function App() {
       })
       .catch(() => {
         if (!cancelled) {
-          setSettings(fallbackState.settings);
+          setSettings(normalizeLocalAsrSettings(fallbackState.settings));
           setTodos(fallbackState.todos);
           setSessions(fallbackState.sessions);
           setRuntime(fallbackState.runtime);
@@ -518,10 +572,13 @@ function App() {
   }
 
   async function saveSettings() {
-    const persisted = await saveDesktopSettings(settings).catch(() => null);
+    const nextSettings = normalizeLocalAsrSettings(settings);
+    const persisted = await saveDesktopSettings(nextSettings).catch(() => null);
 
     if (persisted) {
-      setSettings(persisted);
+      setSettings(normalizeLocalAsrSettings(persisted));
+    } else {
+      setSettings(nextSettings);
     }
 
     setSaveBanner("设置已保存，下一轮切片与提取将使用新配置。");
@@ -534,7 +591,11 @@ function App() {
     setTestingProvider("");
 
     if (!result) {
-      setSaveBanner("当前浏览器原型模式不支持云模型连接测试。");
+      setSaveBanner(
+        provider === "asr"
+          ? "当前浏览器原型模式仅展示本地 ASR 状态；桌面端会探测 argmax-cli 与 whisperkit-cli。"
+          : "当前浏览器原型模式仅展示 MiniMax M3 配置；桌面端会执行真实连接测试。",
+      );
       window.setTimeout(() => setSaveBanner(""), 3200);
       return;
     }
@@ -543,6 +604,141 @@ function App() {
     const excerpt = result.responseExcerpt ? ` ${result.responseExcerpt}` : "";
     setSaveBanner(`${label} 测试结果：${result.message}${excerpt}`);
     window.setTimeout(() => setSaveBanner(""), 6000);
+  }
+
+  function syncTranscriptModelStatus(modelStatus: LocalAsrState["modelStatus"]) {
+    setTranscriptReview((current) => ({
+      ...current,
+      audio: {
+        ...current.audio,
+        modelName: modelStatus.modelName,
+        offlineAvailable: modelStatus.offlineAvailable,
+      },
+      modelStatus,
+    }));
+  }
+
+  function applyLocalAsrState(nextState: LocalAsrState) {
+    setLocalAsrState(nextState);
+    syncTranscriptModelStatus(nextState.modelStatus);
+    setSettings((current) => ({
+      ...normalizeLocalAsrSettings(current),
+      asrModelName: nextState.selectedModel,
+    }));
+  }
+
+  function applyLocalAsrModelStatus(modelStatus: LocalAsrState["modelStatus"]) {
+    setLocalAsrState((current) => ({
+      ...current,
+      selectedModel: modelStatus.modelName,
+      modelStatus,
+    }));
+    syncTranscriptModelStatus(modelStatus);
+    setSettings((current) => ({
+      ...normalizeLocalAsrSettings(current),
+      asrModelName: modelStatus.modelName,
+    }));
+  }
+
+  async function handleRefreshLocalAsrRuntimes() {
+    const refreshed = await refreshDesktopLocalAsrRuntimes().catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : "探测本地 ASR runtime 失败。";
+      setSaveBanner(message);
+      window.setTimeout(() => setSaveBanner(""), 3600);
+      return null;
+    });
+
+    if (refreshed) {
+      applyLocalAsrState(refreshed);
+      setSaveBanner("已刷新本地 ASR runtime 状态。");
+      window.setTimeout(() => setSaveBanner(""), 2600);
+      return;
+    }
+
+    if (!isTauriEnvironment()) {
+      applyLocalAsrState(mockLocalAsrState);
+      setSaveBanner("浏览器原型模式仅展示本地 ASR mock 状态。");
+      window.setTimeout(() => setSaveBanner(""), 2600);
+    }
+  }
+
+  async function handleSelectLocalAsrModel(modelName: string) {
+    const selected = await selectDesktopLocalAsrModel(modelName).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : "切换本地 ASR 模型失败。";
+      setSaveBanner(message);
+      window.setTimeout(() => setSaveBanner(""), 3600);
+      return null;
+    });
+
+    if (selected) {
+      applyLocalAsrState(selected);
+      setSaveBanner(`已切换本地 ASR 模型：${selected.selectedModel}`);
+      window.setTimeout(() => setSaveBanner(""), 2600);
+      return;
+    }
+
+    if (!isTauriEnvironment()) {
+      const nextStatus: LocalAsrState["modelStatus"] = {
+        ...mockLocalAsrState.modelStatus,
+        modelName,
+      };
+      applyLocalAsrState({
+        ...mockLocalAsrState,
+        runtimes: localAsrState.runtimes,
+        models: localAsrState.models,
+        selectedModel: modelName,
+        modelStatus: nextStatus,
+      });
+      setSaveBanner(`浏览器原型模式已切换本地 ASR 模型：${modelName}`);
+      window.setTimeout(() => setSaveBanner(""), 2600);
+    }
+  }
+
+  async function handleDownloadLocalAsrModel() {
+    const modelName = localAsrState.selectedModel || mockLocalAsrState.selectedModel;
+    const pendingStatus: LocalAsrState["modelStatus"] = {
+      ...localAsrState.modelStatus,
+      modelName,
+      downloadStatus: "downloading",
+      downloadProgress: Math.max(10, localAsrState.modelStatus.downloadProgress),
+      offlineAvailable: false,
+      errorMessage: "",
+    };
+    applyLocalAsrModelStatus(pendingStatus);
+
+    const downloaded = await downloadDesktopLocalAsrModel(modelName).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : "下载本地 ASR 模型失败。";
+      applyLocalAsrModelStatus({
+        ...pendingStatus,
+        downloadStatus: "failed",
+        downloadProgress: 0,
+        offlineAvailable: false,
+        errorMessage: message,
+      });
+      setSaveBanner(message);
+      window.setTimeout(() => setSaveBanner(""), 4200);
+      return null;
+    });
+
+    if (downloaded) {
+      applyLocalAsrModelStatus(downloaded);
+      setSaveBanner(`本地 ASR 模型已就绪：${downloaded.modelName}`);
+      window.setTimeout(() => setSaveBanner(""), 3000);
+      return;
+    }
+
+    if (!isTauriEnvironment()) {
+      const browserStatus: LocalAsrState["modelStatus"] = {
+        ...pendingStatus,
+        downloadStatus: "available",
+        downloadProgress: 100,
+        offlineAvailable: true,
+        errorMessage: "",
+      };
+      applyLocalAsrModelStatus(browserStatus);
+      setSaveBanner("浏览器原型模式已模拟本地 ASR 模型可用。");
+      window.setTimeout(() => setSaveBanner(""), 3000);
+    }
   }
 
   async function toggleTodoStatus(todoId: string) {
@@ -598,7 +794,7 @@ function App() {
     }
 
     setTodoCandidates(candidates ?? defaultTodoCandidates);
-    setSaveBanner("已同步 v0.6 待办候选。");
+    setSaveBanner("已同步待办候选。");
     window.setTimeout(() => setSaveBanner(""), 2400);
   }
 
@@ -761,42 +957,6 @@ function App() {
     window.setTimeout(() => setSaveBanner(""), 4000);
   }
 
-  async function handleImportAudio() {
-    if (!audioImportPath.trim()) {
-      setSaveBanner("请输入本地音频文件路径，用于 v0.5 离线评估。");
-      window.setTimeout(() => setSaveBanner(""), 2600);
-      return;
-    }
-
-    const review = await importDesktopLocalAudio(audioImportPath.trim()).catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : "导入本地音频失败。";
-      setSaveBanner(message);
-      window.setTimeout(() => setSaveBanner(""), 3600);
-      return null;
-    });
-
-    if (!review) {
-      const nextReview = {
-        ...defaultTranscriptReview,
-        audio: {
-          ...defaultTranscriptReview.audio,
-          fileName: audioImportPath.trim().split("/").filter(Boolean).pop() || "local-audio.wav",
-        },
-      };
-      setTranscriptReview(nextReview);
-      setSelectedTranscriptSegmentId(nextReview.segments[0]?.id ?? "");
-      setSaveBanner("浏览器原型模式已载入本地评估样例。桌面端会读取真实路径。");
-      window.setTimeout(() => setSaveBanner(""), 3600);
-      return;
-    }
-
-    setTranscriptReview(review);
-    setSelectedTranscriptSegmentId(review.segments[0]?.id ?? "");
-    setSpeakerDrafts(Object.fromEntries(review.speakers.map((speaker) => [speaker.id, speaker.label])));
-    setSaveBanner("已导入音频并生成本地转写评估时间轴。");
-    window.setTimeout(() => setSaveBanner(""), 3600);
-  }
-
   function jumpToTranscriptSegment(segmentId: string, startMs: number) {
     setSelectedTranscriptSegmentId(segmentId);
     setCurrentPlaybackMs(startMs);
@@ -890,7 +1050,7 @@ function App() {
 
     if (!generated) {
       setSemanticWorkbench(defaultSemanticWorkbench);
-      setSaveBanner("浏览器原型模式已载入 v0.6 语义纪要样例。桌面端会写入 semantic_artifacts。");
+      setSaveBanner("浏览器原型模式已载入语义纪要样例。桌面端会写入 semantic_artifacts。");
       window.setTimeout(() => setSaveBanner(""), 3600);
       return;
     }
@@ -1022,7 +1182,7 @@ function App() {
 
     if (artifact) {
       applyMindMapArtifact(artifact);
-      setSaveBanner("已生成 v0.8 思维脑图。");
+      setSaveBanner("已生成思维脑图。");
       window.setTimeout(() => setSaveBanner(""), 2800);
       return;
     }
@@ -1036,7 +1196,7 @@ function App() {
       };
       const localArtifact = createLocalMindMapArtifact(semanticWorkbench, nextMindMap, false);
       applyMindMapArtifact(localArtifact);
-      setSaveBanner("浏览器原型模式已生成 v0.8 脑图样例。");
+      setSaveBanner("浏览器原型模式已生成脑图样例。");
       window.setTimeout(() => setSaveBanner(""), 2800);
     }
   }
@@ -1171,7 +1331,7 @@ function App() {
     if (!isTauriEnvironment()) {
       setExportBundle(defaultExportBundle);
       setSelectedExportFormat(defaultExportBundle.items[0]?.format ?? "markdown");
-      setSaveBanner("浏览器原型模式已载入 v1.0 导出包样例。");
+      setSaveBanner("浏览器原型模式已载入导出包样例。");
       window.setTimeout(() => setSaveBanner(""), 3200);
     }
   }
@@ -1352,7 +1512,7 @@ function App() {
           ],
         }));
       }
-      setSaveBanner("已生成 v0.9 Moment 与研究草稿。");
+      setSaveBanner("已生成 Moment 与研究草稿。");
       window.setTimeout(() => setSaveBanner(""), 3000);
       return;
     }
@@ -1360,7 +1520,7 @@ function App() {
     if (!isTauriEnvironment()) {
       setSemanticWorkbench(defaultSemanticWorkbench);
       setSelectedResearchId(defaultSemanticWorkbench.deepResearch[0]?.id ?? "");
-      setSaveBanner("浏览器原型模式已载入 v0.9 价值发现样例。");
+      setSaveBanner("浏览器原型模式已载入价值发现样例。");
       window.setTimeout(() => setSaveBanner(""), 3000);
     }
   }
@@ -1586,10 +1746,22 @@ function App() {
     semanticWorkbench.translations.find(
       (translation) => translation.targetLanguage === selectedTargetLanguage,
     ) ?? semanticWorkbench.translations[0];
+  const selectedLocalAsrModel =
+    localAsrState.models.find((model) => model.modelName === localAsrState.selectedModel) ??
+    localAsrState.models[0] ??
+    mockLocalAsrState.models[0];
+  const hasAvailableLocalAsrRuntime = localAsrState.runtimes.some((runtimeItem) => runtimeItem.available);
+  const selectedTranscriptSegment =
+    transcriptReview.segments.find((segment) => segment.id === selectedTranscriptSegmentId) ??
+    transcriptReview.segments[0];
+  const selectedTranscriptJob = selectedTranscriptSegment
+    ? transcriptReview.jobs.find((job) => job.audioSegmentId === selectedTranscriptSegment.audioSegmentId)
+    : transcriptReview.jobs[0];
+  const transcriptErrorJobs = transcriptReview.jobs.filter((job) => job.errorMessage);
   const navItems: Array<{ key: TabKey; label: string; description: string }> = [
     { key: "overview", label: "今日工作台", description: "录音与概览" },
     { key: "actions", label: "行动中心", description: "Todo 执行" },
-    { key: "transcript", label: "转写评估", description: "音频与说话人" },
+    { key: "transcript", label: "录音片段", description: "转写与说话人" },
     { key: "semantic", label: "语义纪要", description: "修正与候选" },
     { key: "research", label: "价值发现", description: "Moment 与研究" },
     { key: "mindmap", label: "思维脑图", description: "结构与导出" },
@@ -1955,7 +2127,7 @@ function App() {
                         <p>
                           {selectedSession?.extractionProviderUsed ?? "未知"}
                           {" / "}
-                          {selectedSession?.extractionFallbackUsed ? "发生过云端兜底" : "未发生云端兜底"}
+                          {selectedSession?.extractionFallbackUsed ? "发生过回退" : "未发生回退"}
                         </p>
                       </div>
                       <div className="detail-block detail-runtime">
@@ -1974,32 +2146,18 @@ function App() {
               <main className="page-stack">
                 <div className="page-heading">
                   <div>
-                    <p className="section-kicker">Transcript Review</p>
-                    <h2>转写评估与说话人</h2>
+                    <p className="section-kicker">转写与说话人</p>
+                    <h2>录音片段</h2>
+                    <p>录音完成后，切片、转写任务和说话人标签会在这里集中呈现。</p>
                   </div>
                   <span
                     className={`status-chip ${
                       transcriptReview.audio.offlineAvailable ? "chip-live" : "chip-danger"
                     }`}
                   >
-                    {transcriptReview.audio.offlineAvailable ? "离线可用" : "需联网"}
+                    {transcriptReview.audio.offlineAvailable ? "离线可用" : "模型未就绪"}
                   </span>
                 </div>
-
-                <section className="transcript-import-bar panel-lite">
-                  <label className="field field-wide">
-                    <span>本地音频路径</span>
-                    <input
-                      type="text"
-                      value={audioImportPath}
-                      onChange={(event) => setAudioImportPath(event.target.value)}
-                      placeholder="/Users/wwh/Audio/meeting.wav"
-                    />
-                  </label>
-                  <button className="primary-button" type="button" onClick={handleImportAudio}>
-                    导入音频
-                  </button>
-                </section>
 
                 <section className="transcript-layout">
                   <section className="panel-lite transcript-main-panel">
@@ -2074,12 +2232,78 @@ function App() {
                         </article>
                       ))}
                       {transcriptReview.segments.length === 0 ? (
-                        <div className="empty-state">暂无转写时间轴，请先导入本地音频</div>
+                        <div className="empty-state transcript-empty-state">
+                          完成录音后，录音片段和转写时间轴会出现在这里。
+                        </div>
                       ) : null}
                     </div>
                   </section>
 
                   <aside className="transcript-side-stack">
+                    <section className="panel-lite">
+                      <div className="panel-head">
+                        <div>
+                          <p className="section-kicker">当前音频</p>
+                          <h3>{transcriptReview.audio.fileName || "暂无音频"}</h3>
+                        </div>
+                        <span className="status-chip">
+                          {formatDuration(transcriptReview.audio.durationMs)}
+                        </span>
+                      </div>
+                      <ul className="compact-list">
+                        <li>
+                          <span>转写状态</span>
+                          <strong>{transcriptJobStatusLabelMap[transcriptReview.audio.status as keyof typeof transcriptJobStatusLabelMap] ?? transcriptReview.audio.status}</strong>
+                        </li>
+                        <li>
+                          <span>当前模型</span>
+                          <strong>{transcriptReview.audio.modelName}</strong>
+                        </li>
+                        <li>
+                          <span>离线状态</span>
+                          <strong>{transcriptReview.audio.offlineAvailable ? "本地可用" : "等待模型"}</strong>
+                        </li>
+                      </ul>
+                    </section>
+
+                    <section className="panel-lite transcript-detail-panel">
+                      <div className="panel-head">
+                        <div>
+                          <p className="section-kicker">片段详情</p>
+                          <h3>{selectedTranscriptSegment?.speakerLabel ?? "暂无片段"}</h3>
+                        </div>
+                        {selectedTranscriptJob ? (
+                          <span
+                            className={`badge ${
+                              selectedTranscriptJob.status === "failed"
+                                ? "badge-failed"
+                                : selectedTranscriptJob.status === "succeeded"
+                                  ? "badge-completed"
+                                  : "badge-waiting"
+                            }`}
+                          >
+                            {transcriptJobStatusLabelMap[selectedTranscriptJob.status]}
+                          </span>
+                        ) : null}
+                      </div>
+                      {selectedTranscriptSegment ? (
+                        <>
+                          <div className="segment-detail-time">
+                            {formatDuration(selectedTranscriptSegment.startMs)} -{" "}
+                            {formatDuration(selectedTranscriptSegment.endMs)}
+                          </div>
+                          <p>{selectedTranscriptSegment.text}</p>
+                          {selectedTranscriptSegment.reviewReason ? (
+                            <p className="review-note">{selectedTranscriptSegment.reviewReason}</p>
+                          ) : null}
+                        </>
+                      ) : (
+                        <div className="empty-state transcript-empty-state">
+                          选择左侧片段后查看详情。
+                        </div>
+                      )}
+                    </section>
+
                     <section className="panel-lite">
                       <div className="panel-head">
                         <div>
@@ -2144,7 +2368,7 @@ function App() {
                         </li>
                         <li>
                           <span>缓存</span>
-                          <strong>{transcriptReview.modelStatus.cacheDir}</strong>
+                          <strong>{formatLocalAsrCacheLabel(transcriptReview.modelStatus.cacheDir)}</strong>
                         </li>
                         <li>
                           <span>状态</span>
@@ -2198,6 +2422,38 @@ function App() {
                         ) : null}
                       </div>
                     </section>
+
+                    <section className="panel-lite transcript-error-panel">
+                      <div className="panel-head">
+                        <div>
+                          <p className="section-kicker">错误摘要</p>
+                          <h3>转写异常</h3>
+                        </div>
+                        <span className={`status-chip ${transcriptErrorJobs.length ? "chip-danger" : "chip-live"}`}>
+                          {transcriptErrorJobs.length} 条
+                        </span>
+                      </div>
+                      <div className="error-summary-list">
+                        {transcriptErrorJobs.map((job) => (
+                          <article key={job.id} className="error-summary-row">
+                            <strong>{job.modelName}</strong>
+                            <p>{job.errorMessage}</p>
+                            <button
+                              className="secondary-button"
+                              type="button"
+                              onClick={() => handleRetryTranscriptJob(job.id)}
+                            >
+                              重试转写
+                            </button>
+                          </article>
+                        ))}
+                        {transcriptErrorJobs.length === 0 ? (
+                          <div className="empty-state transcript-empty-state">
+                            暂无转写错误。
+                          </div>
+                        ) : null}
+                      </div>
+                    </section>
                   </aside>
                 </section>
               </main>
@@ -2233,9 +2489,7 @@ function App() {
                           <p className="section-kicker">Transcript Revision</p>
                           <h3>原文 / 修正文稿对照</h3>
                         </div>
-                        <span className="status-chip">
-                          {semanticWorkbench.recordingType.templateId}
-                        </span>
+                        <span className="status-chip">会议纪要模板</span>
                       </div>
                       <div className="revision-list">
                         {semanticWorkbench.revisions.map((revision) => (
@@ -2345,7 +2599,7 @@ function App() {
                           <p className="section-kicker">Todo Candidates</p>
                           <h3>待办候选</h3>
                         </div>
-                        <span className="status-chip">v0.7 前不写入正式 Todo</span>
+                        <span className="status-chip">确认前不写入正式 Todo</span>
                       </div>
                       <div className="todo-candidate-list">
                         {semanticWorkbench.todoCandidates.map((todo) => (
@@ -2418,7 +2672,7 @@ function App() {
                           <article key={artifact.id} className="artifact-row">
                             <div>
                               <strong>{artifact.artifactType}</strong>
-                              <span>{artifact.provider} · {artifact.schemaVersion}</span>
+                              <span>{artifact.provider}</span>
                               {artifact.errorMessage ? <p>{artifact.errorMessage}</p> : null}
                             </div>
                             <div className="row-actions">
@@ -2474,7 +2728,7 @@ function App() {
               <main className="page-stack">
                 <div className="page-heading">
                   <div>
-                    <p className="section-kicker">Value Discovery / v0.9</p>
+                    <p className="section-kicker">Value Discovery</p>
                     <h2>Moment 与深度研究</h2>
                   </div>
                   <div className="heading-actions">
@@ -2523,7 +2777,7 @@ function App() {
                                   setResearchSegmentId(source);
                                   setActiveTab("transcript");
                                 }}
-                                title="跳转到转写评估页查看来源"
+                                title="跳转到录音片段页查看来源"
                               >
                                 {source}
                               </button>
@@ -2621,7 +2875,7 @@ function App() {
                                 className="source-ref"
                                 type="button"
                                 onClick={() => setActiveTab("transcript")}
-                                title="跳转到转写评估页查看来源"
+                                title="跳转到录音片段页查看来源"
                               >
                                 {source}
                               </button>
@@ -2711,12 +2965,12 @@ function App() {
               <main className="page-stack">
                 <div className="page-heading">
                   <div>
-                    <p className="section-kicker">MindMap / v0.8</p>
+                    <p className="section-kicker">MindMap</p>
                     <h2>思维脑图</h2>
                   </div>
                   <div className="heading-actions">
                     <span className="status-chip">
-                      {currentMindMap?.edited ? `已编辑 v${currentMindMap.version}` : `生成版 v${currentMindMap?.version ?? 0}`}
+                      {currentMindMap?.edited ? `已编辑第 ${currentMindMap.version} 版` : `生成版第 ${currentMindMap?.version ?? 0} 版`}
                     </span>
                     <button
                       className="primary-button"
@@ -2771,7 +3025,7 @@ function App() {
                         })}
                       </div>
                     ) : (
-                      <div className="empty-state">暂无脑图，请先生成 v0.8 思维脑图。</div>
+                      <div className="empty-state">暂无脑图，请先生成思维脑图。</div>
                     )}
                   </section>
 
@@ -2831,7 +3085,7 @@ function App() {
                                 className="source-ref"
                                 type="button"
                                 onClick={() => setActiveTab("transcript")}
-                                title="跳转到转写评估页查看来源"
+                                title="跳转到录音片段页查看来源"
                               >
                                 {source}
                               </button>
@@ -2883,7 +3137,7 @@ function App() {
               <main className="page-stack">
                 <div className="page-heading">
                   <div>
-                    <p className="section-kicker">Export / v1.1</p>
+                    <p className="section-kicker">Export / Local</p>
                     <h2>导出中心</h2>
                   </div>
                   <div className="heading-actions">
@@ -3125,7 +3379,7 @@ function App() {
                       <div className="log-grid">
                         <span>触发：{session.triggerReason}</span>
                         <span>Provider：{session.extractionProviderUsed}</span>
-                        <span>{session.extractionFallbackUsed ? "已云端兜底" : "未兜底"}</span>
+                        <span>{session.extractionFallbackUsed ? "已回退" : "未回退"}</span>
                         <span>原因：{getFallbackReasonText(session)}</span>
                       </div>
                     </article>
@@ -3236,29 +3490,93 @@ function App() {
                         <p className="section-kicker">语音转写模型</p>
                         <h3>本地优先 ASR</h3>
                       </div>
-                      <button className="secondary-button" type="button" onClick={() => handleModelTest("asr")} disabled={testingProvider === "asr"}>
-                        {testingProvider === "asr" ? "测试中..." : "测试连接"}
-                      </button>
+                      <div className="heading-actions local-asr-actions">
+                        <button className="secondary-button" type="button" onClick={handleRefreshLocalAsrRuntimes}>
+                          探测 runtime
+                        </button>
+                        <button className="secondary-button" type="button" onClick={() => handleModelTest("asr")} disabled={testingProvider === "asr"}>
+                          {testingProvider === "asr" ? "检测中..." : "测试状态"}
+                        </button>
+                        <button
+                          className="primary-button"
+                          type="button"
+                          onClick={handleDownloadLocalAsrModel}
+                          disabled={localAsrState.modelStatus.downloadStatus === "downloading"}
+                        >
+                          {localAsrState.modelStatus.downloadStatus === "downloading" ? "下载中" : "下载模型"}
+                        </button>
+                      </div>
                     </div>
                     <div className="settings-grid">
                       <label className="field">
-                        <span>转写模式</span>
-                        <select value={settings.asrProviderType} onChange={(event) => handleSettingsChange("asrProviderType", event.target.value as SettingsState["asrProviderType"])}>
-                          <option value="local_whisperkit">本地 WhisperKit / Argmax</option>
-                          <option value="cloud_volc">火山云端 ASR</option>
+                        <span>ASR Provider</span>
+                        <input type="text" value={settings.asrProviderType} readOnly />
+                      </label>
+                      <label className="field">
+                        <span>本地模型</span>
+                        <select
+                          value={localAsrState.selectedModel}
+                          onChange={(event) => handleSelectLocalAsrModel(event.target.value)}
+                        >
+                          {localAsrState.models.map((model) => (
+                            <option key={model.modelName} value={model.modelName}>
+                              {model.modelName} · {model.sizeHint}
+                              {model.recommended ? " · 默认" : ""}
+                            </option>
+                          ))}
                         </select>
                       </label>
-                      <label className="field"><span>提交地址</span><input type="url" value={settings.asrSubmitUrl} onChange={(event) => handleSettingsChange("asrSubmitUrl", event.target.value)} /></label>
-                      <label className="field"><span>查询地址</span><input type="url" value={settings.asrQueryUrl} onChange={(event) => handleSettingsChange("asrQueryUrl", event.target.value)} /></label>
-                      <label className="field"><span>资源 ID</span><input type="text" value={settings.asrResourceId} onChange={(event) => handleSettingsChange("asrResourceId", event.target.value)} /></label>
-                      <label className="field"><span>模型类型</span><input type="text" value={settings.asrModelName} onChange={(event) => handleSettingsChange("asrModelName", event.target.value)} /></label>
-                      <label className="field field-wide"><span>API Key</span><input type="password" value={settings.asrApiKeyMasked} onChange={(event) => handleSettingsChange("asrApiKeyMasked", event.target.value)} /></label>
-                      <label className="field checkbox-field"><span>本地 ASR 不可用时允许云端兜底</span><input type="checkbox" checked={settings.allowCloudFallback} onChange={(event) => handleSettingsChange("allowCloudFallback", event.target.checked)} /></label>
+                      <div className="local-asr-model-summary field-wide">
+                        <div>
+                          <span>模型说明</span>
+                          <strong>{selectedLocalAsrModel.modelName}</strong>
+                          <p>{selectedLocalAsrModel.qualityHint}</p>
+                        </div>
+                        <div>
+                          <span>离线状态</span>
+                          <strong>{localAsrState.modelStatus.offlineAvailable ? "本地可用" : "未就绪"}</strong>
+                          <p>{formatLocalAsrCacheLabel(localAsrState.modelStatus.cacheDir)}</p>
+                        </div>
+                      </div>
+                      <div className="local-asr-runtime-grid field-wide">
+                        {localAsrState.runtimes.map((runtimeItem) => (
+                          <article key={runtimeItem.runtimeId} className="local-asr-runtime-card">
+                            <div className="todo-card-header">
+                              <strong>{runtimeItem.displayName}</strong>
+                              <span className={`badge ${runtimeItem.available ? "badge-completed" : "badge-waiting"}`}>
+                                {runtimeItem.available ? "可用" : "未检测"}
+                              </span>
+                            </div>
+                            <p title="runtime ID: argmax-cli / whisperkit-cli">{runtimeItem.runtimeId}</p>
+                            <p title={`runtime ID: ${runtimeItem.runtimeId}`}>
+                              {formatLocalAsrRuntimeMessage(runtimeItem)}
+                            </p>
+                          </article>
+                        ))}
+                      </div>
+                      <div className="local-asr-status-card field-wide">
+                        <div className="todo-card-header">
+                          <div>
+                            <span>模型状态</span>
+                            <strong>{localAsrState.modelStatus.downloadStatus}</strong>
+                          </div>
+                          <span className={`status-chip ${hasAvailableLocalAsrRuntime ? "chip-live" : "chip-danger"}`}>
+                            {hasAvailableLocalAsrRuntime ? "runtime 可用" : "runtime 未就绪"}
+                          </span>
+                        </div>
+                        <div className="model-progress-track">
+                          <span style={{ width: `${localAsrState.modelStatus.downloadProgress}%` }} />
+                        </div>
+                        <p>{localAsrState.modelStatus.deviceRecommendation}</p>
+                        {localAsrState.modelStatus.errorMessage ? (
+                          <p className="local-asr-error">{localAsrState.modelStatus.errorMessage}</p>
+                        ) : null}
+                      </div>
                     </div>
                     <div className="runtime-hint">
                       <p className="section-kicker">本地优先策略</p>
                       <p>
-                        当前本地 WhisperKit / Argmax 已纳入 v1.0 产品闭环。关闭兜底时不会上传音频。
+                        当前本地 WhisperKit / Argmax 已纳入产品闭环；音频转写默认留在本机。
                       </p>
                     </div>
                   </section>
@@ -3269,7 +3587,7 @@ function App() {
                         <p className="section-kicker">语义理解与隐私边界</p>
                         <h3>MiniMax M3 工作台基座</h3>
                       </div>
-                      <span className="status-chip">v1.0 产品闭环</span>
+                      <span className="status-chip">产品闭环</span>
                     </div>
                     <div className="settings-grid settings-grid-three">
                       <label className="field">
@@ -3311,7 +3629,7 @@ function App() {
                       </div>
                       <div>
                         <strong>预留</strong>
-                        <p>Embedding 保持预留；本地导出已在 v1.0 启用。</p>
+                        <p>Embedding 保持预留；本地导出已启用。</p>
                       </div>
                     </div>
                     <div className="provider-status-grid">
@@ -3328,7 +3646,7 @@ function App() {
                       <div>
                         <span>密钥状态</span>
                         <strong>{settings.semanticApiKeyMasked ? "已配置 M3 Key" : "未配置 M3 Key"}</strong>
-                        <p>{settings.asrApiKeyMasked ? "ASR Key 已脱敏保存。" : "ASR Key 未配置；本地 ASR 可继续使用。"}</p>
+                        <p>本地 ASR 不需要转写服务密钥；语义理解继续使用 MiniMax M3 配置。</p>
                       </div>
                       <div>
                         <span>隐私说明</span>
@@ -3360,7 +3678,7 @@ function App() {
                     </div>
                     <div className="runtime-hint">
                       <p className="section-kicker">语义入口</p>
-                      <p>v1.0 已将 Todo 候选、纪要、脑图和导出闭环统一纳入 MiniMax M3 语义产物。</p>
+                      <p>Todo 候选、纪要、脑图和导出闭环已统一纳入 MiniMax M3 语义产物。</p>
                       <p>Todo 候选统一通过 MiniMax M3 语义链路承载，产物落库到 semantic_artifacts。</p>
                     </div>
                   </section>
@@ -3370,6 +3688,7 @@ function App() {
           </section>
         </div>
       </div>
+      <div className="app-version-corner">v1.2.1</div>
     </div>
   );
 }

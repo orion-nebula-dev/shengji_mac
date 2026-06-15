@@ -1,10 +1,11 @@
 use std::path::Path;
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, Error::QueryReturnedNoRows};
 
 use crate::{
     current_timestamp_label,
     domain::{
+        local_asr,
         speaker::SpeakerDto,
         transcript::{
             LocalModelStatusDto, TranscriptAudioDto, TranscriptJobDto, TranscriptReviewDto,
@@ -14,15 +15,13 @@ use crate::{
     providers::asr::local_whisperkit,
 };
 
-const DEFAULT_TRANSCRIPT_MODEL: &str = "large-v3-turbo";
-
 pub(crate) fn import_local_audio(
     connection: &Connection,
     file_path: &str,
 ) -> Result<TranscriptReviewDto, String> {
     let path = Path::new(file_path);
     if file_path.trim().is_empty() {
-        return Err("本地音频路径不能为空".to_string());
+        return Err("测试音频路径不能为空".to_string());
     }
     if !path.exists() {
         return Err("本地音频文件不存在，请检查路径".to_string());
@@ -57,7 +56,7 @@ pub(crate) fn import_local_audio(
             "#,
             params![audio_id.as_str(), file_path, trace_id.as_str()],
         )
-        .map_err(|error| format!("写入导入音频失败: {error}"))?;
+        .map_err(|error| format!("写入开发测试音频失败: {error}"))?;
 
     connection
         .execute(
@@ -81,7 +80,7 @@ pub(crate) fn import_local_audio(
                 format!("transcript_job_{timestamp}"),
                 audio_id.as_str(),
                 local_whisperkit::PROVIDER_ID,
-                DEFAULT_TRANSCRIPT_MODEL,
+                local_asr::DEFAULT_LOCAL_ASR_MODEL,
             ],
         )
         .map_err(|error| format!("写入转写任务失败: {error}"))?;
@@ -103,8 +102,8 @@ pub(crate) fn get_transcript_review(
                 duration_ms: 0,
                 status: "empty".into(),
                 provider: local_whisperkit::PROVIDER_ID.into(),
-                model_name: DEFAULT_TRANSCRIPT_MODEL.into(),
-                offline_available: true,
+                model_name: local_asr::DEFAULT_LOCAL_ASR_MODEL.into(),
+                offline_available: false,
             },
             segments: Vec::new(),
             speakers: query_speakers(connection)?,
@@ -171,6 +170,16 @@ pub(crate) fn retry_transcript_job(
     connection: &Connection,
     job_id: &str,
 ) -> Result<TranscriptJobDto, String> {
+    let retry_candidate = query_transcript_job(connection, job_id)?
+        .ok_or_else(|| "未找到可重试转写任务，或任务已达到最大重试次数".to_string())?;
+    if retry_candidate.status != "failed"
+        || retry_candidate.retry_count >= retry_candidate.max_retry_count
+    {
+        return Err("未找到可重试转写任务，或任务已达到最大重试次数".to_string());
+    }
+
+    crate::app::local_asr_service::ensure_local_asr_ready(connection)?;
+
     let updated_count = connection
         .execute(
             r#"
@@ -190,6 +199,40 @@ pub(crate) fn retry_transcript_job(
     if updated_count == 0 {
         return Err("未找到可重试转写任务，或任务已达到最大重试次数".to_string());
     }
+
+    connection
+        .execute(
+            r#"
+            INSERT INTO processing_jobs (
+              id,
+              job_type,
+              target_id,
+              status,
+              retry_count,
+              max_retry_count,
+              error_message,
+              trace_id,
+              created_at
+            ) VALUES (?1, 'transcription', ?2, 'pending', ?3, ?4, NULL, ?5, CURRENT_TIMESTAMP)
+            ON CONFLICT(id) DO UPDATE SET
+              target_id = excluded.target_id,
+              status = 'pending',
+              retry_count = excluded.retry_count,
+              max_retry_count = excluded.max_retry_count,
+              error_message = NULL,
+              trace_id = excluded.trace_id,
+              started_at = NULL,
+              finished_at = NULL
+            "#,
+            params![
+                retry_candidate.id.as_str(),
+                retry_candidate.audio_segment_id.as_str(),
+                retry_candidate.retry_count + 1,
+                retry_candidate.max_retry_count,
+                format!("trace_retry_{}", retry_candidate.audio_segment_id),
+            ],
+        )
+        .map_err(|error| format!("重建转写处理任务失败: {error}"))?;
 
     query_transcript_job(connection, job_id)?.ok_or_else(|| "未找到可重试转写任务".to_string())
 }
@@ -230,7 +273,7 @@ fn insert_demo_timeline(
             "speaker_1",
             0,
             12_500,
-            format!("已导入 {file_name}，本地转写评估开始。"),
+            format!("已载入 {file_name}，录音片段处理开始。"),
             0.91,
         ),
         (
@@ -282,7 +325,7 @@ fn insert_demo_timeline(
                     text,
                     confidence,
                     local_whisperkit::PROVIDER_ID,
-                    DEFAULT_TRANSCRIPT_MODEL,
+                    local_asr::DEFAULT_LOCAL_ASR_MODEL,
                     trace_id,
                 ],
             )
@@ -318,6 +361,9 @@ fn insert_demo_timeline(
 }
 
 fn latest_audio(connection: &Connection) -> Result<Option<TranscriptAudioDto>, String> {
+    let offline_available = query_local_model_status(connection)
+        .map(|status| status.offline_available)
+        .unwrap_or_else(|_| default_local_model_status().offline_available);
     let row = connection
         .query_row(
             r#"
@@ -333,7 +379,10 @@ fn latest_audio(connection: &Connection) -> Result<Option<TranscriptAudioDto>, S
             ORDER BY datetime(audio_segments.created_at) DESC, audio_segments.id DESC
             LIMIT 1
             "#,
-            params![local_whisperkit::PROVIDER_ID, DEFAULT_TRANSCRIPT_MODEL],
+            params![
+                local_whisperkit::PROVIDER_ID,
+                local_asr::DEFAULT_LOCAL_ASR_MODEL
+            ],
             |row| {
                 let path: String = row.get(1)?;
                 let file_name = Path::new(&path)
@@ -348,7 +397,7 @@ fn latest_audio(connection: &Connection) -> Result<Option<TranscriptAudioDto>, S
                     status: row.get(3)?,
                     provider: row.get(4)?,
                     model_name: row.get(5)?,
-                    offline_available: true,
+                    offline_available,
                 })
             },
         )
@@ -533,14 +582,14 @@ fn query_transcript_job(
 }
 
 fn query_local_model_status(connection: &Connection) -> Result<LocalModelStatusDto, String> {
-    connection
+    match connection
         .query_row(
             r#"
-            SELECT provider, model_name, cache_dir, download_status, download_progress, offline_available, device_recommendation
+            SELECT provider, model_name, cache_dir, download_status, download_progress, offline_available, device_recommendation, error_message
             FROM local_model_status
             WHERE provider = ?1
             "#,
-            params![local_whisperkit::PROVIDER_ID],
+            params![local_asr::LOCAL_ASR_PROVIDER],
             |row| {
                 Ok(LocalModelStatusDto {
                     provider: row.get(0)?,
@@ -550,8 +599,27 @@ fn query_local_model_status(connection: &Connection) -> Result<LocalModelStatusD
                     download_progress: row.get(4)?,
                     offline_available: row.get::<_, i64>(5)? == 1,
                     device_recommendation: row.get(6)?,
+                    error_message: row.get(7)?,
                 })
             },
         )
-        .map_err(|error| format!("读取本地模型状态失败: {error}"))
+    {
+        Ok(status) => Ok(status),
+        Err(QueryReturnedNoRows) => Ok(default_local_model_status()),
+        Err(error) => Err(format!("读取本地模型状态失败: {error}")),
+    }
+}
+
+fn default_local_model_status() -> LocalModelStatusDto {
+    LocalModelStatusDto {
+        provider: local_asr::LOCAL_ASR_PROVIDER.into(),
+        model_name: local_asr::DEFAULT_LOCAL_ASR_MODEL.into(),
+        cache_dir: local_asr::LOCAL_ASR_CACHE_DIR.into(),
+        download_status: "not_started".into(),
+        download_progress: 0,
+        offline_available: false,
+        device_recommendation:
+            "默认使用 large-v3-v20240930_626MB；设备或下载失败时可切换 base/tiny。".into(),
+        error_message: String::new(),
+    }
 }
