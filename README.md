@@ -1,6 +1,6 @@
 # 声记
 
-一个运行在 macOS 桌面端的声记工作台，目标是把“录音 / 音频导入 -> 本地转写 -> 说话人分离 -> 转写修正 -> MiniMax M3 类型化语义理解 -> Todo / 摘要 / 脑图 / Moment / 深度研究 / 翻译 / 多语言导出”串成可追溯的桌面工作流。
+一个运行在 macOS 桌面端的声记工作台，目标是把“录音 -> 本地转写 -> 说话人分离 -> 转写修正 -> MiniMax M3 类型化语义理解 -> Todo / 摘要 / 脑图 / Moment / 深度研究 / 翻译 / 多语言导出”串成可追溯的桌面工作流。
 
 当前实现基于 `Tauri 2 + Rust + React + TypeScript + SQLite`，前端负责配置与结果展示，Rust 负责录音、数据库和模型调用编排。
 
@@ -8,25 +8,27 @@
 
 1. 支持桌面端启动与本地 SQLite 持久化。
 2. 支持设置录音开关、切片时长、空闲触发时间。
-3. 支持 ASR、Speaker、Semantic、Embedding、Export provider 边界配置。
+3. 支持本地 ASR、Speaker、Semantic、Embedding、Export provider 边界配置。
 4. 支持真实麦克风录音，并将录音文件保存到本地。
-5. 支持本地音频导入、离线转写评估时间轴、说话人标签修正与失败转写任务重试。
+5. 支持录音片段查看、离线转写时间轴、说话人标签修正与失败转写任务重试。
 6. Todo 入口固定为 MiniMax M3 语义边界，候选产物先进入 `semantic_artifacts(type='todo_extraction')`。
 7. 支持 Todo 完成/未完成切换。
-8. 支持本地模型缓存状态展示、处理任务记录、失败原因记录与基础稳定性保护。
+8. 支持本地 ASR runtime 探测、模型下载状态、缓存目录、处理任务记录、失败原因记录与基础稳定性保护。
 9. 支持基于修正文稿和摘要生成思维脑图，节点可编辑、折叠、追溯来源并导出 Markdown / JSON。
 10. 支持自动生成 Moment、Deep Research 草稿，并把研究结论转为 Todo 或脑图节点。
-11. 支持 v1.0 导出中心：Markdown、SRT、JSON、本地分享快照、会话归档搜索、导出记录和 provider 成本 / 隐私 / 密钥状态展示。
-12. 支持 v1.1 翻译与多语言导出：转写翻译、摘要翻译、多语言 Markdown / JSON / 快照模板和来源追溯。
+11. 支持导出中心：Markdown、SRT、JSON、本地分享快照、会话归档搜索、导出记录和 provider 成本 / 隐私 / 密钥状态展示。
+12. 支持翻译与多语言导出：转写翻译、摘要翻译、多语言 Markdown / JSON / 快照模板和来源追溯。
 
-## v1.1 处理链路
+## v1.2.1 处理链路
 
 ```text
-录音开始 / 本地音频导入
+录音开始
 -> 本地生成或读取 wav 文件
 -> 写入 audio_segments
 -> 创建 transcription 任务
--> 通过 local_whisperkit / Argmax 边界生成离线转写评估时间轴
+-> 探测 argmax-cli / whisperkit-cli
+-> 下载或校验本地 ASR 模型
+-> 调用本地 CLI 生成录音片段时间轴
 -> 写入 transcript_segments / speakers / speaker_segments
 -> 支持说话人改名、时间轴跳转、错误片段标注与失败任务重试
 -> 创建 conversation_sessions
@@ -97,17 +99,23 @@ SQLite 数据库：
 ~/Library/Application Support/com.shengji.desktop/shengji.sqlite
 ```
 
+本地 ASR 模型缓存：
+
+```text
+~/Library/Application Support/com.soundworkbench.shengji/models/whisperkit
+```
+
 ## 配置说明
 
-### ASR 配置
+### 本地 ASR 配置
 
-当前项目已适配火山语音识别配置项：
+当前项目使用本地优先 ASR：
 
-1. `ASR 提交地址`
-2. `ASR 查询地址`
-3. `ASR 资源 ID`
-4. `ASR 模型类型`
-5. `ASR API Key`
+1. 探测 `argmax-cli` 与 `whisperkit-cli`。
+2. 默认模型为 `large-v3-v20240930_626MB`。
+3. 可切换到 `base` 或 `tiny` 小模型。
+4. 应用通过 CLI `transcribe --model ... --download-model-path ... --download-tokenizer-path ...` 预热下载模型，并记录缓存目录、下载进度、离线可用状态和错误提示。
+5. 未安装 runtime 或模型未就绪时，录音转写会给出明确缺失提示。
 
 ### MiniMax M3 语义配置
 
@@ -128,24 +136,15 @@ SQLite 数据库：
 
 ## 文档目录
 
-详细文档见 [AI文档索引](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/README.md>)：
+详细文档见 [AI文档索引](AI文档/README.md)：
 
-1. [工作区目录规范](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/00-项目总览/工作区目录规范.md>)
-2. [声记-版本迭代与项目架构方案](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/02-技术方案/声记-版本迭代与项目架构方案.md>)
-3. [声记-版本迭代目标与代码归档方案](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/03-版本迭代/声记-版本迭代目标与代码归档方案.md>)
-4. [MiniMax-能力验证说明](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/06-验证报告/能力验证/MiniMax-能力验证说明.md>)
-5. [开发规范](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/05-规范制度/开发规范.md>)
-6. [Git规范](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/05-规范制度/Git规范.md>)
-7. [发布说明_v0.2.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v0.2.0.md>)
-8. [发布说明_v0.3.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v0.3.0.md>)
-9. [发布说明_v0.4.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v0.4.0.md>)
-10. [发布说明_v0.5.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v0.5.0.md>)
-11. [发布说明_v0.6.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v0.6.0.md>)
-12. [发布说明_v0.7.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v0.7.0.md>)
-13. [发布说明_v0.8.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v0.8.0.md>)
-14. [发布说明_v0.9.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v0.9.0.md>)
-15. [发布说明_v1.0.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v1.0.0.md>)
-16. [发布说明_v1.1.0](</Users/wwh/Documents/AI项目管理/shengji_mac/AI文档/04-发布记录/发布说明_v1.1.0.md>)
+1. [工作区目录规范](AI文档/00-项目总览/工作区目录规范.md)
+2. [声记-版本迭代与项目架构方案](AI文档/02-技术方案/声记-版本迭代与项目架构方案.md)
+3. [声记-版本迭代目标与代码归档方案](AI文档/03-版本迭代/声记-版本迭代目标与代码归档方案.md)
+4. [MiniMax-能力验证说明](AI文档/06-验证报告/能力验证/MiniMax-能力验证说明.md)
+5. [开发规范](AI文档/05-规范制度/开发规范.md)
+6. [Git规范](AI文档/05-规范制度/Git规范.md)
+7. [最新发布说明](AI文档/04-发布记录/发布说明_v1.2.1.md)
 
 过时的一期文档、旧 v2.0 PRD 和旧设计包已归档到：
 
@@ -155,13 +154,12 @@ AI文档/废纸篓/2026-06-12-旧方案归档/
 
 ## 当前边界
 
-当前为 v1.1 多语言导出版本，尚未完成：
+当前为 v1.2.1 本地 ASR 设置优化版本，尚未完成：
 
 1. 自动 30 秒滚动切片录音。
-2. 真实 Argmax local server / CLI 推理执行与模型下载器。
-3. 声纹识别与特定用户过滤。
-4. SpeakerKit 真实说话人分离推理接入。
-5. 多设备同步。
-6. 云端分享和外部同步。
-7. 真实联网深度研究检索与外部资料引用。
-8. 播客脚本、TTS provider 和音频生成入口。
+2. 声纹识别与特定用户过滤。
+3. SpeakerKit 真实说话人分离推理接入。
+4. 多设备同步。
+5. 云端分享和外部同步。
+6. 真实联网深度研究检索与外部资料引用。
+7. 播客脚本、TTS provider 和音频生成入口。

@@ -2,10 +2,14 @@ use rusqlite::{params, Connection};
 use std::{fs, path::PathBuf};
 
 use crate::{
+    domain::local_asr::{DEFAULT_LOCAL_ASR_MODEL, LOCAL_ASR_CACHE_DIR, LOCAL_ASR_PROVIDER},
     DEFAULT_ASR_PROVIDER_TYPE, DEFAULT_EMBEDDING_PROVIDER_TYPE, DEFAULT_EXPORT_PROVIDER_TYPE,
     DEFAULT_SEMANTIC_BASE_URL, DEFAULT_SEMANTIC_MODEL_NAME, DEFAULT_SEMANTIC_PROVIDER_TYPE,
     DEFAULT_SPEAKER_PROVIDER_TYPE, DEFAULT_TODO_PROVIDER_TYPE,
 };
+
+const OLD_LOCAL_ASR_DEVICE_RECOMMENDATION: &str =
+    "Apple Silicon 推荐 large-v3-turbo；Intel 机型建议 small/base";
 
 pub(crate) fn open_connection(db_path: &PathBuf) -> Result<Connection, String> {
     Connection::open(db_path).map_err(|error| format!("打开数据库失败: {error}"))
@@ -23,6 +27,9 @@ fn ensure_app_settings_columns(connection: &Connection) -> Result<(), String> {
     for column in rows {
         columns.push(column.map_err(|error| format!("读取设置字段失败: {error}"))?);
     }
+
+    let had_asr_submit_url = columns.iter().any(|column| column == "asr_submit_url");
+    let had_asr_query_url = columns.iter().any(|column| column == "asr_query_url");
 
     for (name, sql) in [
         (
@@ -97,20 +104,36 @@ fn ensure_app_settings_columns(connection: &Connection) -> Result<(), String> {
         }
     }
 
+    if !had_asr_query_url || !had_asr_submit_url {
+        connection
+            .execute(
+                r#"
+                UPDATE app_settings
+                SET
+                  asr_query_url = CASE
+                    WHEN ?1 = 1 AND asr_query_url = '' THEN asr_base_url
+                    ELSE asr_query_url
+                  END,
+                  asr_submit_url = CASE
+                    WHEN ?2 = 1 AND asr_submit_url = '' AND asr_base_url LIKE '%/query' THEN REPLACE(asr_base_url, '/query', '/submit')
+                    WHEN ?2 = 1 AND asr_submit_url = '' THEN asr_base_url
+                    ELSE asr_submit_url
+                  END
+                WHERE id = 'default'
+                "#,
+                params![
+                    if had_asr_query_url { 0 } else { 1 },
+                    if had_asr_submit_url { 0 } else { 1 },
+                ],
+            )
+            .map_err(|error| format!("迁移旧版 ASR URL 设置失败: {error}"))?;
+    }
+
     connection
         .execute(
             r#"
             UPDATE app_settings
             SET
-              asr_query_url = CASE
-                WHEN asr_query_url = '' THEN asr_base_url
-                ELSE asr_query_url
-              END,
-              asr_submit_url = CASE
-                WHEN asr_submit_url = '' AND asr_base_url LIKE '%/query' THEN REPLACE(asr_base_url, '/query', '/submit')
-                WHEN asr_submit_url = '' THEN asr_base_url
-                ELSE asr_submit_url
-              END,
               asr_resource_id = CASE
                 WHEN asr_resource_id = '' THEN asr_model_name
                 ELSE asr_resource_id
@@ -119,11 +142,7 @@ fn ensure_app_settings_columns(connection: &Connection) -> Result<(), String> {
                 WHEN asr_model_name LIKE 'volc.%' THEN 'bigmodel'
                 ELSE asr_model_name
               END,
-              asr_provider_type = CASE
-                WHEN TRIM(asr_provider_type) = '' OR asr_provider_type = 'local' THEN 'local_whisperkit'
-                WHEN asr_provider_type = 'cloud' THEN 'cloud_volc'
-                ELSE asr_provider_type
-              END,
+              asr_provider_type = 'local_whisperkit',
               speaker_provider_type = CASE
                 WHEN TRIM(speaker_provider_type) = '' THEN 'local_speakerkit'
                 ELSE speaker_provider_type
@@ -155,10 +174,7 @@ fn ensure_app_settings_columns(connection: &Connection) -> Result<(), String> {
                 WHEN TRIM(semantic_model_name) = '' THEN 'MiniMax-M3'
                 ELSE semantic_model_name
               END,
-              allow_cloud_fallback = CASE
-                WHEN allow_cloud_fallback IS NULL THEN 1
-                ELSE allow_cloud_fallback
-              END
+              allow_cloud_fallback = 0
             WHERE id = 'default'
             "#,
             [],
@@ -321,6 +337,171 @@ fn ensure_transcript_segments_v05_columns(connection: &Connection) -> Result<(),
                 .map_err(|error| format!("补充转写片段字段 {name} 失败: {error}"))?;
         }
     }
+
+    Ok(())
+}
+
+fn ensure_local_model_status_schema(connection: &Connection) -> Result<(), String> {
+    let mut columns = Vec::new();
+    let mut statement = connection
+        .prepare("PRAGMA table_info(local_model_status)")
+        .map_err(|error| format!("读取本地模型状态表结构失败: {error}"))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| format!("查询本地模型状态字段失败: {error}"))?;
+
+    for column in rows {
+        columns.push(column.map_err(|error| format!("读取本地模型状态字段失败: {error}"))?);
+    }
+
+    if !columns.iter().any(|column| column == "error_message") {
+        connection
+            .execute(
+                "ALTER TABLE local_model_status ADD COLUMN error_message TEXT NOT NULL DEFAULT ''",
+                [],
+            )
+            .map_err(|error| format!("补充本地模型状态错误字段失败: {error}"))?;
+    }
+
+    let table_sql = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'local_model_status'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(|error| format!("读取本地模型状态表定义失败: {error}"))?;
+
+    if table_sql.contains("DEFAULT 'available'")
+        || table_sql.contains("DEFAULT 100")
+        || table_sql.contains("offline_available INTEGER NOT NULL DEFAULT 1")
+    {
+        connection
+            .execute_batch(
+                r#"
+                DROP TABLE IF EXISTS local_model_status_default_migration;
+                ALTER TABLE local_model_status RENAME TO local_model_status_default_migration;
+
+                CREATE TABLE local_model_status (
+                  provider TEXT PRIMARY KEY,
+                  model_name TEXT NOT NULL,
+                  cache_dir TEXT NOT NULL,
+                  download_status TEXT NOT NULL DEFAULT 'not_started'
+                    CHECK (download_status IN ('not_started', 'downloading', 'available', 'failed')),
+                  download_progress INTEGER NOT NULL DEFAULT 0 CHECK (download_progress >= 0 AND download_progress <= 100),
+                  offline_available INTEGER NOT NULL DEFAULT 0 CHECK (offline_available IN (0, 1)),
+                  device_recommendation TEXT NOT NULL DEFAULT '',
+                  error_message TEXT NOT NULL DEFAULT '',
+                  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                INSERT INTO local_model_status (
+                  provider,
+                  model_name,
+                  cache_dir,
+                  download_status,
+                  download_progress,
+                  offline_available,
+                  device_recommendation,
+                  error_message,
+                  updated_at
+                )
+                SELECT
+                  provider,
+                  model_name,
+                  cache_dir,
+                  download_status,
+                  download_progress,
+                  offline_available,
+                  device_recommendation,
+                  error_message,
+                  updated_at
+                FROM local_model_status_default_migration;
+
+                DROP TABLE local_model_status_default_migration;
+                "#,
+            )
+            .map_err(|error| format!("迁移本地模型状态默认值失败: {error}"))?;
+    }
+
+    connection
+        .execute(
+            r#"
+            UPDATE local_model_status
+            SET
+              model_name = CASE
+                WHEN download_status = 'available'
+                  AND download_progress = 100
+                  AND offline_available = 1
+                  AND (
+                    model_name = 'large-v3-turbo'
+                    OR cache_dir LIKE '%com.smarttodo.desktop/models/argmax%'
+                    OR device_recommendation = ?4
+                  ) THEN ?2
+                WHEN TRIM(model_name) = '' OR model_name = 'large-v3-turbo' THEN ?2
+                ELSE model_name
+              END,
+              cache_dir = CASE
+                WHEN TRIM(cache_dir) = ''
+                  OR (
+                    download_status = 'available'
+                    AND download_progress = 100
+                    AND offline_available = 1
+                    AND (
+                      model_name = 'large-v3-turbo'
+                      OR cache_dir LIKE '%com.smarttodo.desktop/models/argmax%'
+                      OR device_recommendation = ?4
+                    )
+                  ) THEN ?3
+                ELSE cache_dir
+              END,
+              download_status = CASE
+                WHEN download_status = 'available'
+                  AND download_progress = 100
+                  AND offline_available = 1
+                  AND (
+                    model_name = 'large-v3-turbo'
+                    OR cache_dir LIKE '%com.smarttodo.desktop/models/argmax%'
+                    OR device_recommendation = ?4
+                  ) THEN 'not_started'
+                ELSE download_status
+              END,
+              download_progress = CASE
+                WHEN download_status = 'available'
+                  AND download_progress = 100
+                  AND offline_available = 1
+                  AND (
+                    model_name = 'large-v3-turbo'
+                    OR cache_dir LIKE '%com.smarttodo.desktop/models/argmax%'
+                    OR device_recommendation = ?4
+                  ) THEN 0
+                ELSE download_progress
+              END,
+              offline_available = CASE
+                WHEN download_status = 'available'
+                  AND download_progress = 100
+                  AND offline_available = 1
+                  AND (
+                    model_name = 'large-v3-turbo'
+                    OR cache_dir LIKE '%com.smarttodo.desktop/models/argmax%'
+                    OR device_recommendation = ?4
+                  ) THEN 0
+                ELSE offline_available
+              END,
+              error_message = CASE
+                WHEN error_message IS NULL THEN ''
+                ELSE error_message
+              END,
+              updated_at = CURRENT_TIMESTAMP
+            WHERE provider = ?1
+            "#,
+            params![
+                LOCAL_ASR_PROVIDER,
+                DEFAULT_LOCAL_ASR_MODEL,
+                LOCAL_ASR_CACHE_DIR,
+                OLD_LOCAL_ASR_DEVICE_RECOMMENDATION
+            ],
+        )
+        .map_err(|error| format!("迁移本地 ASR 模型状态失败: {error}"))?;
 
     Ok(())
 }
@@ -573,7 +754,7 @@ pub(crate) fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
         semantic_base_url TEXT NOT NULL DEFAULT '',
         semantic_model_name TEXT NOT NULL DEFAULT 'MiniMax-M3',
         semantic_api_key_ref TEXT NOT NULL DEFAULT '',
-        allow_cloud_fallback INTEGER NOT NULL DEFAULT 1 CHECK (allow_cloud_fallback IN (0, 1)),
+        allow_cloud_fallback INTEGER NOT NULL DEFAULT 0 CHECK (allow_cloud_fallback IN (0, 1)),
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
@@ -667,7 +848,7 @@ pub(crate) fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
         max_retry_count INTEGER NOT NULL DEFAULT 3 CHECK (max_retry_count >= 0),
         error_message TEXT NOT NULL DEFAULT '',
         provider TEXT NOT NULL DEFAULT 'local_whisperkit',
-        model_name TEXT NOT NULL DEFAULT 'large-v3-turbo',
+        model_name TEXT NOT NULL DEFAULT 'large-v3-v20240930_626MB',
         started_at DATETIME,
         finished_at DATETIME,
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -678,11 +859,22 @@ pub(crate) fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
         provider TEXT PRIMARY KEY,
         model_name TEXT NOT NULL,
         cache_dir TEXT NOT NULL,
-        download_status TEXT NOT NULL DEFAULT 'available'
+        download_status TEXT NOT NULL DEFAULT 'not_started'
           CHECK (download_status IN ('not_started', 'downloading', 'available', 'failed')),
-        download_progress INTEGER NOT NULL DEFAULT 100 CHECK (download_progress >= 0 AND download_progress <= 100),
-        offline_available INTEGER NOT NULL DEFAULT 1 CHECK (offline_available IN (0, 1)),
+        download_progress INTEGER NOT NULL DEFAULT 0 CHECK (download_progress >= 0 AND download_progress <= 100),
+        offline_available INTEGER NOT NULL DEFAULT 0 CHECK (offline_available IN (0, 1)),
         device_recommendation TEXT NOT NULL DEFAULT '',
+        error_message TEXT NOT NULL DEFAULT '',
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS local_asr_runtime_status (
+        runtime_id TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        available INTEGER NOT NULL DEFAULT 0 CHECK (available IN (0, 1)),
+        path TEXT NOT NULL DEFAULT '',
+        version TEXT NOT NULL DEFAULT '',
+        error_message TEXT NOT NULL DEFAULT '',
         updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
 
@@ -869,6 +1061,7 @@ pub(crate) fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
     ensure_semantic_artifact_type_constraint(&connection)?;
     ensure_model_invocations_columns(&connection)?;
     ensure_transcript_segments_v05_columns(&connection)?;
+    ensure_local_model_status_schema(&connection)?;
     ensure_todos_v07_schema(&connection)?;
 
     connection
@@ -921,7 +1114,7 @@ pub(crate) fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
                 DEFAULT_SEMANTIC_BASE_URL,
                 DEFAULT_SEMANTIC_MODEL_NAME,
                 "sk-m3-****",
-                1
+                0
             ],
         )
         .map_err(|error| format!("初始化默认设置失败: {error}"))?;
@@ -936,18 +1129,24 @@ pub(crate) fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
         download_status,
         download_progress,
         offline_available,
-        device_recommendation
+        device_recommendation,
+        error_message
       ) VALUES (
-        'local_whisperkit',
-        'large-v3-turbo',
-        '~/Library/Application Support/com.smarttodo.desktop/models/argmax',
-        'available',
-        100,
-        1,
-        'Apple Silicon 推荐 large-v3-turbo；Intel 机型建议 small/base'
+        ?1,
+        ?2,
+        ?3,
+        'not_started',
+        0,
+        0,
+        '默认使用 large-v3-v20240930_626MB；设备或下载失败时可切换 base/tiny。',
+        ''
       )
       "#,
-            [],
+            params![
+                LOCAL_ASR_PROVIDER,
+                DEFAULT_LOCAL_ASR_MODEL,
+                LOCAL_ASR_CACHE_DIR
+            ],
         )
         .map_err(|error| format!("初始化本地模型状态失败: {error}"))?;
 

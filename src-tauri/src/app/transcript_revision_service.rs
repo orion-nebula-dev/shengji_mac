@@ -179,7 +179,7 @@ fn revise_segment_text(text: &str, index: usize) -> (String, String, String, Str
 
     if index == 0 {
         return (
-            text.replace("本地转写评估开始。", "本地转写评估已开始。"),
+            text.replace("录音片段处理开始。", "录音片段处理已开始。"),
             "punctuation".into(),
             "punctuation".into(),
             "优化句式和标点，使修正文稿更适合摘要输入。".into(),
