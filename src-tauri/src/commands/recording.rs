@@ -11,6 +11,14 @@ use crate::{
     process_pending_jobs_internal, spawn_recording_controller, AppState, RecorderControl,
 };
 
+fn recording_file_label(file_path: &std::path::Path) -> String {
+    file_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("录音文件.wav")
+        .to_string()
+}
+
 pub(crate) fn simulate_audio_slice_payload(
     db_path: &PathBuf,
     has_effective_voice: bool,
@@ -159,7 +167,7 @@ pub(crate) fn stop_recording_payload(state: &AppState) -> Result<RecordingAction
     Ok(RecordingActionResult {
         message: format!(
             "录音已停止，已保存本地 WAV 文件：{}。{}",
-            result.file_path.to_string_lossy(),
+            recording_file_label(&result.file_path),
             processing_summary
         ),
         runtime: query_service::query_runtime_status(&connection)?,

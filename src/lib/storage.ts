@@ -34,11 +34,12 @@ export function loadState(): PersistedState {
     const legacyAsrProviderType = String(
       (mergedSettings as SettingsState & { asrProviderType: string }).asrProviderType,
     );
-    if (legacyAsrProviderType === "local" || legacyAsrProviderType.trim().length === 0) {
+    if (
+      legacyAsrProviderType === "local" ||
+      legacyAsrProviderType === "cloud" ||
+      legacyAsrProviderType !== "local_whisperkit"
+    ) {
       mergedSettings.asrProviderType = "local_whisperkit";
-    }
-    if (legacyAsrProviderType === "cloud") {
-      mergedSettings.asrProviderType = "cloud_volc";
     }
     mergedSettings.todoProviderType = "semantic_m3";
     const sanitizedSettings: SettingsState = {

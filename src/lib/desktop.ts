@@ -1,3 +1,11 @@
+import type {
+  AsrProviderType,
+  LocalAsrModel,
+  LocalAsrRuntime,
+  LocalAsrState,
+  LocalModelStatus,
+} from "../types";
+
 export interface DesktopContext {
   runtime: string;
   platform: string;
@@ -12,7 +20,7 @@ export interface SettingsPayload {
   chunkSeconds: number;
   idleTriggerSeconds: number;
   providerMode: "cloud" | "local";
-  asrProviderType: "cloud_volc" | "local_whisperkit";
+  asrProviderType: AsrProviderType;
   speakerProviderType: "local_speakerkit";
   todoProviderType: "semantic_m3";
   semanticProviderType: "minimax_m3";
@@ -140,15 +148,10 @@ export interface TranscriptJobPayload {
   modelName: string;
 }
 
-export interface LocalModelStatusPayload {
-  provider: string;
-  modelName: string;
-  cacheDir: string;
-  downloadStatus: "not_started" | "downloading" | "available" | "failed";
-  downloadProgress: number;
-  offlineAvailable: boolean;
-  deviceRecommendation: string;
-}
+export type LocalModelStatusPayload = LocalModelStatus;
+export type LocalAsrRuntimePayload = LocalAsrRuntime;
+export type LocalAsrModelPayload = LocalAsrModel;
+export type LocalAsrStatePayload = LocalAsrState;
 
 export interface TranscriptReviewPayload {
   audio: TranscriptAudioPayload;
@@ -612,6 +615,47 @@ export async function loadTranscriptReview(): Promise<TranscriptReviewPayload | 
   return invoke<TranscriptReviewPayload>("get_transcript_review");
 }
 
+export async function getDesktopLocalAsrState(): Promise<LocalAsrStatePayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<LocalAsrStatePayload>("get_local_asr_state");
+}
+
+export async function refreshDesktopLocalAsrRuntimes(): Promise<LocalAsrStatePayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<LocalAsrStatePayload>("refresh_local_asr_runtimes");
+}
+
+export async function selectDesktopLocalAsrModel(
+  modelName: string,
+): Promise<LocalAsrStatePayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<LocalAsrStatePayload>("select_local_asr_model", { modelName });
+}
+
+export async function downloadDesktopLocalAsrModel(
+  modelName: string,
+): Promise<LocalModelStatusPayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<LocalModelStatusPayload>("download_local_asr_model", { modelName });
+}
+
+// Dev/test helper only; the user-visible local audio import UI is hidden.
 export async function importDesktopLocalAudio(
   filePath: string,
 ): Promise<TranscriptReviewPayload | null> {
