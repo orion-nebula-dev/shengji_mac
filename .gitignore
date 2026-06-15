@@ -31,3 +31,9 @@ llama-completion
 *key*.md
 *secret*.md
 *api*key*.md
+
+# Local AI planning / agent workspace files
+AI文档/
+AGENTS.md
+.codex/
+.agents/

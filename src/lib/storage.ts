@@ -83,14 +83,21 @@ export function loadState(): PersistedState {
         candidateId: todo.candidateId ?? "",
       };
     });
+    const normalizedRuntime: RuntimeStatus = {
+      ...defaultState.runtime,
+      ...(parsed.runtime ?? {}),
+    };
+    if (
+      normalizedRuntime.currentSessionStatus === "idle_waiting" &&
+      normalizedRuntime.runtimeLabel === "录音中"
+    ) {
+      normalizedRuntime.currentSessionStatus = "collecting";
+    }
     return {
       settings: sanitizedSettings,
       todos: normalizedTodos,
       sessions: parsed.sessions ?? defaultState.sessions,
-      runtime: {
-        ...defaultState.runtime,
-        ...(parsed.runtime ?? {}),
-      },
+      runtime: normalizedRuntime,
     };
   } catch {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(defaultState));
