@@ -1,5 +1,4 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use reqwest::blocking::Client;
 use rusqlite::{params, Connection};
 use std::{
     fs,
@@ -17,12 +16,15 @@ mod infra;
 mod jobs;
 mod providers;
 
-use app::settings_service;
+use app::{local_asr_service, settings_service};
 use domain::model_test::ModelTestResult;
 use domain::session::SessionDto;
 use domain::settings::SettingsDto;
 use domain::transcript::TranscriptRecord;
-use infra::sqlite::{initialize_database, open_connection};
+use infra::{
+    local_asr_runtime::{LocalAsrCommandRunner, SystemLocalAsrCommandRunner},
+    sqlite::{initialize_database, open_connection},
+};
 
 #[derive(Clone)]
 struct AppState {
@@ -75,8 +77,6 @@ fn current_timestamp_label() -> String {
     millis.to_string()
 }
 
-const HTTP_REQUEST_TIMEOUT_SECONDS: u64 = 30;
-const HTTP_MAX_RETRY_ATTEMPTS: usize = 3;
 const MANUAL_FLUSH_COOLDOWN_SECONDS: i64 = 10;
 const DEFAULT_ASR_PROVIDER_TYPE: &str = "local_whisperkit";
 const DEFAULT_SPEAKER_PROVIDER_TYPE: &str = "local_speakerkit";
@@ -86,31 +86,14 @@ const DEFAULT_EXPORT_PROVIDER_TYPE: &str = "local_file";
 const DEFAULT_TODO_PROVIDER_TYPE: &str = "semantic_m3";
 const DEFAULT_SEMANTIC_BASE_URL: &str = "https://api.minimaxi.com/v1/chat/completions";
 const DEFAULT_SEMANTIC_MODEL_NAME: &str = "MiniMax-M3";
-fn build_http_client() -> Result<Client, String> {
-    Client::builder()
-        .timeout(std::time::Duration::from_secs(HTTP_REQUEST_TIMEOUT_SECONDS))
-        .build()
-        .map_err(|error| format!("创建 HTTP 客户端失败: {error}"))
-}
-
 fn clip_text(input: &str, max_chars: usize) -> String {
     input.chars().take(max_chars).collect()
-}
-
-fn sleep_before_retry(attempt: usize) {
-    let delay_seconds = attempt as u64;
-    thread::sleep(std::time::Duration::from_secs(delay_seconds));
-}
-
-fn should_retry_http_status(status: u16) -> bool {
-    status == 429 || status >= 500
 }
 
 fn normalize_asr_provider_type(provider_type: &str) -> String {
     match provider_type.trim() {
         "" | "local" | "local_whisperkit" => DEFAULT_ASR_PROVIDER_TYPE.to_string(),
-        "cloud" | "cloud_volc" => "cloud_volc".to_string(),
-        other => other.to_string(),
+        _ => DEFAULT_ASR_PROVIDER_TYPE.to_string(),
     }
 }
 
@@ -161,6 +144,7 @@ fn insert_processing_job(
     target_id: &str,
     trace_id: &str,
 ) -> Result<(), String> {
+    let job_id = format!("job_{}_{}", job_type, current_timestamp_label());
     connection
         .execute(
             r#"
@@ -175,14 +159,12 @@ fn insert_processing_job(
         created_at
       ) VALUES (?1, ?2, ?3, 'pending', 0, 3, ?4, CURRENT_TIMESTAMP)
       "#,
-            params![
-                format!("job_{}_{}", job_type, current_timestamp_label()),
-                job_type,
-                target_id,
-                trace_id
-            ],
+            params![job_id.as_str(), job_type, target_id, trace_id],
         )
         .map_err(|error| format!("写入处理任务失败: {error}"))?;
+    if job_type == "transcription" {
+        upsert_transcript_job(connection, &job_id, target_id, "queued", 0, "")?;
+    }
     Ok(())
 }
 
@@ -213,6 +195,74 @@ fn update_processing_job(
         )
         .map_err(|error| format!("更新处理任务状态失败: {error}"))?;
     Ok(())
+}
+
+fn upsert_transcript_job(
+    connection: &Connection,
+    job_id: &str,
+    audio_segment_id: &str,
+    status: &str,
+    retry_count: i64,
+    error_message: &str,
+) -> Result<(), String> {
+    let model_name = current_local_asr_model_name(connection);
+    connection
+        .execute(
+            r#"
+            INSERT INTO transcript_jobs (
+              id,
+              audio_segment_id,
+              status,
+              retry_count,
+              max_retry_count,
+              error_message,
+              provider,
+              model_name,
+              started_at,
+              finished_at,
+              created_at,
+              updated_at
+            ) VALUES (?1, ?2, ?3, ?4, 3, ?5, ?6, ?7,
+              CASE WHEN ?3 = 'running' THEN CURRENT_TIMESTAMP ELSE NULL END,
+              CASE WHEN ?3 IN ('succeeded', 'failed') THEN CURRENT_TIMESTAMP ELSE NULL END,
+              CURRENT_TIMESTAMP,
+              CURRENT_TIMESTAMP
+            )
+            ON CONFLICT(id) DO UPDATE SET
+              audio_segment_id = excluded.audio_segment_id,
+              status = excluded.status,
+              retry_count = MAX(transcript_jobs.retry_count, excluded.retry_count),
+              error_message = excluded.error_message,
+              provider = excluded.provider,
+              model_name = excluded.model_name,
+              started_at = CASE
+                WHEN excluded.status = 'running' AND transcript_jobs.started_at IS NULL THEN CURRENT_TIMESTAMP
+                ELSE transcript_jobs.started_at
+              END,
+              finished_at = CASE
+                WHEN excluded.status IN ('succeeded', 'failed') THEN CURRENT_TIMESTAMP
+                ELSE transcript_jobs.finished_at
+              END,
+              updated_at = CURRENT_TIMESTAMP
+            "#,
+            params![
+                job_id,
+                audio_segment_id,
+                status,
+                retry_count,
+                error_message,
+                DEFAULT_ASR_PROVIDER_TYPE,
+                model_name,
+            ],
+        )
+        .map_err(|error| format!("同步转写任务状态失败: {error}"))?;
+    Ok(())
+}
+
+fn current_local_asr_model_name(connection: &Connection) -> String {
+    app::local_asr_service::query_local_asr_model_status(connection)
+        .map(|status| status.model_name)
+        .unwrap_or_else(|_| domain::local_asr::DEFAULT_LOCAL_ASR_MODEL.to_string())
 }
 
 fn maybe_create_idle_session(connection: &Connection) -> Result<Option<SessionDto>, String> {
@@ -526,98 +576,19 @@ fn is_recording(state: &AppState) -> Result<bool, String> {
         .map_err(|_| "录音状态锁定失败".to_string())
 }
 
-fn transcribe_audio_file(settings: &SettingsDto, file_path: &str) -> Result<String, String> {
+fn transcribe_audio_file<R: LocalAsrCommandRunner>(
+    connection: &Connection,
+    runner: &R,
+    settings: &SettingsDto,
+    file_path: &str,
+) -> Result<String, String> {
     if is_local_asr_provider(&settings.asr_provider_type) {
-        let message = "本地 ASR 尚未接入，无法执行纯本地语音转写";
-        if !settings.allow_cloud_fallback {
-            return Err(message.to_string());
-        }
-        log::warn!("{message}，将按配置使用云端 ASR 兜底");
+        return local_asr_service::transcribe_local_asr_audio_with_runner(
+            connection, file_path, runner,
+        );
     }
 
-    if settings.asr_api_key_masked.trim().is_empty()
-        || settings.asr_resource_id.trim().is_empty()
-        || settings.asr_model_name.trim().is_empty()
-    {
-        return Err("云端 ASR 配置不完整，无法执行转写兜底".to_string());
-    }
-
-    let file_bytes = fs::read(file_path).map_err(|error| format!("读取录音文件失败: {error}"))?;
-    let audio_data = {
-        use base64::{engine::general_purpose::STANDARD, Engine as _};
-        STANDARD.encode(file_bytes)
-    };
-    let client = build_http_client()?;
-    let request_id = format!("transcribe-{}", current_timestamp_label());
-    let endpoint = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash";
-
-    let try_resources = [
-        settings.asr_resource_id.trim().to_string(),
-        "volc.bigasr.auc_turbo".to_string(),
-    ];
-
-    let mut last_error = String::new();
-    for resource_id in try_resources {
-        if resource_id.is_empty() {
-            continue;
-        }
-
-        for attempt in 1..=HTTP_MAX_RETRY_ATTEMPTS {
-            let response = client
-                .post(endpoint)
-                .header("Content-Type", "application/json")
-                .header("X-Api-Key", settings.asr_api_key_masked.trim())
-                .header("X-Api-Resource-Id", resource_id.as_str())
-                .header("X-Api-Request-Id", &request_id)
-                .header("X-Api-Sequence", "-1")
-                .json(&serde_json::json!({
-                    "user": { "uid": "smart-todo-local-recording" },
-                    "audio": { "data": audio_data },
-                    "request": {
-                        "model_name": "bigmodel"
-                    }
-                }))
-                .send();
-
-            let response = match response {
-                Ok(response) => response,
-                Err(error) => {
-                    last_error = format!("调用 ASR 极速版失败: {error}");
-                    if attempt < HTTP_MAX_RETRY_ATTEMPTS {
-                        sleep_before_retry(attempt);
-                        continue;
-                    }
-                    break;
-                }
-            };
-
-            let status = response.status().as_u16();
-            let body = response
-                .text()
-                .unwrap_or_else(|_| "读取 ASR 响应失败".to_string());
-            if status / 100 != 2 {
-                last_error = format!("HTTP {status}: {}", clip_text(&body, 300));
-                if should_retry_http_status(status) && attempt < HTTP_MAX_RETRY_ATTEMPTS {
-                    sleep_before_retry(attempt);
-                    continue;
-                }
-                break;
-            }
-
-            let value: serde_json::Value = serde_json::from_str(&body)
-                .map_err(|error| format!("解析 ASR 响应失败: {error}"))?;
-            if let Some(text) = value
-                .get("result")
-                .and_then(|entry| entry.get("text"))
-                .and_then(|entry| entry.as_str())
-            {
-                return Ok(text.to_string());
-            }
-            return Err("ASR 返回成功，但未找到 result.text".to_string());
-        }
-    }
-
-    Err(format!("ASR 转写失败: {last_error}"))
+    Err("当前版本仅支持本地 ASR，请在设置页使用 local_whisperkit。".to_string())
 }
 
 fn create_session_from_transcript(
@@ -671,13 +642,20 @@ fn create_session_from_transcript(
 }
 
 fn process_pending_jobs_internal(connection: &Connection) -> Result<String, String> {
+    process_pending_jobs_with_runner(connection, &SystemLocalAsrCommandRunner)
+}
+
+fn process_pending_jobs_with_runner<R: LocalAsrCommandRunner>(
+    connection: &Connection,
+    runner: &R,
+) -> Result<String, String> {
     let settings = settings_service::load_settings(connection)?;
     let mut summary = Vec::new();
 
     let mut transcription_statement = connection
         .prepare(
             r#"
-            SELECT id, target_id
+            SELECT id, target_id, retry_count
             FROM processing_jobs
             WHERE job_type = 'transcription' AND status = 'pending'
             ORDER BY datetime(created_at) ASC
@@ -687,14 +665,26 @@ fn process_pending_jobs_internal(connection: &Connection) -> Result<String, Stri
 
     let transcription_jobs = transcription_statement
         .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
         })
         .map_err(|error| format!("查询转写任务失败: {error}"))?;
 
     for job in transcription_jobs {
-        let (job_id, audio_segment_id) =
+        let (job_id, audio_segment_id, retry_count) =
             job.map_err(|error| format!("读取转写任务失败: {error}"))?;
         update_processing_job(connection, &job_id, "running", None)?;
+        upsert_transcript_job(
+            connection,
+            &job_id,
+            &audio_segment_id,
+            "running",
+            retry_count,
+            "",
+        )?;
 
         let result = (|| -> Result<String, String> {
             let record = connection
@@ -711,7 +701,7 @@ fn process_pending_jobs_internal(connection: &Connection) -> Result<String, Stri
                 )
                 .map_err(|error| format!("读取音频切片失败: {error}"))?;
 
-            let text = transcribe_audio_file(&settings, &record.file_path)?;
+            let text = transcribe_audio_file(connection, runner, &settings, &record.file_path)?;
             let normalized_text = text.trim().to_string();
             if normalized_text.is_empty() {
                 connection
@@ -768,10 +758,26 @@ fn process_pending_jobs_internal(connection: &Connection) -> Result<String, Stri
             Ok(session_id) => {
                 update_processing_job(connection, &job_id, "success", None)?;
                 if session_id == "empty_transcript" {
+                    upsert_transcript_job(
+                        connection,
+                        &job_id,
+                        &audio_segment_id,
+                        "succeeded",
+                        retry_count,
+                        "未识别到有效文本，已跳过。",
+                    )?;
                     summary.push(format!(
                         "音频切片 {audio_segment_id} 未识别到有效文本，已跳过"
                     ));
                 } else {
+                    upsert_transcript_job(
+                        connection,
+                        &job_id,
+                        &audio_segment_id,
+                        "succeeded",
+                        retry_count,
+                        "",
+                    )?;
                     summary.push(format!("已完成转写并生成会话 {session_id}"));
                 }
             }
@@ -783,6 +789,14 @@ fn process_pending_jobs_internal(connection: &Connection) -> Result<String, Stri
                     )
                     .map_err(|db_error| format!("标记转写失败状态失败: {db_error}"))?;
                 update_processing_job(connection, &job_id, "failed", Some(error.as_str()))?;
+                upsert_transcript_job(
+                    connection,
+                    &job_id,
+                    &audio_segment_id,
+                    "failed",
+                    retry_count,
+                    &clip_text(&error, 200),
+                )?;
                 summary.push(format!("转写失败: {}", clip_text(&error, 80)));
             }
         }
@@ -847,115 +861,46 @@ pub fn process_pending_jobs_once_for_cli(db_path: &str) -> Result<String, String
     process_pending_jobs_internal(&connection)
 }
 
-fn test_asr_provider(settings: &SettingsDto) -> Result<ModelTestResult, String> {
-    let local_asr_unavailable = is_local_asr_provider(&settings.asr_provider_type);
-    if local_asr_unavailable && !settings.allow_cloud_fallback {
+fn test_asr_provider(
+    connection: Option<&Connection>,
+    settings: &SettingsDto,
+) -> Result<ModelTestResult, String> {
+    if !is_local_asr_provider(&settings.asr_provider_type) {
+        return Ok(ModelTestResult {
+            provider: "asr".into(),
+            success: false,
+            status_code: 400,
+            message: "v1.2.1 仅支持本地 ASR provider".into(),
+            response_excerpt: DEFAULT_ASR_PROVIDER_TYPE.into(),
+        });
+    }
+
+    let Some(connection) = connection else {
         return Ok(ModelTestResult {
             provider: "asr".into(),
             success: false,
             status_code: 503,
-            message: "当前为纯本地 ASR 模式，但本地 ASR 尚未接入".into(),
-            response_excerpt: "关闭云端兜底后，语音转写不会调用云端服务。".into(),
+            message: "纯本地 ASR 状态需在桌面端通过 runtime 探测确认".into(),
+            response_excerpt: "请在设置页执行“探测 runtime”并下载模型。".into(),
         });
-    }
+    };
 
-    if settings.asr_submit_url.trim().is_empty()
-        || settings.asr_query_url.trim().is_empty()
-        || settings.asr_resource_id.trim().is_empty()
-        || settings.asr_model_name.trim().is_empty()
-        || settings.asr_api_key_masked.trim().is_empty()
-    {
-        return Ok(ModelTestResult {
+    match local_asr_service::ensure_local_asr_ready(connection) {
+        Ok(status) => Ok(ModelTestResult {
+            provider: "asr".into(),
+            success: true,
+            status_code: 200,
+            message: "本地 ASR runtime 与模型已就绪".into(),
+            response_excerpt: format!("model={}", status.model_name),
+        }),
+        Err(error) => Ok(ModelTestResult {
             provider: "asr".into(),
             success: false,
-            status_code: 0,
-            message: "ASR 模型配置不完整".into(),
-            response_excerpt: "".into(),
-        });
+            status_code: 503,
+            message: error,
+            response_excerpt: "请先安装 argmax-cli / whisperkit-cli，并在设置页下载模型。".into(),
+        }),
     }
-
-    let client = build_http_client()?;
-    let request_id = format!("codex-{}", current_timestamp_label());
-    let submit_response = client
-        .post(settings.asr_submit_url.trim())
-        .header("Content-Type", "application/json")
-        .header("X-Api-Key", settings.asr_api_key_masked.trim())
-        .header("X-Api-Resource-Id", settings.asr_resource_id.trim())
-        .header("X-Api-Request-Id", &request_id)
-        .header("X-Api-Sequence", "-1")
-        .json(&serde_json::json!({
-            "user": {
-                "uid": "smart-todo-connectivity-test"
-            },
-            "audio": {
-                "url": "https://lf3-static.bytednsdoc.com/obj/eden-cn/lm_hz_ihsph/ljhwZthlaukjlkulzlp/console/bigtts/zh_female_cancan_mars_bigtts.mp3",
-                "format": "mp3",
-                "codec": "raw",
-                "rate": 16000,
-                "bits": 16,
-                "channel": 1
-            },
-            "request": {
-                "model_name": settings.asr_model_name.trim(),
-                "enable_itn": true,
-                "enable_punc": false,
-                "enable_ddc": false,
-                "enable_speaker_info": false,
-                "enable_channel_split": false,
-                "show_utterances": false,
-                "vad_segment": false,
-                "sensitive_words_filter": ""
-            }
-        }))
-        .send()
-        .map_err(|error| format!("ASR 提交请求失败: {error}"))?;
-
-    let submit_status = submit_response.status().as_u16();
-    let submit_body = submit_response
-        .text()
-        .unwrap_or_else(|_| "读取响应正文失败".to_string());
-
-    if submit_status / 100 != 2 {
-        return Ok(ModelTestResult {
-            provider: "asr".into(),
-            success: false,
-            status_code: submit_status,
-            message: format!("ASR 提交请求失败，HTTP {submit_status}"),
-            response_excerpt: clip_text(&submit_body, 400),
-        });
-    }
-
-    let query_response = client
-        .post(settings.asr_query_url.trim())
-        .header("Content-Type", "application/json")
-        .header("X-Api-Key", settings.asr_api_key_masked.trim())
-        .header("X-Api-Resource-Id", settings.asr_resource_id.trim())
-        .header("X-Api-Request-Id", &request_id)
-        .json(&serde_json::json!({}))
-        .send()
-        .map_err(|error| format!("ASR 查询请求失败: {error}"))?;
-
-    let status_code = query_response.status().as_u16();
-    let body = query_response
-        .text()
-        .unwrap_or_else(|_| "读取响应正文失败".to_string());
-    let success = status_code / 100 == 2;
-
-    Ok(ModelTestResult {
-        provider: "asr".into(),
-        success,
-        status_code,
-        message: if success {
-            if local_asr_unavailable {
-                "本地 ASR 尚未接入，云端兜底 ASR 测试成功".into()
-            } else {
-                "ASR 提交与查询测试成功".into()
-            }
-        } else {
-            format!("ASR 查询请求失败，HTTP {status_code}")
-        },
-        response_excerpt: clip_text(&body, 400),
-    })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -992,6 +937,10 @@ pub fn run() {
             commands::bootstrap::get_bootstrap_data,
             commands::settings::save_settings,
             commands::model_test::test_model_connection,
+            commands::local_asr::get_local_asr_state,
+            commands::local_asr::refresh_local_asr_runtimes,
+            commands::local_asr::select_local_asr_model,
+            commands::local_asr::download_local_asr_model,
             commands::todo::toggle_todo_status,
             commands::todo::update_todo_status,
             commands::todo::sync_todo_candidates,
@@ -1032,6 +981,855 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{cell::RefCell, rc::Rc};
+
+    #[test]
+    fn should_default_local_model_status_to_not_started_until_verified() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-local-asr-default-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let review = commands::transcript::get_transcript_review_payload(&db_path)
+            .expect("应能读取录音片段状态");
+
+        assert_eq!(review.model_status.provider, "local_whisperkit");
+        assert_eq!(review.model_status.model_name, "large-v3-v20240930_626MB");
+        assert_eq!(review.model_status.download_status, "not_started");
+        assert_eq!(review.model_status.download_progress, 0);
+        assert!(!review.model_status.offline_available);
+    }
+
+    #[test]
+    fn should_preserve_verified_local_model_status_when_migrating_old_defaults() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-local-asr-preserve-verified-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        let connection = open_connection(&db_path).expect("应能创建旧测试数据库");
+
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE local_model_status (
+                  provider TEXT PRIMARY KEY,
+                  model_name TEXT NOT NULL,
+                  cache_dir TEXT NOT NULL,
+                  download_status TEXT NOT NULL DEFAULT 'available'
+                    CHECK (download_status IN ('not_started', 'downloading', 'available', 'failed')),
+                  download_progress INTEGER NOT NULL DEFAULT 100 CHECK (download_progress >= 0 AND download_progress <= 100),
+                  offline_available INTEGER NOT NULL DEFAULT 1 CHECK (offline_available IN (0, 1)),
+                  device_recommendation TEXT NOT NULL DEFAULT '',
+                  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                INSERT INTO local_model_status (
+                  provider,
+                  model_name,
+                  cache_dir,
+                  download_status,
+                  download_progress,
+                  offline_available,
+                  device_recommendation
+                ) VALUES (
+                  'local_whisperkit',
+                  'large-v3-v20240930_626MB',
+                  '~/Library/Application Support/com.soundworkbench.shengji/models/whisperkit',
+                  'available',
+                  100,
+                  1,
+                  'manual verification passed'
+                );
+                "#,
+            )
+            .expect("应能准备旧默认值 schema 下的真实可用模型状态");
+        drop(connection);
+
+        initialize_database(&db_path).expect("应能迁移旧数据库");
+        let connection = open_connection(&db_path).expect("应能打开迁移后的测试数据库");
+        let status = connection
+            .query_row(
+                r#"
+                SELECT model_name, cache_dir, download_status, download_progress, offline_available
+                FROM local_model_status
+                WHERE provider = 'local_whisperkit'
+                "#,
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
+                },
+            )
+            .expect("应能读取迁移后的本地模型状态");
+
+        assert_eq!(status.0, "large-v3-v20240930_626MB");
+        assert_eq!(
+            status.1,
+            "~/Library/Application Support/com.soundworkbench.shengji/models/whisperkit"
+        );
+        assert_eq!(status.2, "available");
+        assert_eq!(status.3, 100);
+        assert_eq!(status.4, 1);
+    }
+
+    #[test]
+    fn should_report_argmax_and_whisperkit_missing_when_runner_cannot_execute() {
+        struct MissingRunner;
+
+        impl infra::local_asr_runtime::LocalAsrCommandRunner for MissingRunner {
+            fn run(&self, program: &str, _args: &[&str]) -> Result<String, String> {
+                Err(format!("{program} 未安装或不在 PATH 中"))
+            }
+        }
+
+        let runtimes = infra::local_asr_runtime::probe_local_asr_runtimes(&MissingRunner);
+
+        assert_eq!(runtimes.len(), 2);
+        assert_eq!(runtimes[0].runtime_id, "argmax-cli");
+        assert_eq!(runtimes[1].runtime_id, "whisperkit-cli");
+        assert!(runtimes.iter().all(|runtime| !runtime.available));
+        assert!(runtimes
+            .iter()
+            .all(|runtime| runtime.error_message.contains("未安装")));
+    }
+
+    #[test]
+    fn local_asr_catalog_should_recommend_large_and_include_base_and_tiny() {
+        let catalog = app::local_asr_service::local_asr_model_catalog();
+
+        assert_eq!(catalog.len(), 3);
+        assert_eq!(catalog[0].model_name, "large-v3-v20240930_626MB");
+        assert!(catalog[0].recommended);
+        assert_eq!(catalog[0].size_hint, "626MB");
+        assert_eq!(catalog[0].quality_hint, "默认，高质量多语言");
+        assert!(catalog
+            .iter()
+            .any(|model| model.model_name == "base" && !model.recommended));
+        assert!(catalog
+            .iter()
+            .any(|model| model.model_name == "tiny" && !model.recommended));
+    }
+
+    #[test]
+    fn local_asr_select_valid_model_should_reset_model_status() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-local-asr-select-base-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        initialize_database(&db_path).expect("应能初始化数据库");
+
+        let state = commands::local_asr::select_local_asr_model_payload(&db_path, "base")
+            .expect("应能选择 catalog 内模型");
+
+        assert_eq!(state.selected_model, "base");
+        assert_eq!(state.model_status.model_name, "base");
+        assert_eq!(state.model_status.download_status, "not_started");
+        assert_eq!(state.model_status.download_progress, 0);
+        assert!(!state.model_status.offline_available);
+        assert!(state.model_status.error_message.is_empty());
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn local_asr_select_invalid_model_should_return_error() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-local-asr-select-invalid-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        initialize_database(&db_path).expect("应能初始化数据库");
+
+        let error = commands::local_asr::select_local_asr_model_payload(&db_path, "unknown-model")
+            .expect_err("未知模型应被拒绝");
+
+        assert!(error.contains("不支持的本地 ASR 模型"));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn local_asr_refresh_with_fake_runner_should_upsert_runtime_statuses() {
+        struct FakeRunner;
+
+        impl infra::local_asr_runtime::LocalAsrCommandRunner for FakeRunner {
+            fn run(&self, program: &str, _args: &[&str]) -> Result<String, String> {
+                match program {
+                    "argmax-cli" => Ok("argmax 0.2.0".to_string()),
+                    "whisperkit-cli" => Err("whisperkit-cli 未安装或不在 PATH 中".to_string()),
+                    unexpected => panic!("unexpected program: {unexpected}"),
+                }
+            }
+        }
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-local-asr-refresh-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+
+        let refreshed = app::local_asr_service::refresh_local_asr_runtimes_with_runner(
+            &connection,
+            &FakeRunner,
+        )
+        .expect("应能刷新本地 ASR runtime 状态");
+
+        assert_eq!(refreshed.len(), 2);
+        let runtime_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM local_asr_runtime_status", [], |row| {
+                row.get(0)
+            })
+            .expect("应能统计 runtime 状态");
+        assert_eq!(runtime_count, 2);
+
+        let state = app::local_asr_service::get_local_asr_state(&connection)
+            .expect("应能读取本地 ASR 状态");
+        let argmax = state
+            .runtimes
+            .iter()
+            .find(|runtime| runtime.runtime_id == "argmax-cli")
+            .expect("应包含 argmax-cli");
+        assert!(argmax.available);
+        assert_eq!(argmax.path, "argmax-cli");
+        assert_eq!(argmax.version, "argmax 0.2.0");
+
+        let whisperkit = state
+            .runtimes
+            .iter()
+            .find(|runtime| runtime.runtime_id == "whisperkit-cli")
+            .expect("应包含 whisperkit-cli");
+        assert!(!whisperkit.available);
+        assert!(whisperkit.path.is_empty());
+        assert!(whisperkit.error_message.contains("未安装"));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn local_asr_download_without_runtime_should_fail_and_persist_failed_status() {
+        struct UnusedRunner;
+
+        impl infra::local_asr_runtime::LocalAsrCommandRunner for UnusedRunner {
+            fn run(&self, _program: &str, _args: &[&str]) -> Result<String, String> {
+                panic!("缺少 runtime 时不应执行下载命令");
+            }
+        }
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-local-asr-download-no-runtime-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+
+        let error = app::local_asr_service::download_local_asr_model_with_runner(
+            &connection,
+            "base",
+            &UnusedRunner,
+        )
+        .expect_err("缺少本地 ASR runtime 时下载应失败");
+
+        assert!(error.contains("未检测到 argmax-cli 或 whisperkit-cli"));
+        let status = app::local_asr_service::query_local_asr_model_status(&connection)
+            .expect("应能读取失败后的模型状态");
+        assert_eq!(status.model_name, "base");
+        assert_eq!(status.download_status, "failed");
+        assert_eq!(status.download_progress, 0);
+        assert!(!status.offline_available);
+        assert!(status
+            .error_message
+            .contains("未检测到 argmax-cli 或 whisperkit-cli"));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn local_asr_download_should_use_argmax_runtime_and_mark_model_available() {
+        #[derive(Clone)]
+        struct RecordingRunner {
+            calls: Rc<RefCell<Vec<(String, Vec<String>)>>>,
+        }
+
+        impl infra::local_asr_runtime::LocalAsrCommandRunner for RecordingRunner {
+            fn run(&self, program: &str, args: &[&str]) -> Result<String, String> {
+                self.calls.borrow_mut().push((
+                    program.to_string(),
+                    args.iter().map(|arg| arg.to_string()).collect(),
+                ));
+                Ok(format!(
+                    "Model initialization complete\nModel folder: {}/Library/Application Support/com.soundworkbench.shengji/models/whisperkit/whisperkit-coreml/openai_whisper-base",
+                    std::env::var("HOME").unwrap_or_default()
+                ))
+            }
+
+            fn path_exists(&self, path: &str) -> bool {
+                !self.calls.borrow().is_empty()
+                    && !path.contains('~')
+                    && path.ends_with("/openai_whisper-base")
+            }
+
+            fn create_dir_all(&self, _path: &str) -> Result<(), String> {
+                Ok(())
+            }
+
+            fn write_file(&self, _path: &str, _bytes: &[u8]) -> Result<(), String> {
+                Ok(())
+            }
+        }
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-local-asr-download-argmax-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        seed_available_local_asr_runtime(&connection, "argmax-cli");
+        seed_available_local_asr_runtime(&connection, "whisperkit-cli");
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let runner = RecordingRunner {
+            calls: calls.clone(),
+        };
+
+        let status = app::local_asr_service::download_local_asr_model_with_runner(
+            &connection,
+            "base",
+            &runner,
+        )
+        .expect("fake argmax 下载成功时应标记模型可离线使用");
+
+        assert_eq!(status.model_name, "base");
+        assert_eq!(status.download_status, "available");
+        assert_eq!(status.download_progress, 100);
+        assert!(status.offline_available);
+        assert!(status.error_message.is_empty());
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "argmax-cli");
+        assert_eq!(calls[0].1[0], "transcribe");
+        assert_eq!(calls[0].1[1], "--audio-path");
+        assert!(
+            !calls[0].1[2].contains('~'),
+            "CLI 参数中的探测音频路径必须是已展开的绝对路径"
+        );
+        assert!(calls[0].1[2].ends_with(".shengji-local-asr-bootstrap.wav"));
+        assert_eq!(calls[0].1[3], "--model");
+        assert_eq!(calls[0].1[4], "base");
+        assert_eq!(calls[0].1[5], "--download-model-path");
+        assert!(
+            !calls[0].1[6].contains('~'),
+            "CLI 参数中的模型缓存目录必须是已展开的绝对路径"
+        );
+        assert!(calls[0].1[6].ends_with(
+            "/Library/Application Support/com.soundworkbench.shengji/models/whisperkit/whisperkit-coreml"
+        ));
+        assert_eq!(calls[0].1[7], "--download-tokenizer-path");
+        assert_eq!(calls[0].1[8], calls[0].1[6]);
+        assert!(calls[0].1.contains(&"--without-timestamps".to_string()));
+        assert!(calls[0].1.contains(&"--verbose".to_string()));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn local_asr_download_should_fallback_to_whisperkit_when_argmax_is_unavailable() {
+        #[derive(Clone)]
+        struct RecordingRunner {
+            calls: Rc<RefCell<Vec<(String, Vec<String>)>>>,
+        }
+
+        impl infra::local_asr_runtime::LocalAsrCommandRunner for RecordingRunner {
+            fn run(&self, program: &str, args: &[&str]) -> Result<String, String> {
+                self.calls.borrow_mut().push((
+                    program.to_string(),
+                    args.iter().map(|arg| arg.to_string()).collect(),
+                ));
+                Ok("downloaded".to_string())
+            }
+
+            fn path_exists(&self, path: &str) -> bool {
+                !self.calls.borrow().is_empty()
+                    && !path.contains('~')
+                    && path.ends_with("/openai_whisper-tiny")
+            }
+
+            fn create_dir_all(&self, _path: &str) -> Result<(), String> {
+                Ok(())
+            }
+
+            fn write_file(&self, _path: &str, _bytes: &[u8]) -> Result<(), String> {
+                Ok(())
+            }
+        }
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-local-asr-download-whisperkit-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        seed_available_local_asr_runtime(&connection, "whisperkit-cli");
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let runner = RecordingRunner {
+            calls: calls.clone(),
+        };
+
+        let status = app::local_asr_service::download_local_asr_model_with_runner(
+            &connection,
+            "tiny",
+            &runner,
+        )
+        .expect("只有 whisperkit-cli 可用时应回退到 whisperkit 下载");
+
+        assert_eq!(status.model_name, "tiny");
+        assert_eq!(status.download_status, "available");
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "whisperkit-cli");
+        assert_eq!(calls[0].1[0], "transcribe");
+        assert_eq!(calls[0].1[3], "--model");
+        assert_eq!(calls[0].1[4], "tiny");
+        assert_eq!(calls[0].1[5], "--download-model-path");
+        assert_eq!(calls[0].1[7], "--download-tokenizer-path");
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn local_asr_download_runner_failure_should_persist_short_failed_status() {
+        struct FailingRunner;
+
+        impl infra::local_asr_runtime::LocalAsrCommandRunner for FailingRunner {
+            fn run(&self, program: &str, _args: &[&str]) -> Result<String, String> {
+                assert_eq!(program, "argmax-cli");
+                Err("下载失败：网络不可用，需要稍后重试".repeat(20))
+            }
+
+            fn create_dir_all(&self, _path: &str) -> Result<(), String> {
+                Ok(())
+            }
+
+            fn write_file(&self, _path: &str, _bytes: &[u8]) -> Result<(), String> {
+                Ok(())
+            }
+        }
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-local-asr-download-failure-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        seed_available_local_asr_runtime(&connection, "argmax-cli");
+
+        let error = app::local_asr_service::download_local_asr_model_with_runner(
+            &connection,
+            "base",
+            &FailingRunner,
+        )
+        .expect_err("runner 返回失败时下载应失败");
+
+        assert!(error.contains("下载失败"));
+        let status = app::local_asr_service::query_local_asr_model_status(&connection)
+            .expect("应能读取失败后的模型状态");
+        assert_eq!(status.model_name, "base");
+        assert_eq!(status.download_status, "failed");
+        assert_eq!(status.download_progress, 0);
+        assert!(!status.offline_available);
+        assert!(status.error_message.contains("下载失败"));
+        assert!(status.error_message.chars().count() <= 200);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn local_asr_download_should_mark_stale_downloading_failed_before_next_attempt() {
+        struct SuccessRunner;
+
+        impl infra::local_asr_runtime::LocalAsrCommandRunner for SuccessRunner {
+            fn run(&self, program: &str, _args: &[&str]) -> Result<String, String> {
+                assert_eq!(program, "argmax-cli");
+                Ok("downloaded".to_string())
+            }
+
+            fn path_exists(&self, path: &str) -> bool {
+                !path.contains('~') && path.ends_with("/openai_whisper-base")
+            }
+
+            fn create_dir_all(&self, _path: &str) -> Result<(), String> {
+                Ok(())
+            }
+
+            fn write_file(&self, _path: &str, _bytes: &[u8]) -> Result<(), String> {
+                Ok(())
+            }
+        }
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-local-asr-download-stale-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        seed_available_local_asr_runtime(&connection, "argmax-cli");
+        connection
+            .execute_batch(
+                r#"
+                UPDATE local_model_status
+                SET download_status = 'downloading',
+                    download_progress = 77,
+                    offline_available = 0,
+                    error_message = ''
+                WHERE provider = 'local_whisperkit';
+
+                CREATE TABLE local_model_status_events (
+                  message TEXT NOT NULL
+                );
+
+                CREATE TRIGGER track_stale_download_update
+                AFTER UPDATE ON local_model_status
+                WHEN NEW.download_status = 'failed'
+                  AND NEW.download_progress = 0
+                  AND NEW.offline_available = 0
+                  AND NEW.error_message = '上次下载未完成，请重试。'
+                BEGIN
+                  INSERT INTO local_model_status_events (message)
+                  VALUES (NEW.error_message);
+                END;
+                "#,
+            )
+            .expect("应能准备 stale downloading 状态和追踪 trigger");
+
+        let status = app::local_asr_service::download_local_asr_model_with_runner(
+            &connection,
+            "base",
+            &SuccessRunner,
+        )
+        .expect("stale downloading 收敛后本次下载应继续执行");
+
+        assert_eq!(status.download_status, "available");
+        assert_eq!(status.download_progress, 100);
+        let stale_event_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM local_model_status_events",
+                [],
+                |row| row.get(0),
+            )
+            .expect("应能统计 stale 收敛事件");
+        assert_eq!(stale_event_count, 1);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn local_asr_download_success_without_model_files_should_not_mark_available() {
+        struct MissingModelRunner;
+
+        impl infra::local_asr_runtime::LocalAsrCommandRunner for MissingModelRunner {
+            fn run(&self, program: &str, _args: &[&str]) -> Result<String, String> {
+                assert_eq!(program, "argmax-cli");
+                Ok("downloaded".to_string())
+            }
+
+            fn path_exists(&self, path: &str) -> bool {
+                assert!(
+                    !path.contains('~'),
+                    "模型校验路径必须先展开用户目录，实际为 {path}"
+                );
+                false
+            }
+
+            fn create_dir_all(&self, _path: &str) -> Result<(), String> {
+                Ok(())
+            }
+
+            fn write_file(&self, _path: &str, _bytes: &[u8]) -> Result<(), String> {
+                Ok(())
+            }
+        }
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-local-asr-download-missing-model-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        seed_available_local_asr_runtime(&connection, "argmax-cli");
+
+        let error = app::local_asr_service::download_local_asr_model_with_runner(
+            &connection,
+            "base",
+            &MissingModelRunner,
+        )
+        .expect_err("下载命令成功但模型目录不存在时不应标记可用");
+
+        assert!(error.contains("未在应用模型缓存目录找到模型文件"));
+        let status = app::local_asr_service::query_local_asr_model_status(&connection)
+            .expect("应能读取校验失败后的模型状态");
+        assert_eq!(status.download_status, "failed");
+        assert_eq!(status.download_progress, 0);
+        assert!(!status.offline_available);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn local_asr_download_error_should_redact_local_paths_keys_and_audio_names() {
+        struct SensitiveFailingRunner;
+
+        impl infra::local_asr_runtime::LocalAsrCommandRunner for SensitiveFailingRunner {
+            fn run(&self, program: &str, _args: &[&str]) -> Result<String, String> {
+                assert_eq!(program, "argmax-cli");
+                Err(
+                    "下载失败：读取 /Users/wwh/Recordings/客户会议.wav、/Volumes/private/audio.wav 和 /private/var/folders/tmp/audio.m4a 失败，Authorization: Bearer secret-token，api_key=sk-sensitive-token"
+                        .repeat(4),
+                )
+            }
+
+            fn create_dir_all(&self, _path: &str) -> Result<(), String> {
+                Ok(())
+            }
+
+            fn write_file(&self, _path: &str, _bytes: &[u8]) -> Result<(), String> {
+                Ok(())
+            }
+        }
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-local-asr-download-redact-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        seed_available_local_asr_runtime(&connection, "argmax-cli");
+
+        let error = app::local_asr_service::download_local_asr_model_with_runner(
+            &connection,
+            "base",
+            &SensitiveFailingRunner,
+        )
+        .expect_err("敏感 runner 错误应返回脱敏摘要");
+        let status = app::local_asr_service::query_local_asr_model_status(&connection)
+            .expect("应能读取失败后的模型状态");
+
+        for message in [&error, &status.error_message] {
+            assert!(message.contains("下载失败"));
+            assert!(message.contains("[local-path]"));
+            assert!(message.contains("[redacted]"));
+            assert!(!message.contains("/Users/"));
+            assert!(!message.contains("/Volumes/"));
+            assert!(!message.contains("/private/var/"));
+            assert!(!message.contains("客户会议.wav"));
+            assert!(!message.contains("audio.wav"));
+            assert!(!message.contains("audio.m4a"));
+            assert!(!message.contains("secret-token"));
+            assert!(!message.contains("sk-sensitive-token"));
+            assert!(!message.contains("Bearer"));
+            assert!(message.chars().count() <= 200);
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn local_asr_transcribe_should_use_argmax_runtime_when_ready() {
+        #[derive(Clone)]
+        struct RecordingRunner {
+            calls: Rc<RefCell<Vec<(String, Vec<String>)>>>,
+        }
+
+        impl infra::local_asr_runtime::LocalAsrCommandRunner for RecordingRunner {
+            fn run(&self, program: &str, args: &[&str]) -> Result<String, String> {
+                self.calls.borrow_mut().push((
+                    program.to_string(),
+                    args.iter().map(|arg| arg.to_string()).collect(),
+                ));
+                Ok("  这是本地 CLI 转写结果。  \n".to_string())
+            }
+        }
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-local-asr-transcribe-argmax-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        let audio_path = temp_dir.join("sample.wav");
+        fs::write(&audio_path, b"fake wav bytes").expect("应能准备本地音频文件");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        seed_pending_transcription_job(&connection, audio_path.to_string_lossy().as_ref());
+        seed_available_local_asr_runtime(&connection, "argmax-cli");
+        seed_available_local_asr_runtime(&connection, "whisperkit-cli");
+        seed_available_local_asr_model(&connection);
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let runner = RecordingRunner {
+            calls: calls.clone(),
+        };
+
+        let summary = process_pending_jobs_with_runner(&connection, &runner)
+            .expect("runtime 和模型就绪时应调用本地 ASR CLI 转写");
+
+        assert!(summary.contains("已完成转写并生成会话"));
+        let transcript_text: String = connection
+            .query_row(
+                "SELECT text FROM transcript_segments ORDER BY datetime(created_at) DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("应写入 CLI 返回的转写结果");
+        assert_eq!(transcript_text, "这是本地 CLI 转写结果。");
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "argmax-cli");
+        assert_eq!(calls[0].1.len(), 5);
+        assert_eq!(calls[0].1[0], "transcribe");
+        assert_eq!(calls[0].1[1], "--model-path");
+        assert!(!calls[0].1[2].contains('~'));
+        assert!(
+            calls[0].1[2].ends_with(
+                "/Library/Application Support/com.soundworkbench.shengji/models/whisperkit/whisperkit-coreml/openai_whisper-large-v3-v20240930_626MB"
+            ),
+            "unexpected model path: {}",
+            calls[0].1[2]
+        );
+        assert_eq!(calls[0].1[3], "--audio-path");
+        assert_eq!(calls[0].1[4], audio_path.to_string_lossy().as_ref());
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn local_asr_transcribe_should_fallback_to_whisperkit_runtime() {
+        #[derive(Clone)]
+        struct RecordingRunner {
+            calls: Rc<RefCell<Vec<(String, Vec<String>)>>>,
+        }
+
+        impl infra::local_asr_runtime::LocalAsrCommandRunner for RecordingRunner {
+            fn run(&self, program: &str, args: &[&str]) -> Result<String, String> {
+                self.calls.borrow_mut().push((
+                    program.to_string(),
+                    args.iter().map(|arg| arg.to_string()).collect(),
+                ));
+                Ok("whisperkit 转写结果".to_string())
+            }
+        }
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-local-asr-transcribe-whisperkit-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        let audio_path = temp_dir.join("sample.m4a");
+        fs::write(&audio_path, b"fake m4a bytes").expect("应能准备本地音频文件");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        seed_pending_transcription_job(&connection, audio_path.to_string_lossy().as_ref());
+        seed_available_local_asr_runtime(&connection, "whisperkit-cli");
+        seed_available_local_asr_model(&connection);
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let runner = RecordingRunner {
+            calls: calls.clone(),
+        };
+
+        process_pending_jobs_with_runner(&connection, &runner)
+            .expect("只有 whisperkit-cli 可用时应调用 whisperkit 转写");
+
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "whisperkit-cli");
+        assert_eq!(calls[0].1.len(), 5);
+        assert_eq!(calls[0].1[0], "transcribe");
+        assert_eq!(calls[0].1[1], "--model-path");
+        assert!(!calls[0].1[2].contains('~'));
+        assert!(
+            calls[0].1[2].ends_with(
+                "/Library/Application Support/com.soundworkbench.shengji/models/whisperkit/whisperkit-coreml/openai_whisper-large-v3-v20240930_626MB"
+            ),
+            "unexpected model path: {}",
+            calls[0].1[2]
+        );
+        assert_eq!(calls[0].1[3], "--audio-path");
+        assert_eq!(calls[0].1[4], audio_path.to_string_lossy().as_ref());
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn local_asr_transcribe_failure_should_surface_in_transcript_jobs() {
+        struct FailingTranscribeRunner;
+
+        impl infra::local_asr_runtime::LocalAsrCommandRunner for FailingTranscribeRunner {
+            fn run(&self, program: &str, _args: &[&str]) -> Result<String, String> {
+                assert_eq!(program, "argmax-cli");
+                Err("本地 CLI 转写失败：模型文件不兼容".to_string())
+            }
+        }
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-local-asr-transcribe-failure-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        let audio_path = temp_dir.join("sample-failure.wav");
+        fs::write(&audio_path, b"fake wav bytes").expect("应能准备本地音频文件");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        seed_pending_transcription_job(&connection, audio_path.to_string_lossy().as_ref());
+        seed_available_local_asr_runtime(&connection, "argmax-cli");
+        seed_available_local_asr_model(&connection);
+
+        let summary = process_pending_jobs_with_runner(&connection, &FailingTranscribeRunner)
+            .expect("转写失败也应被处理为任务失败摘要");
+        assert!(summary.contains("转写失败"));
+
+        let transcript_job: (String, String) = connection
+            .query_row(
+                "SELECT status, error_message FROM transcript_jobs WHERE id = 'job_cli_transcribe'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("真实转写失败应同步到录音片段页可见的 transcript_jobs");
+        assert_eq!(transcript_job.0, "failed");
+        assert!(transcript_job.1.contains("本地 CLI 转写失败"));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
 
     #[test]
     fn should_initialize_v04_provider_and_semantic_schema() {
@@ -1390,6 +2188,65 @@ mod tests {
     }
 
     #[test]
+    fn should_backfill_asr_urls_when_migrating_legacy_base_url_settings() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-asr-url-legacy-migration-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        {
+            let connection = open_connection(&db_path).expect("应能打开旧版设置测试数据库");
+            connection
+                .execute_batch(
+                    r#"
+                    CREATE TABLE app_settings (
+                        id TEXT PRIMARY KEY,
+                        record_enabled INTEGER NOT NULL DEFAULT 0,
+                        language TEXT NOT NULL DEFAULT 'zh-CN',
+                        chunk_seconds INTEGER NOT NULL DEFAULT 30,
+                        idle_trigger_seconds INTEGER NOT NULL DEFAULT 20,
+                        provider_mode TEXT NOT NULL DEFAULT 'cloud',
+                        asr_provider_type TEXT NOT NULL DEFAULT 'cloud',
+                        asr_base_url TEXT NOT NULL DEFAULT ''
+                    );
+
+                    INSERT INTO app_settings (
+                        id,
+                        record_enabled,
+                        language,
+                        chunk_seconds,
+                        idle_trigger_seconds,
+                        provider_mode,
+                        asr_provider_type,
+                        asr_base_url
+                    ) VALUES (
+                        'default',
+                        0,
+                        'zh-CN',
+                        30,
+                        20,
+                        'cloud',
+                        'cloud',
+                        'https://asr.example.test/query'
+                    );
+                    "#,
+                )
+                .expect("应能准备只有旧版 base URL 的设置表");
+        }
+
+        initialize_database(&db_path).expect("应能迁移旧版 ASR URL 设置");
+        let connection = open_connection(&db_path).expect("应能打开迁移后的数据库");
+        let settings = settings_service::load_settings(&connection).expect("应能读取迁移后的设置");
+
+        assert_eq!(settings.asr_query_url, "https://asr.example.test/query");
+        assert_eq!(settings.asr_submit_url, "https://asr.example.test/submit");
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
     fn should_clamp_existing_unsupported_semantic_provider_during_database_init() {
         let temp_dir = std::env::temp_dir().join(format!(
             "smart-todo-v04-semantic-provider-migration-test-{}",
@@ -1541,7 +2398,10 @@ mod tests {
                 .any(|speaker| speaker.label == "Speaker 1"),
             "应生成默认 speaker label"
         );
-        assert!(result.model_status.offline_available);
+        assert_eq!(result.model_status.download_status, "not_started");
+        assert_eq!(result.model_status.download_progress, 0);
+        assert!(!result.model_status.offline_available);
+        assert!(!result.audio.offline_available);
 
         let _ = fs::remove_dir_all(temp_dir);
     }
@@ -1586,7 +2446,7 @@ mod tests {
         assert_eq!(marked.review_reason, "说话人需要人工复核");
 
         let refreshed = commands::transcript::get_transcript_review_payload(&db_path)
-            .expect("应能读取更新后的转写评估状态");
+            .expect("应能读取更新后的录音片段状态");
         assert!(refreshed
             .speakers
             .iter()
@@ -1600,9 +2460,9 @@ mod tests {
     }
 
     #[test]
-    fn should_retry_failed_transcript_job() {
+    fn retry_transcript_job_should_reject_when_model_is_not_ready() {
         let temp_dir = std::env::temp_dir().join(format!(
-            "shengji-v05-transcript-retry-test-{}",
+            "shengji-v05-transcript-retry-model-not-ready-test-{}",
             current_timestamp_label()
         ));
         fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
@@ -1610,6 +2470,7 @@ mod tests {
 
         initialize_database(&db_path).expect("应能初始化数据库");
         let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        seed_available_local_asr_runtime(&connection, "argmax-cli");
         connection
             .execute(
                 r#"
@@ -1629,20 +2490,164 @@ mod tests {
             )
             .expect("应能准备失败转写任务");
 
-        let retried = commands::transcript::retry_transcript_job_payload(
+        let error = commands::transcript::retry_transcript_job_payload(
             &db_path,
             "transcript_job_failed_retry",
         )
-        .expect("失败转写任务应可重试");
-        assert_eq!(retried.status, "queued");
-        assert_eq!(retried.retry_count, 2);
-        assert!(retried.error_message.is_empty());
+        .expect_err("模型未下载时不应重试转写任务");
+        assert!(error.contains("本地 ASR 模型尚未下载"));
 
         let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]
-    fn should_reject_transcript_job_retry_after_max_attempts() {
+    fn retry_transcript_job_should_queue_when_runtime_and_model_are_ready() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "shengji-v05-transcript-retry-ready-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        seed_available_local_asr_runtime(&connection, "argmax-cli");
+        seed_available_local_asr_model(&connection);
+        connection
+            .execute(
+                r#"
+                INSERT INTO transcript_jobs (
+                  id,
+                  audio_segment_id,
+                  status,
+                  retry_count,
+                  max_retry_count,
+                  error_message,
+                  provider,
+                  model_name,
+                  created_at
+                ) VALUES ('transcript_job_failed_retry_ready', 'missing_audio_for_retry', 'failed', 1, 3, '本地模型未就绪', 'local_whisperkit', 'large-v3-turbo', CURRENT_TIMESTAMP)
+                "#,
+                [],
+            )
+            .expect("应能准备失败转写任务");
+
+        let retried = commands::transcript::retry_transcript_job_payload(
+            &db_path,
+            "transcript_job_failed_retry_ready",
+        )
+        .expect("runtime 和模型就绪时失败转写任务应可重试");
+        assert_eq!(retried.status, "queued");
+        assert_eq!(retried.retry_count, 2);
+        assert!(retried.error_message.is_empty());
+        let processing_status: String = connection
+            .query_row(
+                "SELECT status FROM processing_jobs WHERE id = 'transcript_job_failed_retry_ready'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("转写任务重试应同步回 processing queue");
+        assert_eq!(processing_status, "pending");
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn retry_transcript_job_should_preserve_retry_count_after_next_failure() {
+        struct FailingTranscribeRunner;
+
+        impl infra::local_asr_runtime::LocalAsrCommandRunner for FailingTranscribeRunner {
+            fn run(&self, program: &str, _args: &[&str]) -> Result<String, String> {
+                assert_eq!(program, "argmax-cli");
+                Err("本地 CLI 转写失败：模型文件不兼容".to_string())
+            }
+        }
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "shengji-v05-transcript-retry-preserve-count-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        let audio_path = temp_dir.join("retry-preserve.wav");
+        fs::write(&audio_path, b"fake wav bytes").expect("应能准备本地音频文件");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        seed_available_local_asr_runtime(&connection, "argmax-cli");
+        seed_available_local_asr_model(&connection);
+        connection
+            .execute(
+                r#"
+                INSERT INTO audio_segments (
+                  id,
+                  file_path,
+                  started_at,
+                  ended_at,
+                  duration_ms,
+                  sample_rate,
+                  channels,
+                  has_effective_voice,
+                  voice_energy_score,
+                  trace_id,
+                  processing_status,
+                  created_at
+                ) VALUES ('audio_retry_preserve', ?1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1000, 16000, 1, 1, 0.8, 'trace-retry-preserve', 'failed', CURRENT_TIMESTAMP)
+                "#,
+                params![audio_path.to_string_lossy().as_ref()],
+            )
+            .expect("应能准备可重试音频切片");
+        connection
+            .execute(
+                r#"
+                INSERT INTO transcript_jobs (
+                  id,
+                  audio_segment_id,
+                  status,
+                  retry_count,
+                  max_retry_count,
+                  error_message,
+                  provider,
+                  model_name,
+                  created_at
+                ) VALUES ('transcript_job_retry_preserve', 'audio_retry_preserve', 'failed', 1, 2, '首次失败', 'local_whisperkit', 'base', CURRENT_TIMESTAMP)
+                "#,
+                [],
+            )
+            .expect("应能准备失败转写任务");
+
+        let retried = commands::transcript::retry_transcript_job_payload(
+            &db_path,
+            "transcript_job_retry_preserve",
+        )
+        .expect("runtime 和模型就绪时应可重试");
+        assert_eq!(retried.retry_count, 2);
+
+        let summary = process_pending_jobs_with_runner(&connection, &FailingTranscribeRunner)
+            .expect("再次转写失败应同步为失败任务");
+        assert!(summary.contains("转写失败"));
+
+        let retry_count_after_failure: i64 = connection
+            .query_row(
+                "SELECT retry_count FROM transcript_jobs WHERE id = 'transcript_job_retry_preserve'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("应能读取再次失败后的 retry_count");
+        assert_eq!(retry_count_after_failure, 2);
+
+        let error = commands::transcript::retry_transcript_job_payload(
+            &db_path,
+            "transcript_job_retry_preserve",
+        )
+        .expect_err("达到最大重试次数后不应再次重试");
+        assert!(error.contains("最大重试次数"));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn retry_transcript_job_should_reject_after_max_attempts() {
         let temp_dir = std::env::temp_dir().join(format!(
             "shengji-v05-transcript-retry-limit-test-{}",
             current_timestamp_label()
@@ -1652,6 +2657,8 @@ mod tests {
 
         initialize_database(&db_path).expect("应能初始化数据库");
         let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        seed_available_local_asr_runtime(&connection, "argmax-cli");
+        seed_available_local_asr_model(&connection);
         connection
             .execute(
                 r#"
@@ -1679,6 +2686,160 @@ mod tests {
         assert!(error.contains("最大重试次数"));
 
         let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn retry_transcript_job_should_reject_after_max_attempts_before_model_preflight() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "shengji-v05-transcript-retry-limit-before-preflight-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        seed_available_local_asr_runtime(&connection, "argmax-cli");
+        connection
+            .execute(
+                r#"
+                INSERT INTO transcript_jobs (
+                  id,
+                  audio_segment_id,
+                  status,
+                  retry_count,
+                  max_retry_count,
+                  error_message,
+                  provider,
+                  model_name,
+                  created_at
+                ) VALUES ('transcript_job_retry_exhausted_without_model', 'missing_audio_for_retry', 'failed', 3, 3, '本地模型未就绪', 'local_whisperkit', 'large-v3-turbo', CURRENT_TIMESTAMP)
+                "#,
+                [],
+            )
+            .expect("应能准备达到重试上限且模型未就绪的失败任务");
+
+        let error = commands::transcript::retry_transcript_job_payload(
+            &db_path,
+            "transcript_job_retry_exhausted_without_model",
+        )
+        .expect_err("达到最大重试次数后应先返回重试上限错误");
+        assert!(error.contains("最大重试次数"));
+        assert!(!error.contains("本地 ASR 模型尚未下载"));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    fn seed_available_local_asr_runtime(connection: &Connection, runtime_id: &str) {
+        let display_name = match runtime_id {
+            "argmax-cli" => "Argmax CLI",
+            "whisperkit-cli" => "WhisperKit CLI",
+            _ => runtime_id,
+        };
+        connection
+            .execute(
+                r#"
+                INSERT INTO local_asr_runtime_status (
+                  runtime_id,
+                  display_name,
+                  available,
+                  path,
+                  version,
+                  error_message,
+                  updated_at
+                ) VALUES (?1, ?2, 1, ?1, 'test-runtime 1.0', '', CURRENT_TIMESTAMP)
+                ON CONFLICT(runtime_id) DO UPDATE SET
+                  display_name = excluded.display_name,
+                  available = excluded.available,
+                  path = excluded.path,
+                  version = excluded.version,
+                  error_message = '',
+                  updated_at = CURRENT_TIMESTAMP
+                "#,
+                params![runtime_id, display_name],
+            )
+            .expect("应能准备可用本地 ASR runtime");
+    }
+
+    fn seed_available_local_asr_model(connection: &Connection) {
+        connection
+            .execute(
+                r#"
+                UPDATE local_model_status
+                SET download_status = 'available',
+                    download_progress = 100,
+                    offline_available = 1,
+                    error_message = '',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE provider = ?1
+                "#,
+                params![domain::local_asr::LOCAL_ASR_PROVIDER],
+            )
+            .expect("应能准备可用本地 ASR 模型");
+    }
+
+    fn seed_pending_transcription_job(connection: &Connection, audio_path: &str) {
+        connection
+            .execute(
+                r#"
+                INSERT INTO audio_segments (
+                  id,
+                  file_path,
+                  started_at,
+                  ended_at,
+                  duration_ms,
+                  sample_rate,
+                  channels,
+                  has_effective_voice,
+                  voice_energy_score,
+                  processing_status,
+                  trace_id,
+                  created_at
+                ) VALUES (
+                  'audio_cli_transcribe',
+                  ?1,
+                  CURRENT_TIMESTAMP,
+                  CURRENT_TIMESTAMP,
+                  1000,
+                  16000,
+                  1,
+                  1,
+                  400,
+                  'pending',
+                  'trace_cli_transcribe',
+                  CURRENT_TIMESTAMP
+                )
+                "#,
+                params![audio_path],
+            )
+            .expect("应能准备待转写音频切片");
+
+        connection
+            .execute(
+                r#"
+                INSERT INTO processing_jobs (
+                  id,
+                  job_type,
+                  target_id,
+                  status,
+                  retry_count,
+                  max_retry_count,
+                  trace_id,
+                  created_at
+                ) VALUES (
+                  'job_cli_transcribe',
+                  'transcription',
+                  'audio_cli_transcribe',
+                  'pending',
+                  0,
+                  3,
+                  'trace_cli_transcribe',
+                  CURRENT_TIMESTAMP
+                )
+                "#,
+                [],
+            )
+            .expect("应能准备待处理转写任务");
     }
 
     #[test]
@@ -2084,7 +3245,7 @@ mod tests {
             &db_path,
             audio_path.to_string_lossy().as_ref(),
         )
-        .expect("应能准备 v1.0 导出输入");
+        .expect("应能准备导出输入");
         commands::semantic::generate_semantic_workbench_payload(&db_path)
             .expect("应能生成语义工作台");
         commands::semantic::generate_mind_map_payload(&db_path).expect("应能生成脑图");
@@ -2102,7 +3263,7 @@ mod tests {
                 target_languages: Vec::new(),
             },
         )
-        .expect("v1.0 应能生成完整导出包");
+        .expect("应能生成完整导出包");
 
         assert_eq!(bundle.provider, "local_file");
         assert_eq!(bundle.status, "succeeded");
@@ -2162,7 +3323,7 @@ mod tests {
             &db_path,
             audio_path.to_string_lossy().as_ref(),
         )
-        .expect("应能准备 v1.1 翻译输入");
+        .expect("应能准备翻译输入");
         commands::semantic::generate_semantic_workbench_payload(&db_path)
             .expect("应能生成基础语义工作台");
 
@@ -2182,7 +3343,7 @@ mod tests {
                 target_language: "en-US".into(),
             },
         )
-        .expect("v1.1 应能生成翻译产物");
+        .expect("应能生成翻译产物");
 
         assert_eq!(translation.artifact_type, "translation");
         assert_eq!(translation.status, "succeeded");
@@ -2234,7 +3395,7 @@ mod tests {
                 target_languages: vec!["en-US".into()],
             },
         )
-        .expect("v1.1 应能生成多语言导出包");
+        .expect("应能生成多语言导出包");
 
         assert!(bundle.items.iter().any(|item| {
             item.format == "markdown_en-US"
@@ -2706,7 +3867,7 @@ mod tests {
         let connection = open_connection(&db_path).expect("应能打开测试数据库");
         let mut settings = settings_service::load_settings(&connection).expect("应能读取默认设置");
 
-        settings.asr_provider_type = "cloud_volc".into();
+        settings.asr_provider_type = "legacy-cloud".into();
         settings.todo_provider_type = DEFAULT_TODO_PROVIDER_TYPE.into();
         settings.semantic_base_url = "https://m3.example.test/v1/responses".into();
         settings.semantic_model_name = "MiniMax-M3-Test".into();
@@ -2716,7 +3877,8 @@ mod tests {
         settings_service::save_settings(&connection, &settings).expect("应能保存 v0.4 设置");
         let persisted = settings_service::load_settings(&connection).expect("应能读取保存后的设置");
 
-        assert_eq!(persisted.asr_provider_type, "cloud_volc");
+        assert_eq!(persisted.asr_provider_type, DEFAULT_ASR_PROVIDER_TYPE);
+        assert!(!persisted.allow_cloud_fallback);
         assert_eq!(persisted.todo_provider_type, DEFAULT_TODO_PROVIDER_TYPE);
         assert_eq!(
             persisted.semantic_base_url,
@@ -2725,6 +3887,93 @@ mod tests {
         assert_eq!(persisted.semantic_model_name, "MiniMax-M3-Test");
         assert_eq!(persisted.semantic_api_key_masked, "sk-test-****");
         assert_eq!(persisted.export_provider_type, "local_file");
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_preserve_asr_base_url_when_saving_settings() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-asr-base-url-preserve-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        connection
+            .execute(
+                "UPDATE app_settings SET asr_base_url = ?1 WHERE id = 'default'",
+                params!["https://asr.example.test/base"],
+            )
+            .expect("应能准备独立 ASR base URL");
+
+        let mut settings = settings_service::load_settings(&connection).expect("应能读取默认设置");
+        settings.asr_submit_url = "https://asr.example.test/submit-v2".into();
+        settings.asr_query_url = "https://asr.example.test/query-v2".into();
+
+        settings_service::save_settings(&connection, &settings).expect("应能保存设置");
+
+        let persisted_base_url: String = connection
+            .query_row(
+                "SELECT asr_base_url FROM app_settings WHERE id = 'default'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("应能查询 ASR base URL");
+        assert_eq!(persisted_base_url, "https://asr.example.test/base");
+        let persisted = settings_service::load_settings(&connection).expect("应能回读保存后的设置");
+        assert_eq!(
+            persisted.asr_submit_url,
+            "https://asr.example.test/submit-v2"
+        );
+        assert_eq!(
+            persisted.asr_query_url,
+            "https://asr.example.test/query-v2"
+        );
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_not_restore_cleared_asr_urls_from_legacy_base_url_on_restart() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-asr-url-clear-restart-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        connection
+            .execute(
+                "UPDATE app_settings SET asr_base_url = ?1 WHERE id = 'default'",
+                params!["https://asr.example.test/base"],
+            )
+            .expect("应能准备旧版 ASR base URL");
+
+        let mut settings = settings_service::load_settings(&connection).expect("应能读取默认设置");
+        settings.asr_submit_url = String::new();
+        settings.asr_query_url = String::new();
+        settings_service::save_settings(&connection, &settings).expect("应能保存清空后的 ASR URL");
+        drop(connection);
+
+        initialize_database(&db_path).expect("再次启动不应回填已清空 ASR URL");
+        let connection = open_connection(&db_path).expect("应能重新打开测试数据库");
+        let persisted = settings_service::load_settings(&connection).expect("应能回读重启后的设置");
+        assert_eq!(persisted.asr_submit_url, "");
+        assert_eq!(persisted.asr_query_url, "");
+
+        let persisted_base_url: String = connection
+            .query_row(
+                "SELECT asr_base_url FROM app_settings WHERE id = 'default'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("应能查询旧版 ASR base URL");
+        assert_eq!(persisted_base_url, "https://asr.example.test/base");
 
         let _ = fs::remove_dir_all(temp_dir);
     }
@@ -2788,7 +4037,39 @@ mod tests {
         assert_eq!(result.provider, "asr");
         assert_eq!(result.status_code, 503);
         assert!(result.message.contains("纯本地 ASR"));
-        assert!(result.response_excerpt.contains("不会调用云端服务"));
+        assert!(result.response_excerpt.contains("探测 runtime"));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_report_local_asr_model_test_ready_from_db_state() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "smart-todo-v121-model-command-asr-ready-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        seed_available_local_asr_runtime(&connection, "argmax-cli");
+        seed_available_local_asr_model(&connection);
+        let settings = settings_service::load_settings(&connection).expect("应能读取默认设置");
+
+        let result = commands::model_test::test_model_connection_payload_with_connection(
+            domain::model_test::ModelTestRequest {
+                provider: "asr".into(),
+                settings,
+            },
+            Some(&connection),
+        )
+        .expect("model_test command boundary 应能读取本地 ASR 就绪状态");
+
+        assert!(result.success);
+        assert_eq!(result.status_code, 200);
+        assert!(result.message.contains("已就绪"));
+        assert!(result.response_excerpt.contains("large-v3-v20240930_626MB"));
 
         let _ = fs::remove_dir_all(temp_dir);
     }
