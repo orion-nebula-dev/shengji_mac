@@ -55,7 +55,7 @@ pub(crate) fn load_settings(connection: &Connection) -> Result<SettingsDto, Stri
                     semantic_base_url: row.get(16)?,
                     semantic_model_name: row.get(17)?,
                     semantic_api_key_masked: row.get(18)?,
-                    allow_cloud_fallback: row.get::<_, i64>(19)? == 1,
+                    allow_cloud_fallback: false,
                 })
             },
         )
@@ -96,7 +96,7 @@ pub(crate) fn save_settings(connection: &Connection, payload: &SettingsDto) -> R
                 payload.language.as_str(),
                 payload.chunk_seconds,
                 payload.idle_trigger_seconds,
-                payload.provider_mode.as_str(),
+                "local",
                 normalize_asr_provider_type(&payload.asr_provider_type),
                 payload.speaker_provider_type.as_str(),
                 DEFAULT_TODO_PROVIDER_TYPE,
@@ -111,7 +111,7 @@ pub(crate) fn save_settings(connection: &Connection, payload: &SettingsDto) -> R
                 payload.semantic_base_url.as_str(),
                 payload.semantic_model_name.as_str(),
                 payload.semantic_api_key_masked.as_str(),
-                if payload.allow_cloud_fallback { 1 } else { 0 },
+                0,
             ],
         )
         .map_err(|error| format!("保存设置失败: {error}"))?;

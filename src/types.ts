@@ -6,7 +6,7 @@ export type SessionStatus =
   | "extracted"
   | "failed";
 export type ProviderType = "semantic_m3";
-export type AsrProviderType = "cloud_volc" | "local_whisperkit";
+export type AsrProviderType = "local_whisperkit";
 export type SpeakerProviderType = "local_speakerkit";
 export type SemanticProviderType = "minimax_m3";
 export type EmbeddingProviderType = "reserved";
@@ -140,6 +140,31 @@ export interface LocalModelStatus {
   downloadProgress: number;
   offlineAvailable: boolean;
   deviceRecommendation: string;
+  errorMessage: string;
+}
+
+export interface LocalAsrRuntime {
+  runtimeId: string;
+  displayName: string;
+  available: boolean;
+  path: string;
+  version: string;
+  errorMessage: string;
+}
+
+export interface LocalAsrModel {
+  modelName: string;
+  label: string;
+  sizeHint: string;
+  qualityHint: string;
+  recommended: boolean;
+}
+
+export interface LocalAsrState {
+  runtimes: LocalAsrRuntime[];
+  models: LocalAsrModel[];
+  selectedModel: string;
+  modelStatus: LocalModelStatus;
 }
 
 export interface TranscriptReview {

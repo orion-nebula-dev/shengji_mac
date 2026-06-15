@@ -66,8 +66,34 @@ button:disabled {
 }
 
 .desktop-shell {
+  position: relative;
   height: 100vh;
   min-height: 100vh;
+  padding: 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(242, 246, 248, 0.92)),
+    var(--bg);
+}
+
+.app-version-corner {
+  position: fixed;
+  right: 18px;
+  bottom: 12px;
+  z-index: 20;
+  border: 1px solid rgba(170, 188, 197, 0.72);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--text-soft);
+  padding: 4px 9px;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.2;
+  pointer-events: none;
+  backdrop-filter: blur(16px) saturate(1.12);
+}
+
+.window-frame {
+  min-height: calc(100vh - 36px);
   overflow: hidden;
   background: var(--bg);
 }
@@ -1502,6 +1528,24 @@ button:disabled {
   border-radius: 50%;
 }
 
+.transcript-detail-panel p {
+  margin: 10px 0 0;
+  color: var(--text-main);
+  font-size: 14px;
+}
+
+.segment-detail-time {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.transcript-empty-state {
+  min-height: 96px;
+  padding: 16px;
+  text-align: center;
+}
+
 .model-progress-track {
   height: 8px;
   overflow: hidden;
@@ -1535,6 +1579,32 @@ button:disabled {
 .job-row strong,
 .job-row span {
   display: block;
+}
+
+.error-summary-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.error-summary-row {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+  padding: 12px;
+}
+
+.error-summary-row strong {
+  display: block;
+  color: var(--text-main);
+  font-size: 13px;
+}
+
+.error-summary-row p {
+  margin: 7px 0 10px;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .job-row p {
@@ -2235,6 +2305,84 @@ button:disabled {
   color: var(--text-muted);
 }
 
+.local-asr-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.local-asr-model-summary,
+.local-asr-runtime-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.local-asr-model-summary > div,
+.local-asr-runtime-card,
+.local-asr-status-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-muted);
+  padding: 12px;
+}
+
+.local-asr-model-summary span,
+.local-asr-status-card span {
+  display: block;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.local-asr-model-summary strong,
+.local-asr-status-card strong {
+  display: block;
+  margin-top: 6px;
+  color: var(--text-main);
+  font-size: 14px;
+}
+
+.local-asr-model-summary p,
+.local-asr-runtime-card p,
+.local-asr-status-card p {
+  margin: 7px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.local-asr-runtime-card {
+  background: #fff;
+}
+
+.local-asr-runtime-card .todo-card-header {
+  gap: 8px;
+}
+
+.local-asr-runtime-card strong {
+  min-width: 0;
+  color: var(--text-main);
+  font-size: 13px;
+}
+
+.local-asr-status-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.local-asr-status-card .model-progress-track {
+  margin-top: 2px;
+}
+
+.local-asr-error {
+  border-left: 3px solid var(--danger);
+  background: var(--danger-soft);
+  padding: 8px 10px;
+  color: var(--danger) !important;
+}
+
 .privacy-boundary-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -2358,6 +2506,8 @@ button:disabled {
   .archive-search-panel,
   .export-layout,
   .export-format-tabs,
+  .local-asr-model-summary,
+  .local-asr-runtime-grid,
   .translation-actions,
   .translation-control-panel,
   .overview-grid,

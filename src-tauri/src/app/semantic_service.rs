@@ -48,7 +48,7 @@ pub(crate) fn generate_semantic_workbench(
         connection,
         &workspace.session_id,
         "succeeded",
-        "使用修正文稿、来源索引和启用的修正记忆生成 v0.6 语义产物",
+        "使用修正文稿、来源索引和启用的修正记忆生成语义产物",
         "生成 recording_type、summary、meeting_minutes、todo_extraction",
         "",
     )?;
@@ -281,7 +281,7 @@ pub(crate) fn generate_translation(
         connection,
         &session_id,
         "succeeded",
-        "使用修正文稿与摘要生成 v1.1 翻译产物",
+        "使用修正文稿与摘要生成翻译产物",
         "生成 translation artifact，包含转写翻译、摘要翻译和来源追溯",
         "",
     )?;
@@ -314,7 +314,7 @@ pub(crate) fn record_parse_failure_unchecked(
 ) -> Result<SemanticArtifactDto, String> {
     ensure_semantic_failure_session(connection, session_id)?;
     let error_message = match serde_json::from_str::<serde_json::Value>(raw_response) {
-        Ok(_) => "MiniMax M3 JSON 结构缺少 v0.6 必需字段".to_string(),
+        Ok(_) => "MiniMax M3 JSON 结构缺少必需字段".to_string(),
         Err(error) => format!("MiniMax M3 JSON 解析失败: {error}"),
     };
     insert_model_invocation(
@@ -445,7 +445,7 @@ pub(crate) fn generate_mind_map(connection: &Connection) -> Result<SemanticArtif
         connection,
         &session_id,
         "succeeded",
-        "基于修正文稿、摘要和来源索引生成 v0.8 思维脑图",
+        "基于修正文稿、摘要和来源索引生成思维脑图",
         "生成 semantic_artifacts(type='mind_map')",
         "",
     )?;
@@ -590,7 +590,7 @@ pub(crate) fn generate_value_discovery(
         connection,
         &session_id,
         "succeeded",
-        "基于修正文稿、纪要和来源索引生成 v0.9 Moment 与 Deep Research 草稿",
+        "基于修正文稿、纪要和来源索引生成 Moment 与 Deep Research 草稿",
         "生成 semantic_artifacts(type='moment' | 'deep_research')",
         "",
     )?;
@@ -667,7 +667,7 @@ pub(crate) fn start_research_from_segment(
         connection,
         &session_id,
         "succeeded",
-        "从单个转写片段发起 v0.9 Deep Research 草稿",
+        "从单个转写片段发起 Deep Research 草稿",
         "生成 semantic_artifacts(type='deep_research')",
         "",
     )?;
@@ -784,7 +784,7 @@ fn build_summary(revisions: &[TranscriptRevisionDto]) -> SummaryDto {
         title: "转写修正后的会议摘要".into(),
         basis: "基于修正文稿生成，不直接消费原始 ASR 文本。".into(),
         bullets: vec![
-            "已完成本地转写评估，并将英文标签修正为中文表达。".into(),
+            "已完成录音片段处理，并将英文标签修正为中文表达。".into(),
             "说话人标签、时间跳转和错误片段复核是当前会议的重点。".into(),
             "后续语义处理可复用同一来源索引追溯到转写片段。".into(),
         ],
