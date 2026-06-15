@@ -48,17 +48,7 @@ pub(crate) struct TranscriptJobDto {
     pub(crate) model_name: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct LocalModelStatusDto {
-    pub(crate) provider: String,
-    pub(crate) model_name: String,
-    pub(crate) cache_dir: String,
-    pub(crate) download_status: String,
-    pub(crate) download_progress: i64,
-    pub(crate) offline_available: bool,
-    pub(crate) device_recommendation: String,
-}
+pub(crate) type LocalModelStatusDto = crate::domain::local_asr::LocalAsrModelStatusDto;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
