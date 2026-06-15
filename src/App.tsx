@@ -1837,9 +1837,6 @@ function App() {
     { key: "todo", label: "Todo", description: "候选与执行" },
     { key: "privacy", label: "隐私边界", description: "本地与云端" },
   ];
-  const selectedTranscriptSegment =
-    transcriptReview.segments.find((segment) => segment.id === selectedTranscriptSegmentId) ??
-    transcriptReview.segments[0];
   const selectedRevision =
     semanticWorkbench.revisions.find(
       (revision) => revision.sourceSegmentId === selectedTranscriptSegment?.id,
