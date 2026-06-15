@@ -1,5 +1,6 @@
 import type {
   ExportBundle,
+  LocalAsrState,
   RuntimeStatus,
   SessionItem,
   SemanticWorkbench,
@@ -22,15 +23,15 @@ export const defaultSettings: SettingsState = {
   semanticProviderType: "minimax_m3",
   embeddingProviderType: "reserved",
   exportProviderType: "local_file",
-  asrSubmitUrl: "https://api.example.com/asr/submit",
-  asrQueryUrl: "https://api.example.com/asr/query",
-  asrResourceId: "volc.seedasr.auc",
-  asrModelName: "bigmodel",
-  asrApiKeyMasked: "sk-asr-****",
+  asrSubmitUrl: "",
+  asrQueryUrl: "",
+  asrResourceId: "",
+  asrModelName: "large-v3-v20240930_626MB",
+  asrApiKeyMasked: "",
   semanticBaseUrl: "https://api.minimax.io/v1/responses",
   semanticModelName: "MiniMax-M3",
   semanticApiKeyMasked: "sk-m3-****",
-  allowCloudFallback: true,
+  allowCloudFallback: false,
 };
 
 export const defaultTodos: TodoItem[] = [
@@ -106,7 +107,7 @@ export const defaultTodoCandidates: TodoCandidateItem[] = [
     confidence: 0.74,
     status: "proposed",
     sourceSpanRefs: ["transcript_demo_001"],
-    sourceText: "transcript_demo_001: 已导入 demo-meeting.wav，本地转写评估开始。",
+    sourceText: "transcript_demo_001: demo-meeting.wav 的录音片段已生成。",
     todoId: "",
   },
 ];
@@ -149,6 +150,61 @@ export const defaultRuntime: RuntimeStatus = {
   lastExtractionSummary: "最近一次会话提取出 2 条 Todo",
 };
 
+export const mockLocalAsrState: LocalAsrState = {
+  runtimes: [
+    {
+      runtimeId: "argmax-cli",
+      displayName: "Argmax CLI",
+      available: false,
+      path: "",
+      version: "",
+      errorMessage: "未检测",
+    },
+    {
+      runtimeId: "whisperkit-cli",
+      displayName: "WhisperKit CLI",
+      available: false,
+      path: "",
+      version: "",
+      errorMessage: "未检测",
+    },
+  ],
+  models: [
+    {
+      modelName: "large-v3-v20240930_626MB",
+      label: "Large v3",
+      sizeHint: "626MB",
+      qualityHint: "默认高准确率模型",
+      recommended: true,
+    },
+    {
+      modelName: "base",
+      label: "Base",
+      sizeHint: "约 145MB",
+      qualityHint: "速度与质量平衡",
+      recommended: false,
+    },
+    {
+      modelName: "tiny",
+      label: "Tiny",
+      sizeHint: "约 75MB",
+      qualityHint: "最快，适合快速预览",
+      recommended: false,
+    },
+  ],
+  selectedModel: "large-v3-v20240930_626MB",
+  modelStatus: {
+    provider: "local_whisperkit",
+    modelName: "large-v3-v20240930_626MB",
+    cacheDir: "~/Library/Application Support/com.soundworkbench.shengji/models/whisperkit",
+    downloadStatus: "not_started",
+    downloadProgress: 0,
+    offlineAvailable: false,
+    deviceRecommendation: "Apple Silicon 推荐 Large v3；低配设备可切换 Base 或 Tiny。",
+    errorMessage: "",
+  },
+};
+
 export const defaultTranscriptReview: TranscriptReview = {
   audio: {
     id: "audio_import_demo",
@@ -156,7 +212,7 @@ export const defaultTranscriptReview: TranscriptReview = {
     durationMs: 45000,
     status: "succeeded",
     provider: "local_whisperkit",
-    modelName: "large-v3-turbo",
+    modelName: "large-v3-v20240930_626MB",
     offlineAvailable: true,
   },
   speakers: [
@@ -185,7 +241,7 @@ export const defaultTranscriptReview: TranscriptReview = {
       speakerLabel: "Speaker 1",
       startMs: 0,
       endMs: 12500,
-      text: "已导入 demo-meeting.wav，本地转写评估开始。",
+      text: "demo-meeting.wav 的录音片段已生成。",
       confidence: 0.91,
       provider: "local_whisperkit",
       reviewStatus: "normal",
@@ -227,7 +283,7 @@ export const defaultTranscriptReview: TranscriptReview = {
       maxRetryCount: 3,
       errorMessage: "",
       provider: "local_whisperkit",
-      modelName: "large-v3-turbo",
+      modelName: "large-v3-v20240930_626MB",
     },
     {
       id: "transcript_job_failed_demo",
@@ -237,17 +293,18 @@ export const defaultTranscriptReview: TranscriptReview = {
       maxRetryCount: 3,
       errorMessage: "示例失败任务：本地模型缓存未就绪",
       provider: "local_whisperkit",
-      modelName: "large-v3-turbo",
+      modelName: "large-v3-v20240930_626MB",
     },
   ],
   modelStatus: {
     provider: "local_whisperkit",
-    modelName: "large-v3-turbo",
-    cacheDir: "~/Library/Application Support/com.smarttodo.desktop/models/argmax",
+    modelName: "large-v3-v20240930_626MB",
+    cacheDir: "~/Library/Application Support/com.soundworkbench.shengji/models/whisperkit",
     downloadStatus: "available",
     downloadProgress: 100,
     offlineAvailable: true,
-    deviceRecommendation: "Apple Silicon 推荐 large-v3-turbo；Intel 机型建议 small/base",
+    deviceRecommendation: "Apple Silicon 推荐 Large v3；低配设备可切换 Base 或 Tiny。",
+    errorMessage: "",
   },
 };
 
@@ -268,7 +325,7 @@ export const defaultTranslationArtifact: TranslationArtifact = {
     originalBasis: "基于修正文稿生成，不直接消费原始 ASR 文本。",
     translatedBasis: "[en-US] 基于修正文稿生成，不直接消费原始 ASR 文本。",
     translatedBullets: [
-      "[en-US] 已完成本地转写评估，并将英文标签修正为中文表达。",
+      "[en-US] 已完成录音片段处理，并将英文标签修正为中文表达。",
       "[en-US] 说话人标签、时间跳转和错误片段复核是当前会议的重点。",
       "[en-US] 后续语义处理可复用同一来源索引追溯到转写片段。",
     ],
@@ -292,8 +349,8 @@ export const defaultSemanticWorkbench: SemanticWorkbench = {
       speakerLabel: "Speaker 1",
       startMs: 0,
       endMs: 12500,
-      originalText: "已导入 demo-meeting.wav，本地转写评估开始。",
-      revisedText: "已导入 demo-meeting.wav，本地转写评估已开始。",
+      originalText: "demo-meeting.wav 的录音片段已生成。",
+      revisedText: "demo-meeting.wav 的录音片段已生成。",
       changeLevel: "punctuation",
       correctionType: "punctuation",
       reasonSummary: "优化句式和标点，使修正文稿更适合摘要输入。",
@@ -338,7 +395,7 @@ export const defaultSemanticWorkbench: SemanticWorkbench = {
     title: "转写修正后的会议摘要",
     basis: "基于修正文稿生成，不直接消费原始 ASR 文本。",
     bullets: [
-      "已完成本地转写评估，并将英文标签修正为中文表达。",
+      "已完成录音片段处理，并将英文标签修正为中文表达。",
       "说话人标签、时间跳转和错误片段复核是当前会议的重点。",
       "后续语义处理可复用同一来源索引追溯到转写片段。",
     ],
@@ -423,7 +480,7 @@ export const defaultSemanticWorkbench: SemanticWorkbench = {
     {
       id: "research_semantic_session_audio_import_demo_auto",
       question: "哪些风险和决策值得继续深入研究？",
-      background: "基于修正文稿生成，不直接消费原始 ASR 文本；已完成本地转写评估，并将英文标签修正为中文表达。",
+      background: "基于修正文稿生成，不直接消费原始 ASR 文本；已完成录音片段处理，并将英文标签修正为中文表达。",
       hypotheses: [
         "风险来自真实模型接入、转写质量和来源追溯之间的耦合。",
         "如果先固化片段来源和验收证据，可以降低后续产品化返工。",
@@ -457,7 +514,7 @@ export const defaultSemanticWorkbench: SemanticWorkbench = {
         id: "summary",
         label: "核心摘要",
         kind: "summary",
-        note: "本地转写评估、说话人标签复核、来源索引追溯。",
+        note: "录音片段处理、说话人标签复核、来源索引追溯。",
         sourceSpanRefs: ["transcript_demo_001", "transcript_demo_002"],
         collapsed: false,
       },
@@ -473,7 +530,7 @@ export const defaultSemanticWorkbench: SemanticWorkbench = {
         id: "source_transcript_demo_002",
         label: "检查说话人标签与时间跳转",
         kind: "source",
-        note: "来源片段可回到转写评估页定位。",
+        note: "来源片段可回到录音片段页定位。",
         sourceSpanRefs: ["transcript_demo_002"],
         collapsed: false,
       },
@@ -563,7 +620,7 @@ export const defaultSemanticWorkbench: SemanticWorkbench = {
       modelName: "MiniMax-M3",
       capability: "semantic",
       status: "succeeded",
-      requestSummary: "使用修正文稿、来源索引和启用的修正记忆生成 v0.6 语义产物",
+      requestSummary: "使用修正文稿、来源索引和启用的修正记忆生成语义产物",
       responseSummary: "生成 recording_type、summary、meeting_minutes、todo_extraction",
       errorMessage: "",
     },
@@ -602,7 +659,7 @@ export const defaultExportBundle: ExportBundle = {
       format: "srt",
       fileName: "声记字幕导出.srt",
       mimeType: "application/x-subrip; charset=utf-8",
-      content: "1\n00:00:00,000 --> 00:00:12,500\nSpeaker 1：已导入 demo-meeting.wav，本地转写评估开始。\n",
+      content: "1\n00:00:00,000 --> 00:00:12,500\nSpeaker 1：demo-meeting.wav 的录音片段已生成。\n",
       status: "succeeded",
       sourceSpanRefs: ["transcript_demo_001"],
       errorMessage: "",
