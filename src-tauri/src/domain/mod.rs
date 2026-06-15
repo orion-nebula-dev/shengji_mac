@@ -1,8 +1,9 @@
-pub(crate) mod bootstrap;
 pub(crate) mod artifact;
+pub(crate) mod bootstrap;
 pub(crate) mod correction;
 pub(crate) mod desktop;
 pub(crate) mod export;
+pub(crate) mod local_asr;
 pub(crate) mod model_test;
 pub(crate) mod processing;
 pub mod provider;
