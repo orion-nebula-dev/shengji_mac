@@ -5,7 +5,7 @@ use crate::providers::SemanticProvider;
 
 pub const PROVIDER_ID: &str = "minimax_m3";
 pub const DEFAULT_DISPLAY_NAME: &str = "MiniMax M3";
-pub const DEFAULT_BASE_URL: &str = "https://api.minimax.io/v1/responses";
+pub const DEFAULT_BASE_URL: &str = "https://api.minimaxi.com/v1/chat/completions";
 pub const DEFAULT_MODEL_NAME: &str = "MiniMax-M3";
 pub const MAX_CONTEXT_TOKENS: usize = 1_000_000;
 pub const PRIVACY_BOUNDARY: &str =
