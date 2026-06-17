@@ -8,7 +8,9 @@ vite.config.d.ts
 src-tauri/target/
 
 # Local analysis/cache
-.understand-anything/
+# 注：原 .understand-anything/ 工具工作目录已于 2026.6.17 移到
+# AI文档/100-UnderstandAnything/source/ 统一管理。如果未来重新使用
+# .understand-anything/ 作为工具工作目录，请在这里重新加 ignore 行。
 
 # Local runtime data
 *.sqlite
