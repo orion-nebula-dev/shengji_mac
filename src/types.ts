@@ -66,6 +66,15 @@ export interface TodoCandidateItem {
   todoId: string;
 }
 
+export interface UpdateTodoCandidateCommand {
+  candidateId: string;
+  title: string;
+  detail: string;
+  owner: string;
+  dueAt: string;
+  priority: "low" | "medium" | "high";
+}
+
 export interface SessionItem {
   id: string;
   mergedText: string;
@@ -86,6 +95,52 @@ export interface RuntimeStatus {
   lastSliceAt: string;
   lastExtractionAt: string;
   lastExtractionSummary: string;
+}
+
+export interface RecoveryTask {
+  taskId: string;
+  taskType: string;
+  targetId: string;
+  audioSegmentId: string;
+  status: string;
+  retryCount: number;
+  maxRetryCount: number;
+  errorMessage: string;
+  provider: string;
+  modelName: string;
+  retryCommand: "retry_transcript_job" | "retry_processing_job" | string;
+  updatedAt: string;
+}
+
+export interface RuntimeMetricSummary {
+  commandName: string;
+  totalCount: number;
+  successCount: number;
+  failedCount: number;
+  p50DurationMs: number;
+  p95DurationMs: number;
+  latestStatus: string;
+  latestErrorMessage: string;
+}
+
+export interface RuntimeDashboard {
+  recoveryTasks: RecoveryTask[];
+  metricSummaries: RuntimeMetricSummary[];
+}
+
+export interface TaskTimelineEvent {
+  id: string;
+  stage: string;
+  title: string;
+  status: string;
+  timestamp: string;
+  detail: string;
+}
+
+export interface SegmentTimeline {
+  audioSegmentId: string;
+  fileName: string;
+  events: TaskTimelineEvent[];
 }
 
 export interface TranscriptAudio {

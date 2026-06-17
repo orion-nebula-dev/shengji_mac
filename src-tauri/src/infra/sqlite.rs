@@ -819,6 +819,17 @@ pub(crate) fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
         FOREIGN KEY (session_id) REFERENCES conversation_sessions(id) ON DELETE CASCADE
       );
 
+      CREATE TABLE IF NOT EXISTS runtime_metrics (
+        id TEXT PRIMARY KEY,
+        audio_segment_id TEXT NOT NULL DEFAULT '',
+        command_name TEXT NOT NULL,
+        started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        duration_ms INTEGER NOT NULL DEFAULT 0 CHECK (duration_ms >= 0),
+        status TEXT NOT NULL DEFAULT 'succeeded'
+          CHECK (status IN ('succeeded', 'failed')),
+        error_message TEXT NOT NULL DEFAULT ''
+      );
+
       CREATE INDEX IF NOT EXISTS idx_audio_segments_created_at
         ON audio_segments(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_conversation_sessions_created_at
@@ -860,6 +871,10 @@ pub(crate) fn initialize_database(db_path: &PathBuf) -> Result<(), String> {
         ON external_exports(session_id);
       CREATE INDEX IF NOT EXISTS idx_external_exports_created_at
         ON external_exports(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_runtime_metrics_command_started
+        ON runtime_metrics(command_name, started_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_runtime_metrics_audio
+        ON runtime_metrics(audio_segment_id, started_at DESC);
       "#,
         )
         .map_err(|error| format!("初始化表结构失败: {error}"))?;

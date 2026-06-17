@@ -42,6 +42,13 @@ struct ExportTodo {
     source_span_refs: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+struct ExportCorrectionTerm {
+    phrase: String,
+    replacement: String,
+    pattern_type: String,
+}
+
 pub(crate) fn generate_export_bundle(
     connection: &Connection,
     command: GenerateExportBundleCommand,
@@ -51,6 +58,7 @@ pub(crate) fn generate_export_bundle(
     let transcript_segments = query_transcript_segments(connection, session_id.as_str())?;
     let artifacts = query_artifacts(connection, session_id.as_str())?;
     let todos = query_todos(connection, session_id.as_str())?;
+    let correction_terms = query_correction_terms(connection)?;
     let source_span_refs = collect_source_span_refs(&artifacts, &todos);
 
     let bundle_id = format!("export_bundle_{}_{}", session_id, current_timestamp_label());
@@ -160,6 +168,7 @@ pub(crate) fn generate_export_bundle(
                                 session_id.as_str(),
                                 target_language.as_str(),
                                 &translation,
+                                &correction_terms,
                             ),
                             language_source_refs.clone(),
                         ));
@@ -367,6 +376,33 @@ fn query_todos(connection: &Connection, session_id: &str) -> Result<Vec<ExportTo
 
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("读取 Todo 导出失败: {error}"))
+}
+
+fn query_correction_terms(connection: &Connection) -> Result<Vec<ExportCorrectionTerm>, String> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT phrase, replacement, pattern_type
+            FROM transcript_correction_patterns
+            WHERE enabled = 1
+            ORDER BY confidence DESC, datetime(updated_at) DESC, id ASC
+            LIMIT 12
+            "#,
+        )
+        .map_err(|error| format!("准备术语表查询失败: {error}"))?;
+
+    let rows = statement
+        .query_map([], |row| {
+            Ok(ExportCorrectionTerm {
+                phrase: row.get(0)?,
+                replacement: row.get(1)?,
+                pattern_type: row.get(2)?,
+            })
+        })
+        .map_err(|error| format!("查询术语表失败: {error}"))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("读取术语表失败: {error}"))
 }
 
 fn normalize_formats(formats: Vec<String>) -> Vec<String> {
@@ -632,21 +668,44 @@ fn render_multilingual_markdown(
     session_id: &str,
     target_language: &str,
     translation: &Value,
+    correction_terms: &[ExportCorrectionTerm],
 ) -> String {
     let mut output = String::new();
+    output.push_str("# 声记多语言导出\n\n");
     output.push_str("# ShengJi Multilingual Export\n\n");
-    output.push_str(&format!("- Session: `{session_id}`\n"));
-    output.push_str(&format!("- Target language: `{target_language}`\n"));
-    output.push_str("- Privacy: generated locally from translation artifacts.\n\n");
+    output.push_str(&format!("- 会话：`{session_id}`\n"));
+    output.push_str(&format!("- 目标语言：`{target_language}`\n"));
+    output
+        .push_str("- 隐私边界：基于本地 translation artifact 生成，不包含音频路径或 API Key。\n\n");
 
-    output.push_str("## Summary Translation\n\n");
+    output.push_str("## 双语摘要\n\n");
     if let Some(summary) = translation.get("summaryTranslation") {
-        if let Some(title) = summary.get("translatedTitle").and_then(Value::as_str) {
-            output.push_str(&format!("### {title}\n\n"));
-        }
-        if let Some(basis) = summary.get("translatedBasis").and_then(Value::as_str) {
-            output.push_str(basis);
-            output.push_str("\n\n");
+        let original_title = summary
+            .get("originalTitle")
+            .and_then(Value::as_str)
+            .unwrap_or("原文摘要");
+        let translated_title = summary
+            .get("translatedTitle")
+            .and_then(Value::as_str)
+            .unwrap_or("Translated summary");
+        output.push_str(&format!("### {translated_title}\n\n"));
+        output.push_str(&format!("> 原文：{original_title}\n\n"));
+        output.push_str(&format!("> 译文：{translated_title}\n\n"));
+
+        let original_basis = summary
+            .get("originalBasis")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let translated_basis = summary
+            .get("translatedBasis")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if !original_basis.is_empty() || !translated_basis.is_empty() {
+            output.push_str(&format!(
+                "> 原文：{}\n>\n> 译文：{}\n\n",
+                value_or(original_basis, "暂无摘要依据"),
+                value_or(translated_basis, "暂无译文摘要")
+            ));
         }
         if let Some(bullets) = summary.get("translatedBullets").and_then(Value::as_array) {
             for bullet in bullets.iter().filter_map(Value::as_str) {
@@ -656,7 +715,8 @@ fn render_multilingual_markdown(
     }
     output.push('\n');
 
-    output.push_str("## Transcript Translation\n\n");
+    output.push_str("## 双语转写\n\n");
+    output.push_str("> Transcript Translation\n\n");
     if let Some(segments) = translation
         .get("transcriptTranslations")
         .and_then(Value::as_array)
@@ -670,12 +730,43 @@ fn render_multilingual_markdown(
                 .get("speakerLabel")
                 .and_then(Value::as_str)
                 .unwrap_or("Speaker");
+            let start_ms = segment.get("startMs").and_then(Value::as_i64).unwrap_or(0);
+            let end_ms = segment
+                .get("endMs")
+                .and_then(Value::as_i64)
+                .unwrap_or(start_ms);
+            let original_text = segment
+                .get("originalText")
+                .and_then(Value::as_str)
+                .unwrap_or("");
             let translated_text = segment
                 .get("translatedText")
                 .and_then(Value::as_str)
                 .unwrap_or("");
             output.push_str(&format!(
-                "- Source segment `{source_segment_id}` · {speaker_label}: {translated_text}\n"
+                "### `{}` · {} · `{}`\n\n> 原文：{}\n>\n> 译文：{}\n\n",
+                format_time_range(start_ms, end_ms),
+                speaker_label,
+                source_segment_id,
+                value_or(original_text, "暂无原文"),
+                value_or(translated_text, "暂无译文")
+            ));
+        }
+    }
+    output.push('\n');
+
+    output.push_str("## 关键术语表\n\n");
+    if correction_terms.is_empty() {
+        output.push_str("- 暂无可用术语或修正记忆。\n");
+    } else {
+        output.push_str("| 原文/术语 | 推荐修正 | 类型 |\n");
+        output.push_str("| --- | --- | --- |\n");
+        for term in correction_terms {
+            output.push_str(&format!(
+                "| {} | {} | {} |\n",
+                escape_markdown_table(term.phrase.as_str()),
+                escape_markdown_table(term.replacement.as_str()),
+                escape_markdown_table(term.pattern_type.as_str())
             ));
         }
     }
@@ -1051,6 +1142,10 @@ fn value_or<'a>(value: &'a str, fallback: &'a str) -> &'a str {
     } else {
         value
     }
+}
+
+fn escape_markdown_table(value: &str) -> String {
+    value.replace('|', "\\|").replace('\n', " ")
 }
 
 fn escape_html(value: &str) -> String {

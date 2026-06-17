@@ -17,6 +17,8 @@ import {
   listDesktopTodoCandidates,
   loadBootstrapData,
   loadDesktopContext,
+  loadDesktopRuntimeDashboard,
+  loadDesktopSegmentTimeline,
   loadSemanticWorkbench,
   loadTranscriptReview,
   markDesktopTranscriptSegment,
@@ -24,6 +26,7 @@ import {
   renameDesktopSpeaker,
   rejectDesktopTranscriptRevision,
   retryDesktopSemanticArtifact,
+  retryDesktopProcessingJob,
   retryDesktopTranscriptJob,
   saveDesktopSettings,
   setDesktopCorrectionPatternEnabled,
@@ -35,10 +38,18 @@ import {
   testDesktopModelConnection,
   toggleDesktopTodoStatus,
   toggleDesktopMindMapNode,
+  updateDesktopTodoCandidate,
   updateDesktopMindMapNode,
   updateDesktopTodoStatus,
 } from "./lib/desktop";
-import { defaultExportBundle, defaultSemanticWorkbench, defaultTodoCandidates, defaultTranscriptReview } from "./data/mock";
+import {
+  defaultExportBundle,
+  defaultRuntimeDashboard,
+  defaultSegmentTimeline,
+  defaultSemanticWorkbench,
+  defaultTodoCandidates,
+  defaultTranscriptReview,
+} from "./data/mock";
 import { getDefaultState, loadState, saveState } from "./lib/storage";
 import appIconUrl from "../src-tauri/icons/128x128.png";
 import type {
@@ -49,8 +60,10 @@ import type {
   MindMapArtifact,
   MindMapExport,
   MomentArtifact,
+  RuntimeDashboard,
   SemanticArtifact,
   SemanticWorkbench,
+  SegmentTimeline,
   SessionItem,
   SettingsState,
   TodoCandidateItem,
@@ -58,6 +71,7 @@ import type {
   TodoStatus,
   TranslationArtifact,
   TranscriptReview,
+  UpdateTodoCandidateCommand,
 } from "./types";
 
 type TabKey =
@@ -148,7 +162,7 @@ const transcriptJobStatusLabelMap = {
   retrying: "重试中",
 } as const;
 
-const appVersionLabel = "v1.1.1";
+const appVersionLabel = "v1.2.0";
 const overviewPanelLabelMap: Record<OverviewPanelKey, string> = {
   transcript: "转写",
   summary: "摘要",
@@ -177,13 +191,50 @@ function getFallbackReasonText(session?: SessionItem) {
   return session.extractionFallbackReason || "未记录回退原因";
 }
 
+function candidateToDraft(candidate: TodoCandidateItem): UpdateTodoCandidateCommand {
+  return {
+    candidateId: candidate.id,
+    title: candidate.title,
+    detail: candidate.detail,
+    owner: candidate.owner,
+    dueAt: candidate.dueAt,
+    priority: candidate.priority,
+  };
+}
+
+function getMindMapSourceSpans(mindMap: Partial<MindMapArtifact> | null | undefined): string[] {
+  const direct = Array.isArray(mindMap?.sourceSpans) ? mindMap.sourceSpans : [];
+  const fromNodes = getMindMapNodes(mindMap).flatMap((node) =>
+    Array.isArray(node.sourceSpanRefs) ? node.sourceSpanRefs : [],
+  );
+  return Array.from(new Set([...direct, ...fromNodes]));
+}
+
+function getMindMapNodes(
+  mindMap: Partial<MindMapArtifact> | null | undefined,
+): MindMapArtifact["nodes"] {
+  return Array.isArray(mindMap?.nodes) ? mindMap.nodes : [];
+}
+
+function getMindMapEdges(
+  mindMap: Partial<MindMapArtifact> | null | undefined,
+): MindMapArtifact["edges"] {
+  return Array.isArray(mindMap?.edges) ? mindMap.edges : [];
+}
+
 function parseMindMapArtifact(artifact: SemanticArtifact): MindMapArtifact | null {
   if (artifact.artifactType !== "mind_map" || artifact.status !== "succeeded") {
     return null;
   }
 
   try {
-    return JSON.parse(artifact.payloadJson) as MindMapArtifact;
+    const parsed = JSON.parse(artifact.payloadJson) as MindMapArtifact;
+    return {
+      ...parsed,
+      nodes: getMindMapNodes(parsed),
+      edges: getMindMapEdges(parsed),
+      sourceSpans: getMindMapSourceSpans(parsed),
+    };
   } catch {
     return null;
   }
@@ -226,14 +277,16 @@ function parseTranslationArtifact(artifact: SemanticArtifact): TranslationArtifa
 }
 
 function mindMapToMarkdown(mindMap: MindMapArtifact) {
+  const sourceSpans = getMindMapSourceSpans(mindMap);
+  const nodes = getMindMapNodes(mindMap);
   return [
     "# 语义脑图",
     "",
     `- 摘要：${mindMap.summary}`,
     `- 版本：${mindMap.version}`,
-    `- 来源：${mindMap.sourceSpans.join("、") || "暂无来源"}`,
+    `- 来源：${sourceSpans.join("、") || "暂无来源"}`,
     "",
-    ...mindMap.nodes.flatMap((node) => [
+    ...nodes.flatMap((node) => [
       `${node.id === mindMap.root ? "##" : "###"} ${node.label}`,
       node.note,
       `来源：${node.sourceSpanRefs.join("、") || "暂无来源"}`,
@@ -295,7 +348,7 @@ function createLocalMindMapArtifact(
     provider: "minimax_m3",
     modelName: "MiniMax-M3",
     schemaVersion: "v0.8",
-    sourceSpanRefs: mindMap.sourceSpans,
+    sourceSpanRefs: getMindMapSourceSpans(mindMap),
     payloadJson: JSON.stringify(mindMap),
     errorMessage: "",
   };
@@ -331,10 +384,16 @@ function App() {
   const [todos, setTodos] = useState<TodoItem[]>(initialState.todos);
   const [sessions, setSessions] = useState<SessionItem[]>(initialState.sessions);
   const [runtime, setRuntime] = useState(initialState.runtime);
+  const [runtimeDashboard, setRuntimeDashboard] =
+    useState<RuntimeDashboard>(defaultRuntimeDashboard);
+  const [segmentTimeline, setSegmentTimeline] =
+    useState<SegmentTimeline>(defaultSegmentTimeline);
   const [selectedTodoId, setSelectedTodoId] = useState(initialState.todos[0]?.id ?? "");
   const [filter, setFilter] = useState<"all" | TodoStatus>("all");
   const [todoCandidates, setTodoCandidates] =
     useState<TodoCandidateItem[]>(defaultTodoCandidates);
+  const [candidateDrafts, setCandidateDrafts] =
+    useState<Record<string, UpdateTodoCandidateCommand>>({});
   const [keyword, setKeyword] = useState("");
   const [saveBanner, setSaveBanner] = useState("");
   const [testingProvider, setTestingProvider] = useState<"" | "asr" | "todo">("");
@@ -523,6 +582,47 @@ function App() {
   useEffect(() => {
     let cancelled = false;
 
+    loadDesktopRuntimeDashboard()
+      .then((dashboard) => {
+        if (!cancelled && dashboard) {
+          setRuntimeDashboard(dashboard);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setRuntimeDashboard(defaultRuntimeDashboard);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const audioSegmentId = transcriptReview.audio.id || defaultSegmentTimeline.audioSegmentId;
+
+    loadDesktopSegmentTimeline(audioSegmentId)
+      .then((timeline) => {
+        if (!cancelled && timeline) {
+          setSegmentTimeline(timeline);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSegmentTimeline(defaultSegmentTimeline);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [transcriptReview.audio.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+
     loadBootstrapData()
       .then((payload) => {
         if (!payload || cancelled) {
@@ -661,6 +761,49 @@ function App() {
 
     setTodoCandidates(candidates ?? defaultTodoCandidates);
     setSaveBanner("已同步待办候选。");
+    window.setTimeout(() => setSaveBanner(""), 2400);
+  }
+
+  function updateCandidateDraft<K extends keyof UpdateTodoCandidateCommand>(
+    candidate: TodoCandidateItem,
+    key: K,
+    value: UpdateTodoCandidateCommand[K],
+  ) {
+    setCandidateDrafts((current) => ({
+      ...current,
+      [candidate.id]: {
+        ...(current[candidate.id] ?? candidateToDraft(candidate)),
+        [key]: value,
+      },
+    }));
+  }
+
+  async function handleUpdateTodoCandidate(candidate: TodoCandidateItem) {
+    const draft = candidateDrafts[candidate.id] ?? candidateToDraft(candidate);
+    const updated = await updateDesktopTodoCandidate(draft).catch(() => null);
+
+    if (isTauriEnvironment() && !updated) {
+      setSaveBanner("候选编辑保存失败，请刷新后重试。");
+      window.setTimeout(() => setSaveBanner(""), 3000);
+      return;
+    }
+
+    const nextCandidate = updated ?? {
+      ...candidate,
+      title: draft.title,
+      detail: draft.detail,
+      owner: draft.owner,
+      dueAt: draft.dueAt,
+      priority: draft.priority,
+    };
+    setTodoCandidates((current) =>
+      current.map((item) => (item.id === candidate.id ? nextCandidate : item)),
+    );
+    setCandidateDrafts((current) => ({
+      ...current,
+      [candidate.id]: candidateToDraft(nextCandidate),
+    }));
+    setSaveBanner("候选编辑已保存。");
     window.setTimeout(() => setSaveBanner(""), 2400);
   }
 
@@ -824,6 +967,16 @@ function App() {
     window.setTimeout(() => setSaveBanner(""), 4000);
   }
 
+  async function refreshRuntimeDashboard() {
+    const dashboard = await loadDesktopRuntimeDashboard().catch(() => null);
+    setRuntimeDashboard(dashboard ?? defaultRuntimeDashboard);
+  }
+
+  async function refreshSegmentTimeline(audioSegmentId = transcriptReview.audio.id) {
+    const timeline = await loadDesktopSegmentTimeline(audioSegmentId).catch(() => null);
+    setSegmentTimeline(timeline ?? defaultSegmentTimeline);
+  }
+
   async function handleImportAudio() {
     if (!audioImportPath.trim()) {
       setSaveBanner("请输入本地音频文件路径，用于离线转写评估。");
@@ -856,6 +1009,8 @@ function App() {
     setTranscriptReview(review);
     setSelectedTranscriptSegmentId(review.segments[0]?.id ?? "");
     setSpeakerDrafts(Object.fromEntries(review.speakers.map((speaker) => [speaker.id, speaker.label])));
+    await refreshRuntimeDashboard();
+    await refreshSegmentTimeline(review.audio.id);
     setSaveBanner("已导入音频并生成本地转写评估时间轴。");
     window.setTimeout(() => setSaveBanner(""), 3600);
   }
@@ -937,8 +1092,28 @@ function App() {
           : job,
       ),
     }));
+    await refreshRuntimeDashboard();
+    await refreshSegmentTimeline();
     setSaveBanner("失败转写任务已重新排队。");
     window.setTimeout(() => setSaveBanner(""), 2400);
+  }
+
+  async function handleRetryProcessingJob(jobId: string) {
+    const retried = await retryDesktopProcessingJob(jobId).catch(() => null);
+
+    if (isTauriEnvironment() && !retried) {
+      setSaveBanner("处理任务当前不可重试，请检查任务状态。");
+      window.setTimeout(() => setSaveBanner(""), 2400);
+      return;
+    }
+
+    setRuntimeDashboard((current) => ({
+      ...current,
+      recoveryTasks: current.recoveryTasks.filter((task) => task.taskId !== jobId),
+    }));
+    await refreshRuntimeDashboard();
+    setSaveBanner(`处理任务已重新排队${retried ? `（第 ${retried.retryCount} 次）` : ""}。`);
+    window.setTimeout(() => setSaveBanner(""), 2600);
   }
 
   async function handleGenerateSemanticWorkbench() {
@@ -959,6 +1134,8 @@ function App() {
     }
 
     setSemanticWorkbench(generated);
+    await refreshRuntimeDashboard();
+    await refreshSegmentTimeline();
     setSaveBanner("已基于修正文稿生成摘要、纪要和待办候选。");
     window.setTimeout(() => setSaveBanner(""), 3200);
   }
@@ -1085,6 +1262,7 @@ function App() {
 
     if (artifact) {
       applyMindMapArtifact(artifact);
+      await refreshRuntimeDashboard();
       setSaveBanner("已生成思维脑图。");
       window.setTimeout(() => setSaveBanner(""), 2800);
       return;
@@ -1225,6 +1403,7 @@ function App() {
 
     if (generated) {
       setExportBundle(generated);
+      await refreshRuntimeDashboard();
       setSelectedExportFormat(generated.items[0]?.format ?? "markdown");
       setSaveBanner("已生成 Markdown、SRT、JSON 和本地分享快照。");
       window.setTimeout(() => setSaveBanner(""), 3200);
@@ -1309,6 +1488,7 @@ function App() {
 
     if (generated) {
       setExportBundle(generated);
+      await refreshRuntimeDashboard();
       setSelectedExportFormat(generated.items[0]?.format ?? `markdown_${targetLanguage}`);
       setSaveBanner(`已生成 ${targetLanguage} 多语言导出包。`);
       window.setTimeout(() => setSaveBanner(""), 3000);
@@ -1322,6 +1502,9 @@ function App() {
       if (!translation) {
         return;
       }
+      const correctionTerms = semanticWorkbench.correctionPatterns
+        .filter((pattern) => pattern.enabled)
+        .slice(0, 12);
       const localBundle: ExportBundle = {
         ...defaultExportBundle,
         id: `export_bundle_demo_${targetLanguage}`,
@@ -1332,16 +1515,57 @@ function App() {
             fileName: `声记多语言导出-${targetLanguage}.md`,
             mimeType: "text/markdown; charset=utf-8",
             content: [
+              "# 声记多语言导出",
+              "",
               "# ShengJi Multilingual Export",
               "",
-              "## Summary Translation",
-              translation.summaryTranslation.translatedBasis,
+              `- 会话：\`${semanticWorkbench.sessionId}\``,
+              `- 目标语言：\`${targetLanguage}\``,
+              "- 隐私边界：基于本地 translation artifact 生成，不包含音频路径或 API Key。",
               "",
-              "## Transcript Translation",
+              "## 双语摘要",
+              "",
+              `### ${translation.summaryTranslation.translatedTitle}`,
+              "",
+              `> 原文：${translation.summaryTranslation.originalTitle}`,
+              "",
+              `> 译文：${translation.summaryTranslation.translatedTitle}`,
+              "",
+              `> 原文：${translation.summaryTranslation.originalBasis}`,
+              ">",
+              `> 译文：${translation.summaryTranslation.translatedBasis}`,
+              "",
+              ...translation.summaryTranslation.translatedBullets.map((bullet) => `- ${bullet}`),
+              "",
+              "## 双语转写",
+              "",
+              "> Transcript Translation",
+              "",
               ...translation.transcriptTranslations.map(
                 (segment) =>
-                  `- Source segment \`${segment.sourceSegmentId}\` · ${segment.speakerLabel}: ${segment.translatedText}`,
+                  [
+                    `### \`${formatDuration(segment.startMs)} - ${formatDuration(segment.endMs)}\` · ${segment.speakerLabel} · \`${segment.sourceSegmentId}\``,
+                    "",
+                    `> 原文：${segment.originalText}`,
+                    ">",
+                    `> 译文：${segment.translatedText}`,
+                    "",
+                  ].join("\n"),
               ),
+              "",
+              "## 关键术语表",
+              "",
+              correctionTerms.length === 0
+                ? "- 暂无可用术语或修正记忆。"
+                : "| 原文/术语 | 推荐修正 | 类型 |",
+              ...(correctionTerms.length === 0
+                ? []
+                : [
+                    "| --- | --- | --- |",
+                    ...correctionTerms.map(
+                      (term) => `| ${term.phrase} | ${term.replacement} | ${term.patternType} |`,
+                    ),
+                  ]),
             ].join("\n"),
             status: "succeeded",
             sourceSpanRefs: translation.sourceSpanRefs,
@@ -1596,7 +1820,9 @@ function App() {
           ...semanticWorkbench.mindMap.edges,
           { id: `edge_root_${nodeId}`, from: semanticWorkbench.mindMap.root, to: nodeId, label: "研究" },
         ],
-        sourceSpans: Array.from(new Set([...semanticWorkbench.mindMap.sourceSpans, ...research.sourceSpanRefs])),
+        sourceSpans: Array.from(
+          new Set([...getMindMapSourceSpans(semanticWorkbench.mindMap), ...research.sourceSpanRefs]),
+        ),
         edited: true,
         version: semanticWorkbench.mindMap.version + 1,
         parentArtifactId: semanticWorkbench.artifacts.find((item) => item.artifactType === "mind_map")?.id ?? "",
@@ -1616,7 +1842,25 @@ function App() {
   }
 
   const currentMindMap = semanticWorkbench.mindMap;
-  const selectedMindMapNode = currentMindMap?.nodes.find(
+  const mindMapArtifacts = semanticWorkbench.artifacts
+    .filter((artifact) => artifact.artifactType === "mind_map" && artifact.status === "succeeded")
+    .map((artifact) => ({ artifact, mindMap: parseMindMapArtifact(artifact) }))
+    .filter((item): item is { artifact: SemanticArtifact; mindMap: MindMapArtifact } =>
+      Boolean(item.mindMap),
+    )
+    .sort((left, right) => left.mindMap.version - right.mindMap.version);
+  const baselineMindMap =
+    mindMapArtifacts.find(
+      (item) => !item.mindMap.edited && getMindMapNodes(item.mindMap).length > 0,
+    )?.mindMap ?? currentMindMap;
+  const editedMindMap =
+    [...mindMapArtifacts]
+      .reverse()
+      .find((item) => item.mindMap.edited && getMindMapNodes(item.mindMap).length > 0)?.mindMap ??
+    currentMindMap;
+  const currentMindMapNodes = getMindMapNodes(currentMindMap);
+  const currentMindMapEdges = getMindMapEdges(currentMindMap);
+  const selectedMindMapNode = currentMindMapNodes.find(
     (node) => node.id === selectedMindMapNodeId,
   );
   const selectedResearch =
@@ -1631,6 +1875,7 @@ function App() {
     (candidate) => candidate.status === "proposed",
   ).length;
   const failedSessionCount = sessions.filter((session) => session.extractionStatus === "failed").length;
+  const recoveryTaskCount = runtimeDashboard.recoveryTasks.length;
   const latestSession = sessions[0];
   const filteredSessions = sessions.filter((session) => {
     const query = sessionSearch.trim().toLowerCase();
@@ -2308,7 +2553,68 @@ function App() {
                                     : "已忽略"}
                               </span>
                             </div>
-                            <p>{candidate.detail}</p>
+                            {candidate.status === "proposed" ? (
+                              <div className="candidate-edit-grid" aria-label="候选编辑">
+                                <label className="field field-wide">
+                                  <span>候选编辑 · 标题</span>
+                                  <input
+                                    type="text"
+                                    value={(candidateDrafts[candidate.id] ?? candidateToDraft(candidate)).title}
+                                    onChange={(event) =>
+                                      updateCandidateDraft(candidate, "title", event.target.value)
+                                    }
+                                  />
+                                </label>
+                                <label className="field field-wide">
+                                  <span>详情</span>
+                                  <textarea
+                                    value={(candidateDrafts[candidate.id] ?? candidateToDraft(candidate)).detail}
+                                    onChange={(event) =>
+                                      updateCandidateDraft(candidate, "detail", event.target.value)
+                                    }
+                                  />
+                                </label>
+                                <label className="field">
+                                  <span>负责人</span>
+                                  <input
+                                    type="text"
+                                    value={(candidateDrafts[candidate.id] ?? candidateToDraft(candidate)).owner}
+                                    onChange={(event) =>
+                                      updateCandidateDraft(candidate, "owner", event.target.value)
+                                    }
+                                  />
+                                </label>
+                                <label className="field">
+                                  <span>截止时间</span>
+                                  <input
+                                    type="text"
+                                    value={(candidateDrafts[candidate.id] ?? candidateToDraft(candidate)).dueAt}
+                                    onChange={(event) =>
+                                      updateCandidateDraft(candidate, "dueAt", event.target.value)
+                                    }
+                                  />
+                                </label>
+                                <label className="field">
+                                  <span>优先级</span>
+                                  <select
+                                    value={(candidateDrafts[candidate.id] ?? candidateToDraft(candidate)).priority}
+                                    onChange={(event) =>
+                                      updateCandidateDraft(
+                                        candidate,
+                                        "priority",
+                                        event.target.value as TodoCandidateItem["priority"],
+                                      )
+                                    }
+                                  >
+                                    <option value="low">低</option>
+                                    <option value="medium">中</option>
+                                    <option value="high">高</option>
+                                  </select>
+                                </label>
+                              </div>
+                            ) : (
+                              <p>{candidate.detail}</p>
+                            )}
                             <div className="todo-meta">
                               <span>{candidate.owner || "未分配"}</span>
                               <span>{candidate.dueAt || "无截止时间"}</span>
@@ -2319,6 +2625,13 @@ function App() {
                           </div>
                           {candidate.status === "proposed" ? (
                             <div className="row-actions">
+                              <button
+                                className="secondary-button"
+                                type="button"
+                                onClick={() => handleUpdateTodoCandidate(candidate)}
+                              >
+                                保存编辑
+                              </button>
                               <button
                                 className="primary-button"
                                 type="button"
@@ -2615,6 +2928,31 @@ function App() {
                     <section className="panel-lite">
                       <div className="panel-head">
                         <div>
+                          <p className="section-kicker">Lifecycle</p>
+                          <h3>任务状态时间线</h3>
+                        </div>
+                        <span className="status-chip">{segmentTimeline.fileName}</span>
+                      </div>
+                      <div className="task-timeline-list">
+                        {segmentTimeline.events.map((event) => (
+                          <article key={event.id} className={`timeline-event timeline-event-${event.stage}`}>
+                            <span className="timeline-dot" />
+                            <div>
+                              <strong>{event.title}</strong>
+                              <span>{event.timestamp} · {event.status}</span>
+                              <p>{event.detail}</p>
+                            </div>
+                          </article>
+                        ))}
+                        {segmentTimeline.events.length === 0 ? (
+                          <div className="empty-state">暂无任务状态时间线</div>
+                        ) : null}
+                      </div>
+                    </section>
+
+                    <section className="panel-lite">
+                      <div className="panel-head">
+                        <div>
                           <p className="section-kicker">Local Model</p>
                           <h3>本地模型状态</h3>
                         </div>
@@ -2769,6 +3107,13 @@ function App() {
                                 <p>{revision.revisedText}</p>
                               </div>
                             </div>
+                            {revision.originalText !== revision.revisedText ? (
+                              <div className="revision-diff-strip" aria-label="修正 diff 高亮">
+                                <span>修正 diff</span>
+                                <del>{revision.originalText}</del>
+                                <ins>{revision.revisedText}</ins>
+                              </div>
+                            ) : null}
                             <p className="review-note">
                               来源 {revision.sourceSegmentId} · {revision.reasonSummary}
                             </p>
@@ -3224,15 +3569,15 @@ function App() {
                     <div className="panel-head">
                       <div>
                         <p className="section-kicker">Canvas</p>
-                        <h3>{currentMindMap?.nodes.find((node) => node.id === currentMindMap.root)?.label ?? "暂无脑图"}</h3>
+                        <h3>{currentMindMapNodes.find((node) => node.id === currentMindMap?.root)?.label ?? "暂无脑图"}</h3>
                       </div>
                       <span className="badge badge-waiting">
-                        {currentMindMap?.sourceSpans.length ?? 0} 个来源
+                        {getMindMapSourceSpans(currentMindMap).length} 个来源
                       </span>
                     </div>
                     {currentMindMap ? (
                         <div className="mindmap-edge-strip" aria-label="脑图边关系">
-                          {currentMindMap.edges.map((edge) => (
+                          {currentMindMapEdges.map((edge) => (
                             <span key={edge.id}>
                               {edge.from} → {edge.to} · {edge.label}
                             </span>
@@ -3241,7 +3586,7 @@ function App() {
                     ) : null}
                     {currentMindMap ? (
                       <div className="mindmap-canvas" aria-label="思维脑图画布">
-                        {currentMindMap.nodes.map((node) => {
+                        {currentMindMapNodes.map((node) => {
                           const isRoot = node.id === currentMindMap.root;
                           const isSelected = node.id === selectedMindMapNodeId;
                           return (
@@ -3287,7 +3632,7 @@ function App() {
                           </button>
                         ) : null}
                       </div>
-                      {selectedMindMapNode ? (
+                    {selectedMindMapNode ? (
                         <div className="mindmap-editor">
                           <label className="field field-wide">
                             <span>节点标题</span>
@@ -3337,6 +3682,66 @@ function App() {
                         </div>
                       ) : (
                         <div className="empty-state">请选择一个节点。</div>
+                      )}
+                    </section>
+
+                    <section className="panel-lite mindmap-compare-panel">
+                      <div className="panel-head">
+                        <div>
+                          <p className="section-kicker">Compare</p>
+                          <h3>脑图版本对比</h3>
+                        </div>
+                        <span className="status-chip">
+                          v{baselineMindMap?.version ?? 0} / v{editedMindMap?.version ?? currentMindMap?.version ?? 0}
+                        </span>
+                      </div>
+                      {baselineMindMap && editedMindMap ? (
+                        <div className="mindmap-compare-grid" aria-label="脑图版本对比">
+                          <div>
+                            <span>生成版</span>
+                            <strong>{getMindMapNodes(baselineMindMap).length} 节点</strong>
+                            <p>{getMindMapNodes(baselineMindMap).find((node) => node.id === baselineMindMap.root)?.label}</p>
+                          </div>
+                          <div>
+                            <span>编辑版</span>
+                            <strong>{getMindMapNodes(editedMindMap).length} 节点</strong>
+                            <p>{getMindMapNodes(editedMindMap).find((node) => node.id === editedMindMap.root)?.label}</p>
+                          </div>
+                          <div>
+                            <span>新增节点</span>
+                            <strong>
+                              {
+                                getMindMapNodes(editedMindMap).filter(
+                                  (node) =>
+                                    !getMindMapNodes(baselineMindMap).some(
+                                      (baselineNode) => baselineNode.id === node.id,
+                                    ),
+                                ).length
+                              }
+                            </strong>
+                            <p>用于人工编辑后回看结构变化。</p>
+                          </div>
+                          <div>
+                            <span>来源引用</span>
+                            <strong>{getMindMapSourceSpans(editedMindMap).length}</strong>
+                            <p>保留 source span，避免脑图脱离转写证据。</p>
+                          </div>
+                        </div>
+                      ) : currentMindMap ? (
+                        <div className="mindmap-compare-grid" aria-label="脑图版本对比">
+                          <div>
+                            <span>当前版本</span>
+                            <strong>v{currentMindMap.version}</strong>
+                            <p>保存节点编辑后会生成编辑版，与生成版并排比较。</p>
+                          </div>
+                          <div>
+                            <span>编辑状态</span>
+                            <strong>{currentMindMap.edited ? "已编辑" : "生成版"}</strong>
+                            <p>比较区不改写数据，只展示版本差异。</p>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="empty-state">生成脑图后显示版本对比。</div>
                       )}
                     </section>
 
@@ -3634,8 +4039,10 @@ function App() {
                     <p className="section-kicker">System States</p>
                     <h2>运行状态与排障</h2>
                   </div>
-                  <span className={`status-chip ${failedSessionCount > 0 ? "chip-danger" : "chip-live"}`}>
-                    {failedSessionCount > 0 ? `${failedSessionCount} 个失败项` : "无阻断问题"}
+                  <span className={`status-chip ${failedSessionCount + recoveryTaskCount > 0 ? "chip-danger" : "chip-live"}`}>
+                    {failedSessionCount + recoveryTaskCount > 0
+                      ? `${failedSessionCount + recoveryTaskCount} 个失败项`
+                      : "无阻断问题"}
                   </span>
                 </div>
                 <section className="system-grid">
@@ -3656,6 +4063,66 @@ function App() {
                       <li><span>状态</span><strong>语义边界已登记</strong></li>
                     </ul>
                     <p className="runtime-message">{desktopContext?.modelsStatus ?? "MiniMax M3 语义入口已固定"}</p>
+                  </article>
+                  <article className="panel-lite system-wide">
+                    <div className="panel-head">
+                      <div>
+                        <p className="section-kicker">Recovery</p>
+                        <h3>错误恢复面板</h3>
+                      </div>
+                      <span className="status-chip">{runtimeDashboard.recoveryTasks.length} 个任务</span>
+                    </div>
+                    <div className="recovery-task-list">
+                      {runtimeDashboard.recoveryTasks.map((task) => (
+                        <article key={task.taskId} className="recovery-task-row">
+                          <div>
+                            <strong>{task.taskType}</strong>
+                            <span>{task.provider} {task.modelName} · {task.updatedAt}</span>
+                            <p>{task.errorMessage || "未记录错误摘要"}</p>
+                            <small>目标 {task.targetId} · retry {task.retryCount}/{task.maxRetryCount}</small>
+                          </div>
+                          <button
+                            className="secondary-button"
+                            type="button"
+                            onClick={() =>
+                              task.retryCommand === "retry_transcript_job"
+                                ? handleRetryTranscriptJob(task.taskId)
+                                : handleRetryProcessingJob(task.taskId)
+                            }
+                          >
+                            重试
+                          </button>
+                        </article>
+                      ))}
+                      {runtimeDashboard.recoveryTasks.length === 0 ? (
+                        <div className="empty-state">暂无可恢复失败任务</div>
+                      ) : null}
+                    </div>
+                  </article>
+                  <article className="panel-lite system-wide">
+                    <div className="panel-head">
+                      <div>
+                        <p className="section-kicker">Metrics</p>
+                        <h3>性能指标</h3>
+                      </div>
+                      <span className="status-chip">近 7 天 P50 / P95</span>
+                    </div>
+                    <div className="runtime-metric-grid">
+                      {runtimeDashboard.metricSummaries.map((metric) => (
+                        <article key={metric.commandName} className="metric-row">
+                          <strong>{metric.commandName}</strong>
+                          <span>{metric.successCount}/{metric.totalCount} 成功 · {metric.failedCount} 失败</span>
+                          <div>
+                            <b>P50 {metric.p50DurationMs}ms</b>
+                            <b>P95 {metric.p95DurationMs}ms</b>
+                          </div>
+                          {metric.latestErrorMessage ? <p>{metric.latestErrorMessage}</p> : null}
+                        </article>
+                      ))}
+                      {runtimeDashboard.metricSummaries.length === 0 ? (
+                        <div className="empty-state">暂无性能指标，运行导入、语义或导出后会写入 runtime_metrics。</div>
+                      ) : null}
+                    </div>
                   </article>
                   <article className="panel-lite system-wide">
                     <p className="section-kicker">失败与回退</p>
@@ -3811,9 +4278,9 @@ function App() {
                     </div>
                     <div className="provider-status-grid">
                       <div>
-                        <span>MiniMax M3 成本</span>
-                        <strong>按云端 token 计费</strong>
-                        <p>摘要、纪要、Todo、脑图、研究共享同一语义入口。</p>
+                        <span>MiniMax M3 调用口径</span>
+                        <strong>按调用次数与模型名核对</strong>
+                        <p>摘要、纪要、Todo、脑图、研究共享 MiniMax M3 语义入口。</p>
                       </div>
                       <div>
                         <span>本地导出成本</span>
@@ -3827,8 +4294,8 @@ function App() {
                       </div>
                       <div>
                         <span>隐私说明</span>
-                        <strong>导出不上传</strong>
-                        <p>日志和导出记录不展示完整音频路径、API Key 或完整隐私文本。</p>
+                        <strong>音频本地，语义文本云端</strong>
+                        <p>日志、指标和导出记录不展示完整音频路径、API Key 或完整转写文本。</p>
                       </div>
                     </div>
                   </section>
