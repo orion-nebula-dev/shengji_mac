@@ -33,7 +33,8 @@ llama-completion
 *api*key*.md
 
 # Local AI planning / agent workspace files
-AI文档/
+# 注意: AI文档/ 目录下的项目规划与设计参考必须进 git；
+# 这里只忽略 agent 自身的本地缓存与指令文件
 AGENTS.md
 .codex/
 .agents/
