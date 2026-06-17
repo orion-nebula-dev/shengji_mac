@@ -35,8 +35,10 @@ llama-completion
 *api*key*.md
 
 # Local AI planning / agent workspace files
-# 注意: AI文档/ 目录下的项目规划与设计参考必须进 git；
-# 这里只忽略 agent 自身的本地缓存与指令文件
+# 注意: 整个 AI文档/ 目录 + AI agent 配置目录都只在本地保留，不上传远端
+# （2026.6.17 决定：项目文档维护仅在本地，远端只保留代码 + 版本号变更）
 AGENTS.md
+AI文档/
+.claude/
 .codex/
 .agents/
