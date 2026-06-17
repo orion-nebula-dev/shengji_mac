@@ -1,7 +1,7 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Instant};
 
 use crate::{
-    app::semantic_service,
+    app::{runtime_observability_service, semantic_service},
     domain::{
         artifact::{
             AddResearchToMindMapCommand, ConvertResearchToTodoCommand, GenerateTranslationCommand,
@@ -19,7 +19,24 @@ pub(crate) fn generate_semantic_workbench_payload(
     db_path: &PathBuf,
 ) -> Result<SemanticWorkbenchDto, String> {
     let connection = open_connection(db_path)?;
-    semantic_service::generate_semantic_workbench(&connection)
+    let started_at = Instant::now();
+    let result = semantic_service::generate_semantic_workbench(&connection);
+    let duration_ms = started_at.elapsed().as_millis() as i64;
+    let status = if result.is_ok() {
+        "succeeded"
+    } else {
+        "failed"
+    };
+    let error_message = result.as_ref().err().map(String::as_str).unwrap_or("");
+    let _ = runtime_observability_service::record_runtime_metric(
+        &connection,
+        None,
+        "generate_semantic_workbench",
+        duration_ms,
+        status,
+        error_message,
+    );
+    result
 }
 
 pub(crate) fn get_semantic_workbench_payload(
@@ -74,7 +91,24 @@ pub(crate) fn reject_transcript_revision_payload(
 
 pub(crate) fn generate_mind_map_payload(db_path: &PathBuf) -> Result<SemanticArtifactDto, String> {
     let connection = open_connection(db_path)?;
-    semantic_service::generate_mind_map(&connection)
+    let started_at = Instant::now();
+    let result = semantic_service::generate_mind_map(&connection);
+    let duration_ms = started_at.elapsed().as_millis() as i64;
+    let status = if result.is_ok() {
+        "succeeded"
+    } else {
+        "failed"
+    };
+    let error_message = result.as_ref().err().map(String::as_str).unwrap_or("");
+    let _ = runtime_observability_service::record_runtime_metric(
+        &connection,
+        None,
+        "generate_mind_map",
+        duration_ms,
+        status,
+        error_message,
+    );
+    result
 }
 
 pub(crate) fn update_mind_map_node_payload(

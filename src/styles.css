@@ -30,6 +30,23 @@
   --danger: #c75b5b;
   --danger-soft: #fdeeee;
   --shadow: 0 22px 60px rgba(38, 56, 66, 0.12);
+  --color-bg-window: var(--bg);
+  --color-surface-panel: var(--surface);
+  --color-surface-muted: var(--surface-muted);
+  --color-border-subtle: var(--border);
+  --color-text-primary: var(--text-main);
+  --color-text-secondary: var(--text-muted);
+  --color-accent: var(--brand);
+  --font-size-11: 11px;
+  --font-size-12: 12px;
+  --font-size-13: 13px;
+  --font-size-15: 15px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --radius-control: 10px;
+  --radius-panel: 14px;
 }
 
 * {
@@ -40,7 +57,7 @@ body {
   margin: 0;
   min-width: 1180px;
   min-height: 100vh;
-  background: var(--bg);
+  background: var(--color-bg-window);
   color: var(--text-main);
   overflow: hidden;
 }
@@ -95,7 +112,7 @@ button:disabled {
 .window-frame {
   min-height: calc(100vh - 36px);
   overflow: hidden;
-  background: var(--bg);
+  background: var(--color-bg-window);
 }
 
 .app-frame {
@@ -1100,6 +1117,58 @@ button:disabled {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.recovery-task-list,
+.runtime-metric-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.recovery-task-row,
+.metric-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  background: rgba(255, 255, 255, 0.84);
+  padding: 12px;
+}
+
+.recovery-task-row strong,
+.metric-row strong {
+  display: block;
+  color: var(--text-main);
+  font-size: var(--font-size-13);
+}
+
+.recovery-task-row span,
+.metric-row span,
+.recovery-task-row small,
+.metric-row small {
+  display: block;
+  color: var(--text-soft);
+  font-size: var(--font-size-12);
+  font-weight: 700;
+}
+
+.recovery-task-row p,
+.metric-row p {
+  margin: 6px 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-13);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.metric-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.runtime-metric-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .settings-grid-wide {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
@@ -1286,6 +1355,18 @@ button:disabled {
   font-size: 13px;
 }
 
+.candidate-edit-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin-top: 12px;
+}
+
+.candidate-edit-grid textarea {
+  min-height: 76px;
+  resize: vertical;
+}
+
 .todo-card,
 .session-card {
   display: block;
@@ -1442,6 +1523,72 @@ button:disabled {
   color: var(--text-main);
   font-size: 13px;
   word-break: break-word;
+}
+
+.task-timeline-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.timeline-event {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  background: rgba(255, 255, 255, 0.82);
+  padding: 10px;
+}
+
+.timeline-dot {
+  width: 10px;
+  height: 10px;
+  margin-top: 6px;
+  border-radius: 999px;
+  background: var(--brand);
+  box-shadow: 0 0 0 4px rgba(10, 132, 255, 0.12);
+}
+
+.timeline-event-transcript .timeline-dot {
+  background: var(--cyan);
+  box-shadow: 0 0 0 4px rgba(19, 166, 182, 0.12);
+}
+
+.timeline-event-semantic .timeline-dot {
+  background: var(--purple);
+  box-shadow: 0 0 0 4px rgba(110, 86, 207, 0.12);
+}
+
+.timeline-event-metric .timeline-dot {
+  background: var(--success);
+  box-shadow: 0 0 0 4px rgba(47, 157, 100, 0.12);
+}
+
+.timeline-event strong,
+.timeline-event span {
+  display: block;
+}
+
+.timeline-event strong {
+  color: var(--text-main);
+  font-size: var(--font-size-13);
+}
+
+.timeline-event span {
+  margin-top: 2px;
+  color: var(--text-soft);
+  font-size: var(--font-size-12);
+  font-weight: 700;
+}
+
+.timeline-event p {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-12);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .transcript-timeline,
@@ -1704,6 +1851,48 @@ button:disabled {
   margin: 6px 0 0;
   color: var(--text-main);
   font-size: 13px;
+}
+
+.revision-diff-strip {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  margin-top: 10px;
+  border: 1px solid rgba(10, 132, 255, 0.18);
+  border-radius: var(--radius-panel);
+  background: rgba(232, 242, 255, 0.58);
+  padding: 9px;
+}
+
+.revision-diff-strip span,
+.revision-diff-strip del,
+.revision-diff-strip ins {
+  min-width: 0;
+  font-size: var(--font-size-12);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.revision-diff-strip span {
+  color: var(--brand-strong);
+  font-weight: 800;
+}
+
+.revision-diff-strip del {
+  border-radius: 8px;
+  background: rgba(199, 91, 91, 0.12);
+  color: var(--danger);
+  padding: 6px;
+  text-decoration-thickness: 2px;
+}
+
+.revision-diff-strip ins {
+  border-radius: 8px;
+  background: rgba(47, 157, 100, 0.13);
+  color: var(--success);
+  padding: 6px;
+  text-decoration: none;
 }
 
 .semantic-artifact-grid {
@@ -1995,6 +2184,42 @@ button:disabled {
 .mindmap-editor textarea {
   min-height: 112px;
   resize: vertical;
+}
+
+.mindmap-compare-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.mindmap-compare-grid > div {
+  min-height: 96px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  background: rgba(247, 250, 252, 0.82);
+  padding: 12px;
+}
+
+.mindmap-compare-grid span {
+  display: block;
+  color: var(--text-soft);
+  font-size: var(--font-size-12);
+  font-weight: 800;
+}
+
+.mindmap-compare-grid strong {
+  display: block;
+  margin-top: 5px;
+  color: var(--text-main);
+  font-size: 18px;
+}
+
+.mindmap-compare-grid p {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-12);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .source-ref-list {
@@ -2504,15 +2729,18 @@ button:disabled {
 
   .actions-layout,
   .archive-search-panel,
+  .candidate-edit-grid,
   .export-layout,
   .export-format-tabs,
   .local-asr-model-summary,
   .local-asr-runtime-grid,
+  .mindmap-compare-grid,
   .translation-actions,
   .translation-control-panel,
   .overview-grid,
   .provider-status-grid,
   .privacy-boundary-grid,
+  .runtime-metric-grid,
   .semantic-artifact-grid,
   .semantic-layout,
   .settings-grid-wide,

@@ -1,7 +1,9 @@
 import type {
   ExportBundle,
   LocalAsrState,
+  RuntimeDashboard,
   RuntimeStatus,
+  SegmentTimeline,
   SessionItem,
   SemanticWorkbench,
   SettingsState,
@@ -203,6 +205,110 @@ export const mockLocalAsrState: LocalAsrState = {
     deviceRecommendation: "Apple Silicon 推荐 Large v3；低配设备可切换 Base 或 Tiny。",
     errorMessage: "",
   },
+};
+
+export const defaultRuntimeDashboard: RuntimeDashboard = {
+  recoveryTasks: [
+    {
+      taskId: "transcript_job_failed_demo",
+      taskType: "transcript_job",
+      targetId: "audio_failed_demo",
+      audioSegmentId: "audio_failed_demo",
+      status: "failed",
+      retryCount: 1,
+      maxRetryCount: 3,
+      errorMessage: "示例失败任务：本地模型缓存未就绪",
+      provider: "local_whisperkit",
+      modelName: "large-v3-turbo",
+      retryCommand: "retry_transcript_job",
+      updatedAt: "2026-06-15 09:20:00",
+    },
+    {
+      taskId: "processing_job_failed_demo",
+      taskType: "todo_extraction",
+      targetId: "semantic_session_audio_import_demo",
+      audioSegmentId: "audio_import_demo",
+      status: "failed",
+      retryCount: 1,
+      maxRetryCount: 3,
+      errorMessage: "MiniMax M3 返回 429，等待重试",
+      provider: "internal",
+      modelName: "MiniMax-M3",
+      retryCommand: "retry_processing_job",
+      updatedAt: "2026-06-15 09:21:00",
+    },
+  ],
+  metricSummaries: [
+    {
+      commandName: "import_local_audio",
+      totalCount: 6,
+      successCount: 5,
+      failedCount: 1,
+      p50DurationMs: 118,
+      p95DurationMs: 360,
+      latestStatus: "succeeded",
+      latestErrorMessage: "",
+    },
+    {
+      commandName: "generate_semantic_workbench",
+      totalCount: 4,
+      successCount: 4,
+      failedCount: 0,
+      p50DurationMs: 920,
+      p95DurationMs: 1440,
+      latestStatus: "succeeded",
+      latestErrorMessage: "",
+    },
+    {
+      commandName: "generate_export_bundle",
+      totalCount: 3,
+      successCount: 3,
+      failedCount: 0,
+      p50DurationMs: 74,
+      p95DurationMs: 96,
+      latestStatus: "succeeded",
+      latestErrorMessage: "",
+    },
+  ],
+};
+
+export const defaultSegmentTimeline: SegmentTimeline = {
+  audioSegmentId: "audio_import_demo",
+  fileName: "demo-meeting.wav",
+  events: [
+    {
+      id: "audio_import_demo_audio",
+      stage: "audio",
+      title: "音频导入 / 录音切片",
+      status: "succeeded",
+      timestamp: "2026-06-15 09:18:00",
+      detail: "结束于 2026-06-15 09:18:45，时长 45000ms",
+    },
+    {
+      id: "transcript_job_demo",
+      stage: "transcription",
+      title: "转写任务",
+      status: "succeeded",
+      timestamp: "2026-06-15 09:18:08",
+      detail: "local_whisperkit / large-v3-turbo · retry 0/3",
+    },
+    {
+      id: "semantic_demo_summary",
+      stage: "semantic",
+      title: "M3 summary",
+      status: "succeeded",
+      timestamp: "2026-06-15 09:18:18",
+      detail: "minimax_m3 / MiniMax-M3",
+    },
+    {
+      id: "metric_import_local_audio",
+      stage: "metric",
+      title: "import_local_audio",
+      status: "succeeded",
+      timestamp: "2026-06-15 09:18:02",
+      detail: "118ms",
+    },
+  ],
 };
 
 export const defaultTranscriptReview: TranscriptReview = {

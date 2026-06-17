@@ -45,3 +45,14 @@ pub(crate) struct AcceptTodoCandidateCommand {
     pub(crate) due_at: String,
     pub(crate) priority: String,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpdateTodoCandidateCommand {
+    pub(crate) candidate_id: String,
+    pub(crate) title: String,
+    pub(crate) detail: String,
+    pub(crate) owner: String,
+    pub(crate) due_at: String,
+    pub(crate) priority: String,
+}

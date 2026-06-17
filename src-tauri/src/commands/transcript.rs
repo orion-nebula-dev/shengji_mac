@@ -1,7 +1,7 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Instant};
 
 use crate::{
-    app::transcript_service,
+    app::{runtime_observability_service, transcript_service},
     domain::{
         speaker::SpeakerDto,
         transcript::{TranscriptJobDto, TranscriptReviewDto, TranscriptSegmentDto},
@@ -15,7 +15,25 @@ pub(crate) fn import_local_audio_payload(
     file_path: &str,
 ) -> Result<TranscriptReviewDto, String> {
     let connection = open_connection(db_path)?;
-    transcript_service::import_local_audio(&connection, file_path)
+    let started_at = Instant::now();
+    let result = transcript_service::import_local_audio(&connection, file_path);
+    let duration_ms = started_at.elapsed().as_millis() as i64;
+    let audio_segment_id = result.as_ref().ok().map(|review| review.audio.id.as_str());
+    let status = if result.is_ok() {
+        "succeeded"
+    } else {
+        "failed"
+    };
+    let error_message = result.as_ref().err().map(String::as_str).unwrap_or("");
+    let _ = runtime_observability_service::record_runtime_metric(
+        &connection,
+        audio_segment_id,
+        "import_local_audio",
+        duration_ms,
+        status,
+        error_message,
+    );
+    result
 }
 
 pub(crate) fn get_transcript_review_payload(
