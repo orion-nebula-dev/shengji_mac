@@ -8,7 +8,9 @@ vite.config.d.ts
 src-tauri/target/
 
 # Local analysis/cache
-.understand-anything/
+# 注：原 .understand-anything/ 工具工作目录已于 2026.6.17 移到
+# AI文档/100-UnderstandAnything/source/ 统一管理。如果未来重新使用
+# .understand-anything/ 作为工具工作目录，请在这里重新加 ignore 行。
 
 # Local runtime data
 *.sqlite
@@ -33,8 +35,14 @@ llama-completion
 *api*key*.md
 
 # Local AI planning / agent workspace files
-# 注意: AI文档/ 目录下的项目规划与设计参考必须进 git；
-# 这里只忽略 agent 自身的本地缓存与指令文件
+# 注意: 整个 AI文档/ 目录 + AI agent 配置目录都只在本地保留，不上传远端
+# （2026.6.17 决定：项目文档维护仅在本地，远端只保留代码 + 版本号变更）
 AGENTS.md
+AI文档/
+.claude/
 .codex/
 .agents/
+
+# 其他文件/ - 临时存放目录，2026.6.17 由 macOS Finder 或其他工具自动创建
+# 空目录，只在本地使用
+其他文件/
