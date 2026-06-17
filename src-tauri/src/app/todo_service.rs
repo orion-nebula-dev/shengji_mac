@@ -4,14 +4,17 @@ use crate::{
     current_timestamp_label,
     domain::{
         artifact::TodoCandidateDto as ArtifactTodoCandidateDto,
-        todo::{AcceptTodoCandidateCommand, TodoCandidateDto, TodoDto},
+        todo::{AcceptTodoCandidateCommand, TodoCandidateDto, TodoDto, UpdateTodoCandidateCommand},
     },
     providers::semantic::minimax_m3,
 };
 
 const VALID_TODO_STATUSES: [&str; 4] = ["open", "in_progress", "done", "dismissed"];
+const VALID_TODO_PRIORITIES: [&str; 3] = ["low", "medium", "high"];
 
-pub(crate) fn sync_todo_candidates(connection: &Connection) -> Result<Vec<TodoCandidateDto>, String> {
+pub(crate) fn sync_todo_candidates(
+    connection: &Connection,
+) -> Result<Vec<TodoCandidateDto>, String> {
     let Some(artifact) = latest_todo_extraction_artifact(connection)? else {
         return query_todo_candidates(connection);
     };
@@ -238,6 +241,54 @@ pub(crate) fn accept_todo_candidate(
         .map_err(|error| format!("更新待办候选状态失败: {error}"))?;
 
     query_todo(connection, todo_id.as_str())
+}
+
+pub(crate) fn update_todo_candidate(
+    connection: &Connection,
+    command: UpdateTodoCandidateCommand,
+) -> Result<TodoCandidateDto, String> {
+    let candidate = query_todo_candidate(connection, command.candidate_id.as_str())?;
+    if candidate.status != "proposed" {
+        return Err("仅待确认候选可以编辑".to_string());
+    }
+
+    let title = first_non_empty(command.title.as_str(), candidate.title.as_str());
+    if title.trim().is_empty() {
+        return Err("候选标题不能为空".to_string());
+    }
+    let detail = first_non_empty(command.detail.as_str(), candidate.detail.as_str());
+    let priority = first_non_empty(command.priority.as_str(), candidate.priority.as_str());
+    if !VALID_TODO_PRIORITIES.contains(&priority) {
+        return Err("不支持的候选优先级".to_string());
+    }
+    let dedup_key = todo_dedup_key(candidate.session_id.as_str(), title);
+
+    connection
+        .execute(
+            r#"
+            UPDATE todo_candidates
+            SET title = ?1,
+                detail = ?2,
+                owner = ?3,
+                due_at = ?4,
+                priority = ?5,
+                dedup_key = ?6,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?7 AND status = 'proposed'
+            "#,
+            params![
+                title,
+                detail,
+                command.owner.trim(),
+                command.due_at.trim(),
+                priority,
+                dedup_key,
+                candidate.id,
+            ],
+        )
+        .map_err(|error| format!("更新待办候选失败: {error}"))?;
+
+    query_todo_candidate(connection, command.candidate_id.as_str())
 }
 
 pub(crate) fn dismiss_todo_candidate(

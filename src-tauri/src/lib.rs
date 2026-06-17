@@ -946,9 +946,13 @@ pub fn run() {
             commands::todo::sync_todo_candidates,
             commands::todo::list_todo_candidates,
             commands::todo::accept_todo_candidate,
+            commands::todo::update_todo_candidate,
             commands::todo::dismiss_todo_candidate,
             commands::session::flush_current_session,
             commands::jobs::process_pending_jobs,
+            commands::jobs::get_runtime_dashboard,
+            commands::jobs::get_segment_timeline,
+            commands::jobs::retry_processing_job,
             commands::recording::start_recording,
             commands::recording::stop_recording,
             commands::recording::simulate_audio_slice,
@@ -3427,6 +3431,246 @@ mod tests {
                 .contains(temp_dir.to_string_lossy().as_ref()),
             "多语言快照不应暴露完整本地路径"
         );
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_query_v12_recovery_timeline_and_runtime_metrics() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "shengji-v12-observability-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        let audio_path = temp_dir.join("sample-observability.wav");
+        fs::write(&audio_path, b"fake wav bytes for v12 observability")
+            .expect("应能准备本地音频文件");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        let review = commands::transcript::import_local_audio_payload(
+            &db_path,
+            audio_path.to_string_lossy().as_ref(),
+        )
+        .expect("v1.2 应能导入音频并记录 import_local_audio 指标");
+        commands::semantic::generate_semantic_workbench_payload(&db_path)
+            .expect("v1.2 应能生成语义工作台并记录 generate_semantic_workbench 指标");
+        commands::semantic::generate_mind_map_payload(&db_path)
+            .expect("v1.2 应能生成脑图并记录 generate_mind_map 指标");
+
+        let connection = open_connection(&db_path).expect("应能打开测试数据库");
+        let metric_columns = table_columns(&connection, "runtime_metrics");
+        for required_column in [
+            "id",
+            "audio_segment_id",
+            "command_name",
+            "started_at",
+            "duration_ms",
+            "status",
+            "error_message",
+        ] {
+            assert!(
+                metric_columns
+                    .iter()
+                    .any(|column| column == required_column),
+                "runtime_metrics 应包含字段 {required_column}，实际字段为 {metric_columns:?}"
+            );
+        }
+        connection
+            .execute(
+                r#"
+                INSERT INTO transcript_jobs (
+                  id,
+                  audio_segment_id,
+                  status,
+                  retry_count,
+                  max_retry_count,
+                  error_message,
+                  provider,
+                  model_name,
+                  created_at
+                ) VALUES ('transcript_job_v12_failed', ?1, 'failed', 1, 3, 'local_whisperkit timeout', 'local_whisperkit', 'large-v3-turbo', CURRENT_TIMESTAMP)
+                "#,
+                params![review.audio.id.as_str()],
+            )
+            .expect("应能准备失败转写任务");
+        connection
+            .execute(
+                r#"
+                INSERT INTO processing_jobs (
+                  id,
+                  job_type,
+                  target_id,
+                  status,
+                  retry_count,
+                  max_retry_count,
+                  error_message,
+                  trace_id,
+                  created_at
+                ) VALUES ('processing_job_v12_failed', 'todo_extraction', ?1, 'failed', 1, 3, 'MiniMax 429', 'trace_v12_failed_processing', CURRENT_TIMESTAMP)
+                "#,
+                params![review.audio.id.as_str()],
+            )
+            .expect("应能准备失败处理任务");
+        drop(connection);
+
+        let timeline =
+            commands::jobs::get_segment_timeline_payload(&db_path, review.audio.id.as_str())
+                .expect("v1.2 应能查询单个音频片段生命周期时间线");
+        assert_eq!(timeline.audio_segment_id, review.audio.id);
+        assert!(timeline
+            .events
+            .iter()
+            .any(|event| event.stage == "audio" && event.status == "succeeded"));
+        assert!(timeline
+            .events
+            .iter()
+            .any(|event| event.stage == "transcription" && event.title.contains("转写")));
+        assert!(timeline
+            .events
+            .iter()
+            .any(|event| event.stage == "semantic" && event.title.contains("M3")));
+
+        let dashboard = commands::jobs::get_runtime_dashboard_payload(&db_path)
+            .expect("v1.2 应能查询错误恢复和性能指标面板");
+        assert!(dashboard
+            .recovery_tasks
+            .iter()
+            .any(|task| task.task_id == "transcript_job_v12_failed"
+                && task.error_message.contains("local_whisperkit")));
+        assert!(dashboard
+            .recovery_tasks
+            .iter()
+            .any(|task| task.task_id == "processing_job_v12_failed"
+                && task.retry_command == "retry_processing_job"));
+        assert!(dashboard
+            .metric_summaries
+            .iter()
+            .any(|metric| metric.command_name == "import_local_audio"
+                && metric.success_count >= 1
+                && metric.p95_duration_ms >= metric.p50_duration_ms));
+
+        let retried =
+            commands::jobs::retry_processing_job_payload(&db_path, "processing_job_v12_failed")
+                .expect("失败 processing_jobs 应可从恢复面板重试");
+        assert_eq!(retried.status, "pending");
+        assert_eq!(retried.retry_count, 2);
+        assert!(retried.error_message.is_empty());
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_keep_v12_multilingual_markdown_readable_with_original_and_terms() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "shengji-v12-export-polish-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        let audio_path = temp_dir.join("sample-export-polish.wav");
+        fs::write(&audio_path, b"fake wav bytes for v12 export polish")
+            .expect("应能准备本地音频文件");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        commands::transcript::import_local_audio_payload(
+            &db_path,
+            audio_path.to_string_lossy().as_ref(),
+        )
+        .expect("应能准备 v1.2 导出输入");
+        commands::semantic::generate_semantic_workbench_payload(&db_path)
+            .expect("应能生成语义工作台");
+        commands::semantic::generate_translation_payload(
+            &db_path,
+            domain::artifact::GenerateTranslationCommand {
+                target_language: "en-US".into(),
+            },
+        )
+        .expect("应能生成翻译产物");
+
+        let bundle = commands::export::generate_export_bundle_payload(
+            &db_path,
+            domain::export::GenerateExportBundleCommand {
+                formats: vec!["markdown".into()],
+                target_languages: vec!["en-US".into()],
+            },
+        )
+        .expect("v1.2 应能生成多语言 Markdown 导出");
+        let markdown = bundle
+            .items
+            .iter()
+            .find(|item| item.format == "markdown_en-US")
+            .expect("应包含 en-US Markdown")
+            .content
+            .as_str();
+
+        assert!(markdown.contains("## 双语摘要"));
+        assert!(markdown.contains("> 原文"));
+        assert!(markdown.contains("> 译文"));
+        assert!(markdown.contains("## 双语转写"));
+        assert!(markdown.contains("## 关键术语表"));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn should_edit_v12_todo_candidate_before_accepting() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "shengji-v12-todo-candidate-edit-test-{}",
+            current_timestamp_label()
+        ));
+        fs::create_dir_all(&temp_dir).expect("应能创建临时测试目录");
+        let db_path = temp_dir.join("smart-todo.sqlite");
+        let audio_path = temp_dir.join("candidate-edit.wav");
+        fs::write(&audio_path, b"fake wav bytes for v12 todo candidate")
+            .expect("应能准备本地音频文件");
+
+        initialize_database(&db_path).expect("应能初始化数据库");
+        commands::transcript::import_local_audio_payload(
+            &db_path,
+            audio_path.to_string_lossy().as_ref(),
+        )
+        .expect("应能准备候选来源转写");
+        commands::semantic::generate_semantic_workbench_payload(&db_path)
+            .expect("应能生成待办候选语义产物");
+        let candidates =
+            commands::todo::sync_todo_candidates_payload(&db_path).expect("应能同步待办候选");
+        let candidate = candidates
+            .iter()
+            .find(|candidate| candidate.status == "proposed")
+            .expect("应至少有一条 proposed 候选");
+
+        let edited = commands::todo::update_todo_candidate_payload(
+            &db_path,
+            domain::todo::UpdateTodoCandidateCommand {
+                candidate_id: candidate.id.clone(),
+                title: "复核 v1.2 候选标题".into(),
+                detail: "拆分后只保留第一步复核动作。".into(),
+                owner: "产品".into(),
+                due_at: "2026-06-16 10:00".into(),
+                priority: "high".into(),
+            },
+        )
+        .expect("v1.2 应允许在确认前编辑待办候选");
+        assert_eq!(edited.title, "复核 v1.2 候选标题");
+        assert_eq!(edited.owner, "产品");
+        assert_eq!(edited.priority, "high");
+
+        let accepted = commands::todo::accept_todo_candidate_payload(
+            &db_path,
+            commands::todo::AcceptTodoCandidateCommand {
+                candidate_id: edited.id.clone(),
+                title: edited.title.clone(),
+                detail: edited.detail.clone(),
+                owner: edited.owner.clone(),
+                due_at: edited.due_at.clone(),
+                priority: edited.priority.clone(),
+            },
+        )
+        .expect("编辑后的候选应可进入正式 Todo");
+        assert_eq!(accepted.title, "复核 v1.2 候选标题");
+        assert_eq!(accepted.owner, "产品");
+        assert_eq!(accepted.priority, "high");
 
         let _ = fs::remove_dir_all(temp_dir);
     }
