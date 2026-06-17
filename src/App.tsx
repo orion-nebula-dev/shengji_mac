@@ -661,6 +661,9 @@ function App() {
     };
   }, [transcriptReview.audio.id]);
 
+  useEffect(() => {
+    let cancelled = false;
+
     loadBootstrapData()
       .then((payload) => {
         if (!payload || cancelled) {
@@ -718,12 +721,14 @@ function App() {
     const nextSettings = normalizeLocalAsrSettings(settings);
     const persisted = await saveDesktopSettings(nextSettings).catch(() => null);
 
-    if (persisted) {
-      setSettings(normalizeLocalAsrSettings(persisted));
-    } else {
+    if (!persisted) {
       setSettings(nextSettings);
+      setSaveBanner("设置未保存到桌面端，已临时更新当前页面设置。");
+      window.setTimeout(() => setSaveBanner(""), 3000);
+      return;
     }
 
+    setSettings(normalizeLocalAsrSettings(persisted));
     setSaveBanner("设置已保存，下一轮录音、转写与语义处理将使用新配置。");
     window.setTimeout(() => setSaveBanner(""), 2400);
   }
@@ -1152,44 +1157,6 @@ function App() {
   async function refreshSegmentTimeline(audioSegmentId = transcriptReview.audio.id) {
     const timeline = await loadDesktopSegmentTimeline(audioSegmentId).catch(() => null);
     setSegmentTimeline(timeline ?? defaultSegmentTimeline);
-  }
-
-  async function handleImportAudio() {
-    if (!audioImportPath.trim()) {
-      setSaveBanner("请输入本地音频文件路径，用于离线转写评估。");
-      window.setTimeout(() => setSaveBanner(""), 2600);
-      return;
-    }
-
-    const review = await importDesktopLocalAudio(audioImportPath.trim()).catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : "导入本地音频失败。";
-      setSaveBanner(message);
-      window.setTimeout(() => setSaveBanner(""), 3600);
-      return null;
-    });
-
-    if (!review) {
-      const nextReview = {
-        ...defaultTranscriptReview,
-        audio: {
-          ...defaultTranscriptReview.audio,
-          fileName: audioImportPath.trim().split("/").filter(Boolean).pop() || "local-audio.wav",
-        },
-      };
-      setTranscriptReview(nextReview);
-      setSelectedTranscriptSegmentId(nextReview.segments[0]?.id ?? "");
-      setSaveBanner("浏览器原型模式已载入本地评估样例。桌面端会读取真实路径。");
-      window.setTimeout(() => setSaveBanner(""), 3600);
-      return;
-    }
-
-    setTranscriptReview(review);
-    setSelectedTranscriptSegmentId(review.segments[0]?.id ?? "");
-    setSpeakerDrafts(Object.fromEntries(review.speakers.map((speaker) => [speaker.id, speaker.label])));
-    await refreshRuntimeDashboard();
-    await refreshSegmentTimeline(review.audio.id);
-    setSaveBanner("已导入音频并生成本地转写评估时间轴。");
-    window.setTimeout(() => setSaveBanner(""), 3600);
   }
 
   function jumpToTranscriptSegment(segmentId: string, startMs: number) {
@@ -3448,7 +3415,7 @@ function App() {
                           <p className="section-kicker">Todo Candidates</p>
                           <h3>待办候选</h3>
                         </div>
-                        <span className="status-chip">确认前不写入正式 Todo</span>
+                        <span className="status-chip">确认后进入正式 Todo</span>
                       </div>
                       <div className="todo-candidate-list">
                         {semanticWorkbench.todoCandidates.map((todo) => (
@@ -4711,7 +4678,7 @@ function App() {
           </div>
         </footer>
       </div>
-      <div className="app-version-corner">v1.2.1</div>
+      <div className="app-version-corner">{appVersionLabel}</div>
     </div>
   );
 }

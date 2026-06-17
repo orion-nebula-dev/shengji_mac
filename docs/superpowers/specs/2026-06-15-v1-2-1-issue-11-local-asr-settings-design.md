@@ -225,7 +225,7 @@ v1.2.1
 8. 若本机 runtime 和模型可用，可对录音片段执行本地转写。
 9. 若本机 runtime 或模型不可用，给出明确缺失态，而不是伪造成功态。
 10. `package.json`、`src-tauri/Cargo.toml` 和 Tauri 配置版本统一为 `1.2.1`。
-11. `AI文档/04-发布记录/发布说明_v1.2.1.md`、`AI文档/版本归档/v1.2.1/归档清单.md`、`AI文档/版本归档/v1.2.1/验收记录.md` 已补齐。
+11. `AI文档/05-发布/v1.2.1.md`、`AI文档/07-归档/v1.2.1/归档清单.md`、`AI文档/07-归档/v1.2.1/验收记录.md` 已补齐。
 12. `npm run build` 通过。
 13. `cargo check --manifest-path src-tauri/Cargo.toml` 通过。
 14. `git diff --check` 通过。

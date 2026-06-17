@@ -6,11 +6,14 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:archive": "node tools/archive-build.mjs",
+    "build:release": "npm run build && npm run build:archive",
     "preview": "vite preview",
     "probe:minimax": "node tools/minimax-capability-probe.mjs",
     "test:tools": "node --test tools/*.test.mjs",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "tauri:build:archive": "npm run tauri:build && npm run build:archive -- --include-tauri-bundle"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.10.1",

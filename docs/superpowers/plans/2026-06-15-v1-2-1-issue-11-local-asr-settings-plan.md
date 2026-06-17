@@ -70,11 +70,11 @@
 
 - Modify `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, `src-tauri/tauri.conf.json`
   - Set application version to `1.2.1`.
-- Create `AI文档/04-发布记录/发布说明_v1.2.1.md`
+- Create `AI文档/05-发布/v1.2.1.md`
   - Record scope, known limitations, and verification results.
-- Create `AI文档/版本归档/v1.2.1/归档清单.md`
+- Create `AI文档/07-归档/v1.2.1/归档清单.md`
   - Record changed modules, commands, and artifacts.
-- Create `AI文档/版本归档/v1.2.1/验收记录.md`
+- Create `AI文档/07-归档/v1.2.1/验收记录.md`
   - Record build/test/UI/subagent review results.
 
 ---
@@ -1309,13 +1309,13 @@ Expected: PASS and `src-tauri/Cargo.lock` root package reflects `1.2.1`.
 ### Task 6.2: Add release/archive docs
 
 **Files:**
-- Create: `AI文档/04-发布记录/发布说明_v1.2.1.md`
-- Create: `AI文档/版本归档/v1.2.1/归档清单.md`
-- Create: `AI文档/版本归档/v1.2.1/验收记录.md`
+- Create: `AI文档/05-发布/v1.2.1.md`
+- Create: `AI文档/07-归档/v1.2.1/归档清单.md`
+- Create: `AI文档/07-归档/v1.2.1/验收记录.md`
 
 - [ ] **Step 1: Create release note**
 
-`AI文档/04-发布记录/发布说明_v1.2.1.md` must contain:
+`AI文档/05-发布/v1.2.1.md` must contain:
 
 ```markdown
 # 发布说明 v1.2.1
@@ -1339,7 +1339,7 @@ Expected: PASS and `src-tauri/Cargo.lock` root package reflects `1.2.1`.
 
 - [ ] **Step 2: Create archive checklist**
 
-`AI文档/版本归档/v1.2.1/归档清单.md` must contain changed module groups:
+`AI文档/07-归档/v1.2.1/归档清单.md` must contain changed module groups:
 
 ```markdown
 # v1.2.1 归档清单
@@ -1362,7 +1362,7 @@ Expected: PASS and `src-tauri/Cargo.lock` root package reflects `1.2.1`.
 
 - [ ] **Step 3: Create acceptance record**
 
-`AI文档/版本归档/v1.2.1/验收记录.md` must include a table with rows for:
+`AI文档/07-归档/v1.2.1/验收记录.md` must include a table with rows for:
 
 ```markdown
 | 项目 | 结果 | 证据 |
@@ -1389,7 +1389,7 @@ Fill the result/evidence cells after final verification commands finish.
 
 **Files:**
 - Read: all changed files
-- Modify: `AI文档/版本归档/v1.2.1/验收记录.md`
+- Modify: `AI文档/07-归档/v1.2.1/验收记录.md`
 
 - [ ] **Step 1: Run frontend build**
 
@@ -1435,7 +1435,7 @@ Expected: no user-visible stale strings. Remaining backend dev/test import comma
 
 **Files:**
 - Read-only review of final diff
-- Modify: `AI文档/版本归档/v1.2.1/验收记录.md` only to record review results after main agent accepts findings.
+- Modify: `AI文档/07-归档/v1.2.1/验收记录.md` only to record review results after main agent accepts findings.
 
 - [ ] **Step 1: Dispatch code review subagent**
 
@@ -1459,7 +1459,7 @@ Expected: gaps are either empty or actionable. Main agent fixes blocking gaps be
 
 - [ ] **Step 3: Record review outcomes**
 
-Update `AI文档/版本归档/v1.2.1/验收记录.md` rows for:
+Update `AI文档/07-归档/v1.2.1/验收记录.md` rows for:
 
 ```markdown
 | subagent code review | 通过 | 无阻塞问题 |
@@ -1486,9 +1486,9 @@ Expected: only task-related tracked/new files plus the pre-existing untracked `A
 ```bash
 git add docs/superpowers/plans/2026-06-15-v1-2-1-issue-11-local-asr-settings-plan.md \
   src src-tauri package.json package-lock.json \
-  AI文档/04-发布记录/发布说明_v1.2.1.md \
-  AI文档/版本归档/v1.2.1/归档清单.md \
-  AI文档/版本归档/v1.2.1/验收记录.md
+  AI文档/05-发布/v1.2.1.md \
+  AI文档/07-归档/v1.2.1/归档清单.md \
+  AI文档/07-归档/v1.2.1/验收记录.md
 ```
 
 Expected: `AI文档/设计参考/` remains unstaged.

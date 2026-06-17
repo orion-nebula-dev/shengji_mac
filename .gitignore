@@ -1,4 +1,7 @@
 node_modules/
+
+# Temporary build output. Run `npm run build:archive` to move generated
+# artifacts into the local-only `其他文件/build/vX.Y.Z/YYYY-MM-DD/` archive.
 dist/
 release/
 .DS_Store
@@ -8,6 +11,7 @@ vite.config.d.ts
 src-tauri/target/
 
 # Local analysis/cache
+.git.bfg-report/
 # 注：原 .understand-anything/ 工具工作目录已于 2026.6.17 移到
 # AI文档/100-UnderstandAnything/source/ 统一管理。如果未来重新使用
 # .understand-anything/ 作为工具工作目录，请在这里重新加 ignore 行。
@@ -43,6 +47,5 @@ AI文档/
 .codex/
 .agents/
 
-# 其他文件/ - 临时存放目录，2026.6.17 由 macOS Finder 或其他工具自动创建
-# 空目录，只在本地使用
+# 其他文件/ - 本地-only 工作区，包含 build 产物归档等不上传远端的资料
 其他文件/

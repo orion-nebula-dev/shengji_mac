@@ -84,8 +84,24 @@ npm run tauri:dev
 
 ```bash
 npm run build
-npm run tauri:build
+npm run build:archive
 ```
+
+桌面安装包构建和归档：
+
+```bash
+npm run tauri:build
+npm run build:archive -- --include-tauri-bundle
+```
+
+也可以使用组合命令：
+
+```bash
+npm run build:release
+npm run tauri:build:archive
+```
+
+构建工具会先在根目录生成临时 `dist/` / `release/`，归档命令会移动到本地-only 的 `其他文件/build/vX.Y.Z/YYYY-MM-DD/`。同一版本同一天重复归档时，会自动使用 `YYYY-MM-DD-2`、`YYYY-MM-DD-3` 后缀，避免覆盖旧产物。
 
 ## 默认本地数据位置
 
@@ -138,25 +154,27 @@ SQLite 数据库：
 
 ## 文档目录
 
-详细文档见 [AI文档索引](AI文档/README.md)：
+本地详细文档见 [AI文档索引](AI文档/README.md)。`AI文档/` 是本地-only 文档区，受根 `.gitignore` 保护，不上传远端；远端仓库只保留代码、构建配置和必要版本号变更。
 
-1. [工作区目录规范](AI文档/00-项目总览/工作区目录规范.md)
-2. [声记-版本迭代与项目架构方案](AI文档/02-技术方案/声记-版本迭代与项目架构方案.md)
-3. [声记-版本迭代目标与代码归档方案](AI文档/03-版本迭代/声记-版本迭代目标与代码归档方案.md)
-4. [MiniMax-能力验证说明](AI文档/06-验证报告/能力验证/MiniMax-能力验证说明.md)
-5. [开发规范](AI文档/05-规范制度/开发规范.md)
-6. [Git规范](AI文档/05-规范制度/Git规范.md)
-7. [最新发布说明](AI文档/04-发布记录/发布说明_v1.2.1.md)
+当前常用入口：
 
-过时的一期文档、旧 v2.0 PRD 和旧设计包已归档到：
-
-```text
-AI文档/废纸篓/2026-06-12-旧方案归档/
-```
+1. [总览骨架](AI文档/00-总览/README.md)
+2. [产品规划与任务索引](AI文档/01-产品方案/plan&task.md)
+3. [v1.2 体验打磨规划](AI文档/01-产品方案/v12-experience-polish.md)
+4. [Design Token](AI文档/02-设计/design-tokens.md)
+5. [技术文档入口](AI文档/03-技术/README.md)
+6. [Git 规范](AI文档/04-规范/Git规范.md)
+7. [v1.2.1 发布说明](AI文档/05-发布/v1.2.1.md)
+8. [v1.2.2 发布说明](AI文档/05-发布/v1.2.2.md)
+9. [验证报告入口](AI文档/06-验证/README.md)
+10. [v1.2.1 验收记录](AI文档/07-归档/v1.2.1/验收记录.md)
+11. [待找回历史文档](AI文档/99-废纸篓/待找回历史文档.md)
+12. [Understand Anything 快照说明](AI文档/100-UnderstandAnything/README.md)
+13. [Build 产物归档规范](其他文件/build/README.md)
 
 ## 当前边界
 
-当前为 v1.2.1 本地 ASR 设置优化版本，尚未完成：
+当前为 v1.2.2 体验打磨与运行时可观测性版本，尚未完成：
 
 1. 自动 30 秒滚动切片录音。
 2. 声纹识别与特定用户过滤。

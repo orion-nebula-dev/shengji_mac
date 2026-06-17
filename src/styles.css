@@ -109,12 +109,6 @@ button:disabled {
   backdrop-filter: blur(16px) saturate(1.12);
 }
 
-.window-frame {
-  min-height: calc(100vh - 36px);
-  overflow: hidden;
-  background: var(--color-bg-window);
-}
-
 .app-frame {
   display: flex;
   flex-direction: column;
