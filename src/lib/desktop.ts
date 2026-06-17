@@ -68,6 +68,15 @@ export interface TodoCandidateItemPayload {
   todoId: string;
 }
 
+export interface UpdateTodoCandidatePayload {
+  candidateId: string;
+  title: string;
+  detail: string;
+  owner: string;
+  dueAt: string;
+  priority: "low" | "medium" | "high";
+}
+
 export interface AcceptTodoCandidatePayload {
   candidateId: string;
   title: string;
@@ -102,6 +111,62 @@ export interface RuntimeStatusPayload {
   lastSliceAt: string;
   lastExtractionAt: string;
   lastExtractionSummary: string;
+}
+
+export interface RecoveryTaskPayload {
+  taskId: string;
+  taskType: string;
+  targetId: string;
+  audioSegmentId: string;
+  status: string;
+  retryCount: number;
+  maxRetryCount: number;
+  errorMessage: string;
+  provider: string;
+  modelName: string;
+  retryCommand: string;
+  updatedAt: string;
+}
+
+export interface RuntimeMetricSummaryPayload {
+  commandName: string;
+  totalCount: number;
+  successCount: number;
+  failedCount: number;
+  p50DurationMs: number;
+  p95DurationMs: number;
+  latestStatus: string;
+  latestErrorMessage: string;
+}
+
+export interface RuntimeDashboardPayload {
+  recoveryTasks: RecoveryTaskPayload[];
+  metricSummaries: RuntimeMetricSummaryPayload[];
+}
+
+export interface TaskTimelineEventPayload {
+  id: string;
+  stage: string;
+  title: string;
+  status: string;
+  timestamp: string;
+  detail: string;
+}
+
+export interface SegmentTimelinePayload {
+  audioSegmentId: string;
+  fileName: string;
+  events: TaskTimelineEventPayload[];
+}
+
+export interface ProcessingJobPayload {
+  id: string;
+  jobType: string;
+  targetId: string;
+  status: string;
+  retryCount: number;
+  maxRetryCount: number;
+  errorMessage: string;
 }
 
 export interface TranscriptAudioPayload {
@@ -529,6 +594,17 @@ export async function acceptDesktopTodoCandidate(
   return invoke<TodoPayload>("accept_todo_candidate", { command });
 }
 
+export async function updateDesktopTodoCandidate(
+  command: UpdateTodoCandidatePayload,
+): Promise<TodoCandidateItemPayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<TodoCandidateItemPayload>("update_todo_candidate", { command });
+}
+
 export async function dismissDesktopTodoCandidate(
   candidateId: string,
 ): Promise<TodoCandidateItemPayload | null> {
@@ -604,6 +680,37 @@ export async function processDesktopPendingJobs(): Promise<ProcessingActionPaylo
 
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<ProcessingActionPayload>("process_pending_jobs");
+}
+
+export async function loadDesktopRuntimeDashboard(): Promise<RuntimeDashboardPayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<RuntimeDashboardPayload>("get_runtime_dashboard");
+}
+
+export async function loadDesktopSegmentTimeline(
+  audioSegmentId: string,
+): Promise<SegmentTimelinePayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<SegmentTimelinePayload>("get_segment_timeline", { audioSegmentId });
+}
+
+export async function retryDesktopProcessingJob(
+  jobId: string,
+): Promise<ProcessingJobPayload | null> {
+  if (!isTauriEnvironment()) {
+    return null;
+  }
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<ProcessingJobPayload>("retry_processing_job", { jobId });
 }
 
 export async function loadTranscriptReview(): Promise<TranscriptReviewPayload | null> {

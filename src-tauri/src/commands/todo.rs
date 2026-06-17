@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-pub(crate) use crate::domain::todo::AcceptTodoCandidateCommand;
+pub(crate) use crate::domain::todo::{AcceptTodoCandidateCommand, UpdateTodoCandidateCommand};
 
 use crate::{
     app::todo_service,
@@ -58,6 +58,14 @@ pub(crate) fn accept_todo_candidate_payload(
     todo_service::accept_todo_candidate(&connection, command)
 }
 
+pub(crate) fn update_todo_candidate_payload(
+    db_path: &PathBuf,
+    command: UpdateTodoCandidateCommand,
+) -> Result<TodoCandidateDto, String> {
+    let connection = open_connection(db_path)?;
+    todo_service::update_todo_candidate(&connection, command)
+}
+
 pub(crate) fn dismiss_todo_candidate_payload(
     db_path: &PathBuf,
     candidate_id: &str,
@@ -103,6 +111,14 @@ pub(crate) fn accept_todo_candidate(
     state: tauri::State<'_, AppState>,
 ) -> Result<TodoDto, String> {
     accept_todo_candidate_payload(&state.db_path, command)
+}
+
+#[tauri::command]
+pub(crate) fn update_todo_candidate(
+    command: UpdateTodoCandidateCommand,
+    state: tauri::State<'_, AppState>,
+) -> Result<TodoCandidateDto, String> {
+    update_todo_candidate_payload(&state.db_path, command)
 }
 
 #[tauri::command]

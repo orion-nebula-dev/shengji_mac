@@ -18,8 +18,9 @@
 10. 支持自动生成 Moment、Deep Research 草稿，并把研究结论转为 Todo 或脑图节点。
 11. 支持导出中心：Markdown、SRT、JSON、本地分享快照、会话归档搜索、导出记录和 provider 成本 / 隐私 / 密钥状态展示。
 12. 支持翻译与多语言导出：转写翻译、摘要翻译、多语言 Markdown / JSON / 快照模板和来源追溯。
+13. 支持 v1.2 体验打磨：错误恢复面板、任务状态时间线、runtime_metrics 性能指标、转写修正 diff、脑图版本对比、Todo 候选编辑和 Design Token 雏形。
 
-## v1.2.1 处理链路
+## v1.2 处理链路
 
 ```text
 录音开始
@@ -38,6 +39,7 @@
 -> 在导出中心生成 Markdown / SRT / JSON / 本地分享快照
 -> 生成 translation artifact，保留转写片段和摘要来源追溯
 -> 在导出中心生成多语言 Markdown / JSON / 快照模板
+-> 在运行状态页查看错误恢复、性能指标和任务状态时间线
 -> 写入 external_exports 形成本地导出记录
 ```
 

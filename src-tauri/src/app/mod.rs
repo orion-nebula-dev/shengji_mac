@@ -1,6 +1,7 @@
-pub(crate) mod query_service;
 pub(crate) mod export_service;
 pub(crate) mod local_asr_service;
+pub(crate) mod query_service;
+pub(crate) mod runtime_observability_service;
 pub(crate) mod semantic_service;
 pub(crate) mod settings_service;
 pub(crate) mod todo_service;
