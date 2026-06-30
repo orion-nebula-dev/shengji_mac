@@ -1,22 +1,36 @@
-node_modules/
-
-# Temporary build output. Run `npm run build:archive` to move generated
-# artifacts into the local-only `其他文件/build/vX.Y.Z/YYYY-MM-DD/` archive.
-dist/
-release/
+# macOS
 .DS_Store
-*.tsbuildinfo
-vite.config.js
-vite.config.d.ts
-src-tauri/target/
 
-# Local analysis/cache
-.git.bfg-report/
-# 注：原 .understand-anything/ 工具工作目录已于 2026.6.17 移到
-# AI文档/100-UnderstandAnything/source/ 统一管理。如果未来重新使用
-# .understand-anything/ 作为工具工作目录，请在这里重新加 ignore 行。
+# Swift Package Manager / Xcode
+.build/
+.swiftpm/
+xcuserdata/
+DerivedData/
+*.xcuserstate
+macos/RecordingAgent/.build/
 
-# Local runtime data
+# Swift MVP build outputs(归档到 其他文件/build/,不进 Git)
+*.app/
+*.dmg
+
+# Local-only workspace(AGENTS.md / AI文档/ / 其他文件/ 是项目本地-only 区,见 AGENTS.md §2)
+AGENTS.md
+AI文档/
+.claude/
+.codex/
+.agents/
+.context/
+其他文件/
+
+# API key / secret 防护:禁止将明文密钥提交到仓库
+# 凡是匹配常见 API key 模式的文件,必须使用环境变量或系统 Keychain
+*.key
+*.secret
+*key*.md
+*secret*.md
+*api*key*.md
+
+# Local runtime data(永不进 Git)
 *.sqlite
 *.sqlite-*
 *.db
@@ -29,23 +43,3 @@ recordings/
 argmax-cli
 llama-cli
 llama-completion
-
-# API key / secret 防护：禁止将明文密钥提交到仓库
-# 凡是匹配常见 API key 模式的文件，必须使用环境变量或系统 Keychain
-*.key
-*.secret
-*key*.md
-*secret*.md
-*api*key*.md
-
-# Local AI planning / agent workspace files
-# 注意: 整个 AI文档/ 目录 + AI agent 配置目录都只在本地保留，不上传远端
-# （2026.6.17 决定：项目文档维护仅在本地，远端只保留代码 + 版本号变更）
-AGENTS.md
-AI文档/
-.claude/
-.codex/
-.agents/
-
-# 其他文件/ - 本地-only 工作区，包含 build 产物归档等不上传远端的资料
-其他文件/

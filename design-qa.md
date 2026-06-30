@@ -82,7 +82,7 @@
 
 **Focused Region Comparison Evidence**
 - Settings header and save action: current version label is visible, stale `v0.4` and `v1.0` user-facing copy are absent, and the save path has failure-specific copy covered by regression tests.
-- Sidebar brand: CSS-drawn placeholder mark was replaced with the real app icon asset from `src-tauri/icons/128x128.png`.
+- Sidebar brand: CSS-drawn placeholder mark was replaced with the real app icon asset (历史 QA 记录,见 v1.1.x 时期的 `src-tauri/icons/128x128.png`;当前 Swift MVP 已于 2026-07-01 接管主路径,不再使用此图标资源)。
 - Workbench density: overview, actions, research, and export pages were checked for readable multi-column layout at `1440x1000`.
 - Mac shell contract: the body/window frame are fixed to the app viewport, the left sidebar has its own nav scroll only when the minimum height cannot fit all entries, the right content area is the primary page scroll container, and only dense local widgets such as textareas/export previews retain nested scrolling.
 - Titlebar contract: the center title now shows app icon, app name, active page name, and `v1.1.1`; the right toolbar keeps the main commands in a compact Apple-style titlebar group.

@@ -1,0 +1,18 @@
+.build/
+.swiftpm/
+DerivedData/
+*.xcuserstate
+*.xcuserdata/
+
+# Local runtime data. These are generated outside the repository in normal app use,
+# but keep the native MVP directory guarded during manual tests.
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.wav
+recordings/
+models/
+*.mlmodelc/
+*.mlpackage/
+*.bin
+*.safetensors
