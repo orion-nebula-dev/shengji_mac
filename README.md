@@ -1,167 +1,184 @@
 # 声记
 
-一个运行在 macOS 桌面端的声记工作台，目标是把“录音 -> 本地转写 -> 说话人分离 -> 转写修正 -> MiniMax M3 类型化语义理解 -> Todo / 摘要 / 脑图 / Moment / 深度研究 / 翻译 / 多语言导出”串成可追溯的桌面工作流。
+一个运行在 macOS 桌面端的声记工作台,目标是把"录音 -> 本地转写 -> 说话人分离 -> 转写修正 -> MiniMax M3 类型化语义理解 -> Todo / 摘要 / 脑图 / Moment / 深度研究 / 翻译 / 多语言导出"串成可追溯的桌面工作流。
 
-当前实现基于 `Tauri 2 + Rust + React + TypeScript + SQLite`，前端负责配置与结果展示，Rust 负责录音、数据库和模型调用编排。
+当前实现基于 **Swift / SwiftUI / AppKit / WhisperKit / Core ML / SQLite** 的原生 macOS 应用,代码主目录 `macos/RecordingAgent/`,使用 Swift Package Manager + Xcode 工程双构建路径。Swift 原生 App 已于 2026-06-18 通过 v1.0 MVP 真实麦克风 smoke 验收(详见 `AI文档/06-验证/recording-agent-v1.0-mvp-validation-2026-06-18.md`)。
 
-## 当前能力
+v1.2.x 之前的 Tauri 2 + Rust + React + Vite 实现已废弃,不再维护也不再作为参考占位。
 
-1. 支持桌面端启动与本地 SQLite 持久化。
-2. 支持设置录音开关、切片时长、空闲触发时间。
-3. 支持本地 ASR、Speaker、Semantic、Embedding、Export provider 边界配置。
-4. 支持真实麦克风录音，并将录音文件保存到本地。
-5. 支持录音片段查看、离线转写时间轴、说话人标签修正与失败转写任务重试。
-6. Todo 入口固定为 MiniMax M3 语义边界，候选产物先进入 `semantic_artifacts(type='todo_extraction')`。
-7. 支持 Todo 完成/未完成切换。
-8. 支持本地 ASR runtime 探测、模型下载状态、缓存目录、处理任务记录、失败原因记录与基础稳定性保护。
-9. 支持基于修正文稿和摘要生成思维脑图，节点可编辑、折叠、追溯来源并导出 Markdown / JSON。
-10. 支持自动生成 Moment、Deep Research 草稿，并把研究结论转为 Todo 或脑图节点。
-11. 支持导出中心：Markdown、SRT、JSON、本地分享快照、会话归档搜索、导出记录和 provider 成本 / 隐私 / 密钥状态展示。
-12. 支持翻译与多语言导出：转写翻译、摘要翻译、多语言 Markdown / JSON / 快照模板和来源追溯。
-13. 支持 v1.2 体验打磨：错误恢复面板、任务状态时间线、runtime_metrics 性能指标、转写修正 diff、脑图版本对比、Todo 候选编辑和 Design Token 雏形。
+## 当前能力(基于 v1.0 MVP 验收)
 
-## v1.2 处理链路
+1. 桌面端启动 + 本地 SQLite 持久化(`macos/RecordingAgent/Sources/RecordingAgentCore/SQLiteRecordingStore.swift`)。
+2. 主动麦克风录音 + 16kHz mono WAV 保存到本地。
+3. 固定 15 秒切片(`Audio.swift` 中的 `SlicePlanner`)。
+4. 本地 WhisperKit / Core ML ASR 实时转写,默认模型 `small`,可选 `tiny` / `base`。
+5. 首页确认片段 + 历史列表 + 详情回看(含音频播放、转写、时间戳、失败片段、Agent 事实)。
+6. Agent 事件 / 步骤 / 产物 SQLite 持久化。
+7. XCTest 单元测试 + XCUITest UI 测试 + `swift test` + `xcodebuild test`。
+8. 本地 Release 打包脚本(`Scripts/package-local-release.sh`),自动归档到 `其他文件/build/v1.0.0/YYYY-MM-DD/`。
+
+## v1.0 MVP 处理链路
 
 ```text
-录音开始
--> 本地生成或读取 wav 文件
--> 写入 audio_segments
--> 创建 transcription 任务
--> 探测 argmax-cli / whisperkit-cli
--> 下载或校验本地 ASR 模型
--> 调用本地 CLI 生成录音片段时间轴
--> 写入 transcript_segments / speakers / speaker_segments
--> 支持说话人改名、时间轴跳转、错误片段标注与失败任务重试
--> 创建 conversation_sessions
--> 生成 transcript_revision / summary / meeting_minutes / todo_extraction
--> 确认 Todo 候选并写入 todos
--> 生成 mind_map / moment / deep_research
--> 在导出中心生成 Markdown / SRT / JSON / 本地分享快照
--> 生成 translation artifact，保留转写片段和摘要来源追溯
--> 在导出中心生成多语言 Markdown / JSON / 快照模板
--> 在运行状态页查看错误恢复、性能指标和任务状态时间线
--> 写入 external_exports 形成本地导出记录
+用户主动开始麦克风记录
+-> NativeAudioCaptureService 采集 16kHz mono PCM
+-> SlicePlanner 按 15 秒切分
+-> 写入 SQLiteRecordingStore 的 recording / segment 表
+-> WhisperKitASREngine 对每个 segment 跑本地 ASR
+-> 写入 ASR transcript + Agent 事件 / 步骤 / 产物
+-> 首页确认片段(RecordingAgentViewModel + Views)
+-> 历史列表(HistoryView)
+-> 详情回看(DetailView + MarkdownTranscriptExporter)
 ```
 
 ## 技术栈
 
 | 层级 | 技术 |
 | --- | --- |
-| 桌面容器 | Tauri 2 |
-| 核心语言 | Rust |
-| 前端 | React 19 + TypeScript + Vite |
-| 本地存储 | SQLite |
-| 音频采集 | cpal + hound |
-| 云端调用 | reqwest |
+| 桌面容器 | 原生 macOS App(Xcode 15+ / SwiftPM) |
+| 核心语言 | Swift 5.10+ |
+| UI | SwiftUI 为主,AppKit 按需辅助 |
+| 音频采集 | AVFoundation / AVAudioEngine(`NativeAudioCaptureService.swift`) |
+| 本地 ASR | WhisperKit / Core ML(`argmaxinc/argmax-oss-swift` 1.0.0) |
+| 本地存储 | SQLite C API(`SQLiteRecordingStore.swift`) |
+| 测试 | XCTest / XCUITest / xcodebuild / swift test |
+| 打包 | `macos/RecordingAgent/Scripts/package-local-release.sh`(codesign + ditto + shasum) |
 
 ## 本地运行
 
-### 1. 安装依赖
+需要本机已安装:
+
+1. macOS 13+ (Apple Silicon 推荐)
+2. Xcode 15+ / Swift 5.10+
+3. 命令行工具 `xcode-select --install`
+4. 可选: `brew install xcodegen`(用于 `Scripts/generate-xcodeproj.sh`)
+
+### 1. 生成 / 刷新 Xcode 工程(可选)
+
+`RecordingAgent.xcodeproj/` 已存在,直接用即可。仅在 `project.yml` / `Package.swift` 改了之后才需要重生成:
 
 ```bash
-npm install
+bash macos/RecordingAgent/Scripts/generate-xcodeproj.sh
 ```
 
-需要本机已安装：
-
-1. Node.js
-2. Rust / Cargo
-3. Tauri 2 所需的 macOS 构建环境
-
-### 2. 启动前端
+### 2. Swift Package Manager 测试
 
 ```bash
-npm run dev
+swift test --package-path macos/RecordingAgent
 ```
 
-### 3. 启动桌面应用
+### 3. Xcode 工程测试
 
 ```bash
-npm run tauri:dev
+xcodebuild test \
+  -project macos/RecordingAgent/RecordingAgent.xcodeproj \
+  -scheme RecordingAgent \
+  -destination 'platform=macOS'
 ```
 
-### 4. 构建产物
+### 4. 编译 Debug / Release
 
 ```bash
-npm run build
-npm run tauri:build
+xcodebuild build \
+  -project macos/RecordingAgent/RecordingAgent.xcodeproj \
+  -scheme RecordingAgent \
+  -configuration Debug
+
+xcodebuild build \
+  -project macos/RecordingAgent/RecordingAgent.xcodeproj \
+  -scheme RecordingAgent \
+  -configuration Release
 ```
+
+### 5. 核心自检 / Smoke
+
+```bash
+swift run --package-path macos/RecordingAgent RecordingAgentCoreSelfTests
+swift run --package-path macos/RecordingAgent RecordingAgentSmoke
+```
+
+### 6. 本地 Release 打包
+
+```bash
+bash macos/RecordingAgent/Scripts/package-local-release.sh
+```
+
+产物自动归档到本地-only `其他文件/build/v1.0.0/YYYY-MM-DD/`(同日重复归档自动追加 `-2`、`-3` 后缀)。
 
 ## 默认本地数据位置
 
-录音文件目录：
+实际数据目录由 `macos/RecordingAgent/Sources/RecordingAgentApp.swift` 与 `SQLiteRecordingStore.swift` 中的常量决定。常见位置(参考 Swift Application Support 默认行为):
 
 ```text
-~/Library/Application Support/com.shengji.desktop/recordings
+~/Library/Application Support/com.shengji.recording-agent/
+  ├── shengji.sqlite         # SQLite 数据库
+  ├── recordings/            # 录音 WAV
+  └── models/whisperkit/     # WhisperKit 模型缓存
 ```
 
-SQLite 数据库：
-
-```text
-~/Library/Application Support/com.shengji.desktop/shengji.sqlite
-```
-
-本地 ASR 模型缓存：
-
-```text
-~/Library/Application Support/com.soundworkbench.shengji/models/whisperkit
-```
+不要在此 README 硬编码路径,改 `RecordingAgentApp.swift` 常量后可能漂移。
 
 ## 配置说明
 
-### 本地 ASR 配置
+### WhisperKit 模型
 
-当前项目使用本地优先 ASR：
+1. 默认模型:`small`(精度 / 体积平衡)
+2. 可选:`tiny`、`base`、`small`
+3. 模型下载由 `WhisperKitModelManager` + `WhisperKitModelFileDownloader.swift` 处理(`/usr/bin/curl` 下载 Core ML + tokenizer)
+4. 模型缓存目录见上一节;未就绪时给出明确缺失提示
 
-1. 探测 `argmax-cli` 与 `whisperkit-cli`。
-2. 默认模型为 `large-v3-v20240930_626MB`。
-3. 可切换到 `base` 或 `tiny` 小模型。
-4. 应用通过 CLI `transcribe --model ... --download-model-path ... --download-tokenizer-path ...` 预热下载模型，并记录缓存目录、下载进度、离线可用状态和错误提示。
-5. 未安装 runtime 或模型未就绪时，录音转写会给出明确缺失提示。
+### 应用配置
 
-### MiniMax M3 语义配置
+Swift MVP 当前只支持 v1.0 PRD 范围(主动录音 + 切片 + 实时转写 + 历史回看),**不含**:
 
-1. `M3 调用地址`：默认 `https://api.minimaxi.com/v1/chat/completions`，用于 Token Plan 中国区 `sk-cp-...` key。
-2. `M3 模型`
-3. `M3 API Key`
-4. `Todo 语义产物` 固定进入 `semantic_artifacts(type='todo_extraction')`
+- MiniMax M3 语义理解(由 v1.0 PRD 明确排除)
+- 说话人分离 / SpeakerKit(由 v1.0 PRD 明确排除)
+- 翻译 / RAG / 声纹 / 团队能力(由 v1.0 PRD 明确排除)
+- 菜单栏入口 / 暂停 / 系统音频(由 v1.0 PRD 明确排除)
+- 公证 / App Store 上架 / Developer ID 签名(由 v1.0 PRD 明确排除)
 
 ## 稳定性保护
 
-当前实现已包含：
-
-1. 模型请求有限次重试。
-2. `429` 与 `5xx` 的基础退避重试。
-3. 空会话、占位会话跳过 Todo 提取。
-4. 手动刷新当前会话的冷却保护。
-5. Todo 语义入口固定为 MiniMax M3，旧 Qwen / llama.cpp Todo runtime 不再作为默认、兜底或 legacy 路径。
+1. SPM 与 Xcode 工程测试全过(`AI文档/06-验证/recording-agent-v1.0-mvp-validation-2026-06-18.md` 记录 21 tests, 0 failures)。
+2. `RecordingAgentCoreSelfTests` 退出码 0,核心状态机 / 切片计划 / 持久化通过。
+3. `RecordingAgentSmoke` 退出码 0,真实麦克风 35.8s 录音 + 3 段成功转写(2026-06-18 验收)。
+4. Release build `** BUILD SUCCEEDED **`,本地 `.app` 与 zip 已归档到 `其他文件/build/v1.0.0/2026-06-18-xcode-release/`。
 
 ## 文档目录
 
-详细文档见 [AI文档索引](AI文档/README.md)：
+本地详细文档见 [AI文档索引](AI文档/README.md)。`AI文档/` 是本地-only 文档区,受根 `.gitignore` 保护,不上传远端;远端仓库只保留代码、构建配置和必要版本号变更。
 
-1. [工作区目录规范](AI文档/00-项目总览/工作区目录规范.md)
-2. [声记-版本迭代与项目架构方案](AI文档/02-技术方案/声记-版本迭代与项目架构方案.md)
-3. [声记-版本迭代目标与代码归档方案](AI文档/03-版本迭代/声记-版本迭代目标与代码归档方案.md)
-4. [MiniMax-能力验证说明](AI文档/06-验证报告/能力验证/MiniMax-能力验证说明.md)
-5. [开发规范](AI文档/05-规范制度/开发规范.md)
-6. [Git规范](AI文档/05-规范制度/Git规范.md)
-7. [最新发布说明](AI文档/04-发布记录/发布说明_v1.2.1.md)
+当前常用入口:
 
-过时的一期文档、旧 v2.0 PRD 和旧设计包已归档到：
-
-```text
-AI文档/废纸篓/2026-06-12-旧方案归档/
-```
+1. [总览骨架](AI文档/00-总览/README.md)
+2. [产品方案目录](AI文档/01-产品方案/README.md)
+3. [Recording Agent 产品线 PRD](AI文档/01-产品方案/recording-agent-product-line-prd.md)
+4. [Recording Agent 版本需求拆解](AI文档/01-产品方案/recording-agent-requirements-breakdown.md)
+5. [v1.0 MVP 产品需求](AI文档/01-产品方案/v10-mvp-local-recording-realtime-transcription-prd.md)
+6. [v1.0 MVP 技术架构](AI文档/03-技术/MVP/v10-technical-architecture.md)
+7. [v1.0 MVP 实施计划](AI文档/03-技术/MVP/v10-implementation-plan.md)
+8. [技术拆解与实现状态检查](AI文档/03-技术/plan&task.md)
+9. [Design Token](AI文档/02-设计/design-tokens.md)
+10. [Git 规范](AI文档/04-规范/Git规范.md)
+11. [v1.0.0 MVP 发布说明](AI文档/05-发布/v1.0.0.md)(待写)
+12. [v1.0 MVP 验收记录](AI文档/06-验证/recording-agent-v1.0-mvp-validation-2026-06-18.md)
+13. [v1.0 MVP 验收截图](AI文档/06-验证/recording-agent-home-success-2026-06-18.png)
+14. [历史文档归档(99-废纸篓)](AI文档/99-废纸篓/待找回历史文档.md)
+15. [v1.0 ~ v1.2 历史快照(本地-only)](AI文档/100-UnderstandAnything/README.md)
+16. [Build 产物归档规范](其他文件/build/README.md)
 
 ## 当前边界
 
-当前为 v1.2.1 本地 ASR 设置优化版本，尚未完成：
+当前为 v1.0.0 原生 macOS MVP 验收通过版本,尚未完成(全部由 v1.0 PRD 明确排除,**v1.1+ 路线需另开 PRD**):
 
-1. 自动 30 秒滚动切片录音。
-2. 声纹识别与特定用户过滤。
-3. SpeakerKit 真实说话人分离推理接入。
-4. 多设备同步。
-5. 云端分享和外部同步。
+1. 菜单栏入口 / 暂停 / 系统音频。
+2. 说话人分离(SpeakerKit)与声纹识别。
+3. MiniMax M3 语义理解 / Todo / 摘要 / 脑图 / Moment / 深度研究。
+4. 翻译 / 多语言导出。
+5. 自动 30 秒滚动切片(v1.0 固定 15 秒)。
 6. 真实联网深度研究检索与外部资料引用。
-7. 播客脚本、TTS provider 和音频生成入口。
+7. 多设备同步 / 云端分享 / 外部同步。
+8. 播客脚本 / TTS provider / 音频生成入口。
+9. Developer ID 签名 / 公证 / App Store 上架 / 外部分发。
+
+旧 Tauri v1.2.x 栈(2026-06-30 之前的主路径)的 v1.1+ 能力(语义 / Todo / 翻译 / 脑图 / Moment / 深度研究 / 说话人分离 / 导出中心)在 Swift MVP 接管后**全部下线**,需在 v1.1+ 路线中按 PRD 流程重新评估是否在原生栈复现。
